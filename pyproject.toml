@@ -1,0 +1,45 @@
+[project]
+name = "fpl-decision-engine"
+version = "0.1.0"
+description = "Autonomous Fantasy Premier League decision-support system."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy>=2.0",
+    "alembic",
+    "psycopg[binary]",
+    "pydantic-settings",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "pip-audit",
+    "httpx",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Domain enums are deliberately `class Foo(str, Enum)` rather than
+# `enum.StrEnum` — this is an explicit, intentional design choice (not a
+# style oversight), so UP042 is suppressed here only.
+"packages/domain/jobs.py" = ["UP042"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = true
+plugins = ["pydantic.mypy"]

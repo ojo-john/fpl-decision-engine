@@ -1,0 +1,5 @@
+# Example application settings.
+#
+# Placeholder for Milestone 0. Real configuration structure (rules sources,
+# data providers, etc.) will be populated starting Milestone 1 when
+# ingestion and rules-sync are implemented.

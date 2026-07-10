@@ -1,0 +1,98 @@
+name: Health Check
+
+# Manual system-health job runner. Spins up its own ephemeral Postgres
+# service container — there's no persistent hosted DB yet in Milestone 0 —
+# which exercises the exact same execute_job/migration code path that will
+# run against a real, persistent DB once one exists. At that point, only
+# DATABASE_URL's source needs to change; the job logic itself does not.
+on:
+  workflow_dispatch:
+    inputs:
+      requested_by:
+        description: "Who is requesting this health check (defaults to the triggering actor)"
+        required: false
+        default: ""
+
+jobs:
+  system-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fpl
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: fpl_decision_engine
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fpl -d fpl_decision_engine"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://fpl:changeme@localhost:5432/fpl_decision_engine
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      - name: Run migrations
+        run: uv run alembic upgrade head
+
+      - name: Resolve requested_by
+        id: requested_by
+        run: |
+          value="${{ github.event.inputs.requested_by }}"
+          if [ -z "$value" ]; then
+            value="${{ github.actor }}"
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
+      - name: Run system_health job
+        run: |
+          uv run python scripts/run_job.py \
+            --job-type system_health \
+            --requested-by "${{ steps.requested_by.outputs.value }}" \
+            --trigger-type github_manual \
+            --git-commit-sha "${{ github.sha }}" \
+            > job_summary.json
+
+      - name: Append job summary
+        if: always()
+        run: |
+          python - <<'EOF'
+          import json
+          import os
+
+          with open("job_summary.json") as f:
+              job = json.load(f)
+
+          lines = [
+              "| Field | Value |",
+              "| --- | --- |",
+              f"| job_id | {job.get('job_id')} |",
+              f"| job_type | {job.get('job_type')} |",
+              f"| status | {job.get('status')} |",
+              f"| started_at | {job.get('started_at')} |",
+              f"| completed_at | {job.get('completed_at')} |",
+              f"| error_code | {job.get('error_code')} |",
+              f"| error_message | {job.get('error_message')} |",
+          ]
+
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+          with open(summary_path, "a") as summary:
+              summary.write("## System Health Job Result\n\n")
+              summary.write("\n".join(lines) + "\n")
+          EOF
+
+      - name: Upload job summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-summary
+          path: job_summary.json

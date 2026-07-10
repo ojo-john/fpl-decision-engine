@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  # Dummy value: sufficient for jobs that only need Settings/engine object
+  # construction (no actual connection attempted), e.g. unit tests, lint,
+  # typecheck. Jobs that need a real database define their own postgres
+  # service and DATABASE_URL pointing at it.
+  DATABASE_URL: postgresql+psycopg://fpl:changeme@localhost:5432/fpl_decision_engine
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run mypy app apps packages
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest tests/unit -v
+
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fpl
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: fpl_decision_engine
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fpl -d fpl_decision_engine"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://fpl:changeme@localhost:5432/fpl_decision_engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Upgrade to head
+        run: uv run alembic upgrade head
+      - name: Upgrade again (idempotency check)
+        run: uv run alembic upgrade head
+      - name: Downgrade to base
+        run: uv run alembic downgrade base
+      - name: Upgrade to head again (round-trip check)
+        run: uv run alembic upgrade head
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fpl
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: fpl_decision_engine
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fpl -d fpl_decision_engine"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://fpl:changeme@localhost:5432/fpl_decision_engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run alembic upgrade head
+      - run: uv run pytest tests/integration -v
+
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pip-audit
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (no push)
+        run: docker build -t fpl-api:ci .
+
+  ci-success:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - lint
+      - typecheck
+      - unit-tests
+      - migrations
+      - integration-tests
+      - security-scan
+      - docker-build
+    if: always()
+    steps:
+      - name: Check all required jobs succeeded
+        run: |
+          echo "${{ toJSON(needs) }}"
+          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ] || [ "${{ contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "One or more required jobs failed."
+            exit 1
+          fi
+          echo "All required jobs succeeded."

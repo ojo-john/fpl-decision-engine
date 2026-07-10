@@ -1,0 +1,30 @@
+# Environment
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+
+# Frontend (future)
+node_modules/
+dist/
+build/
+
+# Logs
+*.log
+
+# Local Postgres data
+pgdata/
+postgres-data/
+
+# SQLite (should not be used, but ignore stray files)
+*.sqlite3
