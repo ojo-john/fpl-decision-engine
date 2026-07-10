@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+import packages.database.models  # noqa: F401  (ensures every model is registered on Base.metadata)
 from packages.database.base import Base
-from packages.database.models import job  # noqa: F401  (ensures model is registered on Base.metadata)
 from packages.shared.config import get_settings
 
 # this is the Alembic Config object, which provides access to values within

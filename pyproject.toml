@@ -10,6 +10,7 @@ dependencies = [
     "alembic",
     "psycopg[binary]",
     "pydantic-settings",
+    "httpx",
 ]
 
 [dependency-groups]
@@ -19,7 +20,6 @@ dev = [
     "ruff",
     "mypy",
     "pip-audit",
-    "httpx",
 ]
 
 [tool.pytest.ini_options]
@@ -37,6 +37,8 @@ select = ["E", "F", "I", "UP"]
 # `enum.StrEnum` — this is an explicit, intentional design choice (not a
 # style oversight), so UP042 is suppressed here only.
 "packages/domain/jobs.py" = ["UP042"]
+"packages/domain/rules.py" = ["UP042"]
+"packages/domain/ingestion.py" = ["UP042"]
 
 [tool.mypy]
 python_version = "3.12"

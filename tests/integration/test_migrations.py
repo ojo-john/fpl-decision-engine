@@ -35,6 +35,192 @@ EXPECTED_COLUMNS = {
     "updated_at",
 }
 
+EXPECTED_TABLE_COLUMNS = {
+    "jobs": EXPECTED_COLUMNS,
+    "seasons": {"id", "label", "is_current", "created_at", "updated_at"},
+    "ingestion_runs": {
+        "id",
+        "job_id",
+        "run_type",
+        "started_at",
+        "completed_at",
+        "status",
+        "overall_health",
+        "data_quality_score",
+        "optimization_permitted",
+        "report_markdown",
+        "summary_json",
+        "created_at",
+        "updated_at",
+    },
+    "raw_api_snapshots": {
+        "id",
+        "ingestion_run_id",
+        "endpoint",
+        "request_url",
+        "request_params_json",
+        "retrieved_at",
+        "http_status",
+        "attempt_count",
+        "latency_ms",
+        "health_status",
+        "checksum_sha256",
+        "schema_signature",
+        "schema_drift_detected",
+        "raw_body",
+        "error_message",
+        "created_at",
+    },
+    "rules_config": {
+        "id",
+        "season_id",
+        "version_number",
+        "source_ingestion_run_id",
+        "checksum_sha256",
+        "raw_rules_json",
+        "raw_scoring_json",
+        "raw_chips_json",
+        "raw_element_types_json",
+        "rules_status",
+        "is_current",
+        "effective_from",
+        "superseded_at",
+        "last_confirmed_at",
+        "change_summary_markdown",
+        "created_at",
+        "updated_at",
+    },
+    "rules_config_fields": {
+        "id",
+        "rules_config_id",
+        "field_path",
+        "value_json",
+        "confidence",
+        "source",
+        "notes",
+        "created_at",
+    },
+    "data_quality_issues": {
+        "id",
+        "ingestion_run_id",
+        "entity_type",
+        "entity_fpl_id",
+        "severity",
+        "check_name",
+        "message",
+        "created_at",
+    },
+    "teams": {
+        "id",
+        "fpl_team_id",
+        "season_id",
+        "code",
+        "name",
+        "short_name",
+        "strength",
+        "strength_overall_home",
+        "strength_overall_away",
+        "strength_attack_home",
+        "strength_attack_away",
+        "strength_defence_home",
+        "strength_defence_away",
+        "played",
+        "win",
+        "draw",
+        "loss",
+        "points",
+        "position",
+        "unavailable",
+        "last_synced_at",
+        "created_at",
+        "updated_at",
+    },
+    "positions": {
+        "id",
+        "fpl_element_type_id",
+        "season_id",
+        "singular_name",
+        "short_name",
+        "squad_select",
+        "squad_min_play",
+        "squad_max_play",
+        "created_at",
+        "updated_at",
+    },
+    "players": {
+        "id",
+        "fpl_element_id",
+        "fpl_code",
+        "season_id",
+        "team_id",
+        "position_id",
+        "first_name",
+        "second_name",
+        "web_name",
+        "now_cost",
+        "status",
+        "total_points",
+        "minutes",
+        "goals_scored",
+        "assists",
+        "clean_sheets",
+        "goals_conceded",
+        "own_goals",
+        "penalties_saved",
+        "penalties_missed",
+        "yellow_cards",
+        "red_cards",
+        "saves",
+        "bonus",
+        "bps",
+        "selected_by_percent",
+        "chance_of_playing_next_round",
+        "news",
+        "is_quarantined",
+        "quarantine_reason",
+        "last_synced_at",
+        "created_at",
+        "updated_at",
+    },
+    "gameweeks": {
+        "id",
+        "fpl_event_id",
+        "season_id",
+        "name",
+        "deadline_time",
+        "finished",
+        "data_checked",
+        "is_previous",
+        "is_current",
+        "is_next",
+        "average_entry_score",
+        "highest_score",
+        "last_synced_at",
+        "created_at",
+        "updated_at",
+    },
+    "fixtures": {
+        "id",
+        "fpl_fixture_id",
+        "season_id",
+        "gameweek_id",
+        "home_team_id",
+        "away_team_id",
+        "kickoff_time",
+        "finished",
+        "started",
+        "home_score",
+        "away_score",
+        "home_difficulty",
+        "away_difficulty",
+        "is_quarantined",
+        "quarantine_reason",
+        "last_synced_at",
+        "created_at",
+        "updated_at",
+    },
+}
+
 
 def _run_alembic(*args: str) -> None:
     subprocess.run(
@@ -62,5 +248,31 @@ def test_upgrade_creates_jobs_table_with_expected_columns(require_database):
         _run_alembic("downgrade", "base")
         inspector = inspect(engine)
         assert "jobs" not in inspector.get_table_names()
+    finally:
+        _run_alembic("upgrade", "head")
+
+
+def test_upgrade_creates_milestone_1_tables_with_expected_columns(require_database):
+    """Covers every table added in Milestone 1 (rules versioning + data ingestion)."""
+    from packages.database.session import engine
+
+    _run_alembic("upgrade", "head")
+    try:
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        for table_name, expected_columns in EXPECTED_TABLE_COLUMNS.items():
+            assert table_name in table_names, f"expected table {table_name!r} to exist after upgrade head"
+            columns = {col["name"] for col in inspector.get_columns(table_name)}
+            assert expected_columns.issubset(columns), (
+                f"{table_name} missing columns: {expected_columns - columns}"
+            )
+
+        _run_alembic("downgrade", "base")
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        for table_name in EXPECTED_TABLE_COLUMNS:
+            assert table_name not in table_names, (
+                f"expected table {table_name!r} to be gone after downgrade base"
+            )
     finally:
         _run_alembic("upgrade", "head")
