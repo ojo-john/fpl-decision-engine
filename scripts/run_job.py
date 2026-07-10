@@ -13,10 +13,19 @@ selected from the resulting Job row.
 import argparse
 import json
 import sys
+from pathlib import Path
 
-from app.jobs.service import execute_job
-from packages.database.session import SessionLocal
-from packages.domain.jobs import JobType, TriggerType
+# When invoked directly (`python scripts/run_job.py` / `uv run python
+# scripts/run_job.py`), Python only puts this script's own directory
+# (`scripts/`) on sys.path, not the repo root — so `app`/`packages` wouldn't
+# resolve. pytest works around this via `pythonpath = ["."]` in
+# pyproject.toml, but that doesn't help a plain script invocation, which is
+# exactly how the GitHub Actions workflows and Docker health job run this.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.jobs.service import execute_job  # noqa: E402
+from packages.database.session import SessionLocal  # noqa: E402
+from packages.domain.jobs import JobType, TriggerType  # noqa: E402
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -112,6 +112,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # gitleaks-action scans a commit range (base^..head); the default
+          # shallow (depth 1) checkout doesn't have the base commit available,
+          # which makes that range lookup fail with "unknown revision".
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
