@@ -6,13 +6,21 @@ Create Date: 2026-07-09
 
 """
 
+import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
-from packages.domain.jobs import JobStatus, JobType, TriggerType
+# Some alembic commands (e.g. `alembic history`) load version scripts
+# without first running env.py (which normally inserts the repo root onto
+# sys.path) — so this file adds the same path fixup defensively, letting it
+# import `packages.*` regardless of which alembic command loads it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from packages.domain.jobs import JobStatus, JobType, TriggerType  # noqa: E402
 
 # revision identifiers, used by Alembic.
 revision: str = "0001"
