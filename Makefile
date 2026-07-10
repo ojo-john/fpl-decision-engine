@@ -17,5 +17,8 @@ test-integration:
 run:
 	uv run uvicorn apps.api.main:app --reload --host 0.0.0.0 --port 8000
 
-ingest train recommend review-gameweek backtest full-pipeline:
-	@echo "make $@: not yet implemented — planned for a later milestone (out of scope for Milestone 0)"
+ingest:
+	uv run python scripts/run_job.py --job-type data_ingestion --requested-by local --trigger-type local
+
+train recommend review-gameweek backtest full-pipeline:
+	@echo "make $@: not yet implemented — planned for a later milestone (out of scope for Milestone 1)"

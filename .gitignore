@@ -26,5 +26,12 @@ build/
 pgdata/
 postgres-data/
 
+# Generated local ingestion reports (durable copy lives in the DB / CI artifacts)
+reports/*
+!reports/.gitkeep
+!reports/ingestion/
+reports/ingestion/*
+!reports/ingestion/.gitkeep
+
 # SQLite (should not be used, but ignore stray files)
 *.sqlite3

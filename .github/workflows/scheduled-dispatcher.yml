@@ -1,12 +1,14 @@
 name: Scheduled Dispatcher
 
-# Milestone-0 placeholder: this hourly cadence is NOT the real scheduling
-# logic. It exists only to prove out the ephemeral-Postgres + idempotent-job
-# CI pattern end-to-end. Real deadline-aware scheduling (informed by FPL
-# gameweek deadlines) replaces this cron in a later milestone.
+# Milestone-1 cadence: every 4 hours. This is still NOT the real scheduling
+# logic — it exists to prove out the ephemeral-Postgres + idempotent-job CI
+# pattern end-to-end, now dispatching the real `data_ingestion` job instead of
+# `system_health`. Real deadline-aware scheduling (informed by FPL gameweek
+# deadlines, e.g. tightening cadence near a deadline) replaces this cron in a
+# later milestone.
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 */4 * * *"
   workflow_dispatch: {}
 
 jobs:
@@ -40,16 +42,16 @@ jobs:
       - name: Run migrations
         run: uv run alembic upgrade head
 
-      - name: Compute time-bucketed idempotency key
+      - name: Compute 4-hour-bucketed idempotency key
         id: key
         run: |
-          bucket=$(date -u +%Y-%m-%dT%H)
-          echo "value=scheduled-test-${bucket}" >> "$GITHUB_OUTPUT"
+          bucket="$(date -u +%Y-%m-%dT)-$(( $(date -u +%-H) / 4 ))"
+          echo "value=scheduled-ingest-${bucket}" >> "$GITHUB_OUTPUT"
 
       - name: Run job (first call)
         run: |
           uv run python scripts/run_job.py \
-            --job-type system_health \
+            --job-type data_ingestion \
             --requested-by scheduled-dispatcher \
             --trigger-type github_schedule \
             --idempotency-key "${{ steps.key.outputs.value }}" \
@@ -60,7 +62,7 @@ jobs:
       - name: Run job (second call, same idempotency key)
         run: |
           uv run python scripts/run_job.py \
-            --job-type system_health \
+            --job-type data_ingestion \
             --requested-by scheduled-dispatcher \
             --trigger-type github_schedule \
             --idempotency-key "${{ steps.key.outputs.value }}" \
