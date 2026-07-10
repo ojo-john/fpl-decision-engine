@@ -47,14 +47,20 @@ def _run_alembic(*args: str) -> None:
 def test_upgrade_creates_jobs_table_with_expected_columns(require_database):
     from packages.database.session import engine
 
+    # This test intentionally downgrades to base to prove `downgrade` actually
+    # drops the table, then re-upgrades in a `finally` so the shared test
+    # database is always left at `head` for other integration tests running
+    # in the same session — without this, test order would silently determine
+    # whether `jobs` exists when other test modules run.
     _run_alembic("upgrade", "head")
     try:
         inspector = inspect(engine)
         assert "jobs" in inspector.get_table_names()
         columns = {col["name"] for col in inspector.get_columns("jobs")}
         assert EXPECTED_COLUMNS.issubset(columns)
-    finally:
-        _run_alembic("downgrade", "base")
 
-    inspector = inspect(engine)
-    assert "jobs" not in inspector.get_table_names()
+        _run_alembic("downgrade", "base")
+        inspector = inspect(engine)
+        assert "jobs" not in inspector.get_table_names()
+    finally:
+        _run_alembic("upgrade", "head")
