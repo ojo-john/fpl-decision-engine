@@ -3,12 +3,20 @@
 import pytest
 
 from app.jobs.handlers.data_ingestion import DataIngestionJobRunner
+from app.jobs.handlers.lineup_optimization import LineupOptimizationJobRunner
 from app.jobs.handlers.rules_sync import RulesSyncJobRunner
+from app.jobs.handlers.squad_optimization import SquadOptimizationJobRunner
 from app.jobs.handlers.system_health import SystemHealthJobRunner
 from app.jobs.registry import JobHandlerNotImplementedError, get_handler
 from packages.domain.jobs import JobType
 
-_IMPLEMENTED_JOB_TYPES = {JobType.SYSTEM_HEALTH, JobType.RULES_SYNC, JobType.DATA_INGESTION}
+_IMPLEMENTED_JOB_TYPES = {
+    JobType.SYSTEM_HEALTH,
+    JobType.RULES_SYNC,
+    JobType.DATA_INGESTION,
+    JobType.SQUAD_OPTIMIZATION,
+    JobType.LINEUP_OPTIMIZATION,
+}
 
 
 def test_system_health_resolves_to_its_runner():
@@ -21,6 +29,14 @@ def test_rules_sync_resolves_to_its_runner():
 
 def test_data_ingestion_resolves_to_its_runner():
     assert get_handler(JobType.DATA_INGESTION) is DataIngestionJobRunner
+
+
+def test_squad_optimization_resolves_to_its_runner():
+    assert get_handler(JobType.SQUAD_OPTIMIZATION) is SquadOptimizationJobRunner
+
+
+def test_lineup_optimization_resolves_to_its_runner():
+    assert get_handler(JobType.LINEUP_OPTIMIZATION) is LineupOptimizationJobRunner
 
 
 @pytest.mark.parametrize(
