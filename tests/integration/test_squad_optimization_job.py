@@ -52,11 +52,15 @@ def test_squad_optimization_job_produces_legal_squad(db_session, patched_fpl_cli
     run_row = db_session.get(OptimizationRun, optimization_run_id)
     assert run_row is not None
     assert run_row.season_id == season_id
-    assert run_row.recommendation_type == RecommendationType.INITIAL_SQUAD
+    assert run_row.recommendation_type == RecommendationType.JOINT_SQUAD_AND_XI
     assert run_row.run_status == OptimizationRunStatus.SUCCEEDED
     assert run_row.solver_status == SolverStatus.OPTIMAL
     assert run_row.squad_total_cost is not None
     assert run_row.squad_projected_points is not None
+    assert run_row.xi_projected_points is not None
+    assert run_row.captain_player_id is not None
+    assert run_row.vice_captain_player_id is not None
+    assert run_row.captain_player_id != run_row.vice_captain_player_id
 
     # Never trust the returned summary alone — re-derive everything from the
     # persisted optimization_run_players rows (joined to players/positions).
@@ -106,3 +110,22 @@ def test_squad_optimization_job_produces_legal_squad(db_session, patched_fpl_cli
         player = player_rows[rp.player_id]
         assert player.is_quarantined is False
         assert player.status not in {"i", "s", "u"}
+
+    # Fix 2: the joint solver also resolves a full starting XI, ordered bench
+    # (real FPL slot numbers 12-15), and captain/vice in the same run.
+    starters = [rp for rp in run_players if rp.is_starting]
+    bench = [rp for rp in run_players if not rp.is_starting]
+    assert len(starters) == 11
+    assert len(bench) == 4
+    assert all(rp.bench_order is None for rp in starters)
+    assert sorted(rp.bench_order for rp in bench) == [12, 13, 14, 15]
+
+    captain_rows = [rp for rp in run_players if rp.is_captain]
+    vice_rows = [rp for rp in run_players if rp.is_vice_captain]
+    assert len(captain_rows) == 1
+    assert len(vice_rows) == 1
+    assert captain_rows[0].player_id != vice_rows[0].player_id
+    assert captain_rows[0].is_starting
+    assert vice_rows[0].is_starting
+    assert captain_rows[0].player_id == run_row.captain_player_id
+    assert vice_rows[0].player_id == run_row.vice_captain_player_id

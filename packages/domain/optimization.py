@@ -12,6 +12,7 @@ class RecommendationType(str, Enum):
 
     INITIAL_SQUAD = "initial_squad"
     STARTING_XI = "starting_xi"
+    JOINT_SQUAD_AND_XI = "joint_squad_and_xi"
 
 
 class OptimizationRunStatus(str, Enum):

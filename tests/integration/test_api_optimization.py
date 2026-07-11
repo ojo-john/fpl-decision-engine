@@ -29,13 +29,35 @@ def test_optimize_initial_squad_happy_path(db_session, patched_fpl_client_optimi
 
     assert response.status_code == 200
     body = response.json()
-    assert body["recommendation_type"] == "initial_squad"
+    assert body["recommendation_type"] == "joint_squad_and_xi"
     assert body["run_status"] == "succeeded"
     assert body["solver_status"] == "optimal"
     assert len(body["players"]) == 15
     assert body["squad_total_cost"] is not None
     assert body["squad_total_cost"] <= 1000
     assert body["squad_projected_points"] is not None
+
+    # Fix 2: /optimize/initial-squad now returns a full XI in one response,
+    # not just a squad list — starters/bench/captain/vice must all be present
+    # and structurally correct.
+    assert body["xi_projected_points"] is not None
+    assert body["captain_player_id"] is not None
+    assert body["vice_captain_player_id"] is not None
+    assert body["captain_player_id"] != body["vice_captain_player_id"]
+
+    starters = [p for p in body["players"] if p["is_starting"]]
+    bench = [p for p in body["players"] if not p["is_starting"]]
+    assert len(starters) == 11
+    assert len(bench) == 4
+    assert sorted(p["bench_order"] for p in bench) == [12, 13, 14, 15]
+    assert all(p["bench_order"] is None for p in starters)
+
+    captains = [p for p in starters if p["is_captain"]]
+    vice_captains = [p for p in starters if p["is_vice_captain"]]
+    assert len(captains) == 1
+    assert len(vice_captains) == 1
+    assert captains[0]["player_id"] == body["captain_player_id"]
+    assert vice_captains[0]["player_id"] == body["vice_captain_player_id"]
 
 
 def test_optimize_initial_squad_refused_returns_409(db_session, patched_fpl_client_optimization):
@@ -72,7 +94,7 @@ def test_optimize_lineup_chained_from_squad_run(db_session, patched_fpl_client_o
     bench = [p for p in body["players"] if not p["is_starting"]]
     assert len(starters) == 11
     assert len(bench) == 4
-    assert sorted(p["bench_order"] for p in bench) == [1, 2, 3, 4]
+    assert sorted(p["bench_order"] for p in bench) == [12, 13, 14, 15]
     captains = [p for p in starters if p["is_captain"]]
     vice_captains = [p for p in starters if p["is_vice_captain"]]
     assert len(captains) == 1

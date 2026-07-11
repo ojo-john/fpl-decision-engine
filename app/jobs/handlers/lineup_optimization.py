@@ -1,8 +1,9 @@
 """LINEUP_OPTIMIZATION job: pick the starting XI (+bench, captain, vice) from a fixed 15-player squad.
 
 Input squad source is exactly one of:
-- ``{"source_optimization_run_id": "<uuid>"}`` — a prior SUCCEEDED INITIAL_SQUAD
-  run's ``squad_player_ids``.
+- ``{"source_optimization_run_id": "<uuid>"}`` — a prior SUCCEEDED
+  INITIAL_SQUAD or JOINT_SQUAD_AND_XI run's ``squad_player_ids`` (both
+  produce a valid 15-player squad to chain a fresh lineup solve from).
 - ``{"player_ids": [<uuid>, ... x15]}`` — an explicit squad, for future
   manager-squad-sync use (Milestone 4).
 
@@ -29,9 +30,9 @@ from app.optimization.constraints import get_captain_multiplier, load_optimizati
 from app.optimization.gameweek_resolution import resolve_target_gameweek
 from app.optimization.gate import check_optimization_gate
 from app.optimization.lineup_solver import solve_lineup
+from app.optimization.persistence import build_run_player_rows_and_xi_points
 from app.optimization.projection import PROJECTION_FORMULA_VERSION, project_player
 from packages.database.models.optimization_run import OptimizationRun
-from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
 from packages.database.models.position import Position
 from packages.database.models.season import Season
@@ -40,6 +41,14 @@ from packages.domain.jobs import JobStatus, JobType
 from packages.domain.optimization import OptimizationRunStatus, RecommendationType, SolverStatus
 
 SQUAD_SIZE = 15
+
+# A LINEUP_OPTIMIZATION run may chain off any prior run type that produced a
+# valid, fixed 15-player squad — both INITIAL_SQUAD (historical, pre-Fix-2
+# rows) and JOINT_SQUAD_AND_XI (current squad-producing run type) qualify.
+_VALID_SQUAD_SOURCE_RECOMMENDATION_TYPES = {
+    RecommendationType.INITIAL_SQUAD,
+    RecommendationType.JOINT_SQUAD_AND_XI,
+}
 
 
 def _resolve_current_season_id(session: Session) -> uuid.UUID | None:
@@ -77,9 +86,10 @@ def _parse_lineup_input(
         source_run = session.get(OptimizationRun, source_run_id)
         if source_run is None:
             raise InvalidLineupInputError(f"optimization_runs row {source_run_id} not found.")
-        if source_run.recommendation_type != RecommendationType.INITIAL_SQUAD:
+        if source_run.recommendation_type not in _VALID_SQUAD_SOURCE_RECOMMENDATION_TYPES:
             raise InvalidLineupInputError(
-                f"optimization_runs row {source_run_id} is not an INITIAL_SQUAD run."
+                f"optimization_runs row {source_run_id} is not a squad-producing run "
+                f"(must be one of {sorted(t.value for t in _VALID_SQUAD_SOURCE_RECOMMENDATION_TYPES)})."
             )
         if source_run.run_status != OptimizationRunStatus.SUCCEEDED:
             raise InvalidLineupInputError(f"optimization_runs row {source_run_id} did not SUCCEED.")
@@ -232,36 +242,15 @@ class LineupOptimizationJobRunner(JobRunner):
 
                 captain_multiplier = get_captain_multiplier(session, constraints.rules_config_id)
                 candidates_by_id = {c.player_id: c for c in candidates}
-                starter_id_set = set(solution.starting_player_ids)
-
-                non_captain_starters_points = sum(
-                    candidates_by_id[pid].projected_points
-                    for pid in solution.starting_player_ids
-                    if pid != solution.captain_player_id
+                run_player_rows, xi_projected_points = build_run_player_rows_and_xi_points(
+                    optimization_run_id=run_row.id,
+                    candidates_by_id=candidates_by_id,
+                    starting_player_ids=solution.starting_player_ids,
+                    bench_player_ids_ordered=solution.bench_player_ids_ordered,
+                    captain_player_id=solution.captain_player_id,
+                    vice_captain_player_id=solution.vice_captain_player_id,
+                    captain_multiplier=captain_multiplier,
                 )
-                captain_points = candidates_by_id[solution.captain_player_id].projected_points
-                xi_projected_points = non_captain_starters_points + captain_multiplier * captain_points
-
-                bench_order_by_id = {
-                    pid: order for order, pid in enumerate(solution.bench_player_ids_ordered, start=1)
-                }
-
-                run_player_rows = []
-                for pid in [*solution.starting_player_ids, *solution.bench_player_ids_ordered]:
-                    candidate = candidates_by_id[pid]
-                    run_player_rows.append(
-                        OptimizationRunPlayer(
-                            optimization_run_id=run_row.id,
-                            player_id=pid,
-                            is_starting=pid in starter_id_set,
-                            bench_order=bench_order_by_id.get(pid),
-                            is_captain=(pid == solution.captain_player_id),
-                            is_vice_captain=(pid == solution.vice_captain_player_id),
-                            projected_points=Decimal(str(candidate.projected_points)),
-                            projection_source=candidate.projection_source,
-                            now_cost_snapshot=candidate.now_cost,
-                        )
-                    )
                 session.add_all(run_player_rows)
 
                 run_row.run_status = OptimizationRunStatus.SUCCEEDED

@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -284,6 +284,21 @@ def _run_alembic(*args: str) -> None:
     )
 
 
+def _clear_optimization_runs(engine) -> None:
+    """Delete all ``optimization_runs`` rows (cascades to ``optimization_run_players``).
+
+    Migration 0005's downgrade narrows ``recommendation_type`` back to
+    ``VARCHAR(13)`` — if any other integration test already persisted a
+    ``JOINT_SQUAD_AND_XI`` row (19 chars) on this shared, non-ephemeral test
+    database, that narrowing fails outright (Postgres raises
+    ``StringDataRightTruncation`` rather than silently truncating). These
+    tests don't care about that data — the tables get dropped entirely a step
+    or two later in the same downgrade chain — so it's safe to clear it first.
+    """
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM optimization_runs"))
+
+
 def test_upgrade_creates_milestone_2_tables_with_expected_columns(require_database):
     """Covers ``optimization_runs``/``optimization_run_players``, added in Milestone 2."""
     from packages.database.session import engine
@@ -299,6 +314,7 @@ def test_upgrade_creates_milestone_2_tables_with_expected_columns(require_databa
                 f"{table_name} missing columns: {expected_columns - columns}"
             )
 
+        _clear_optimization_runs(engine)
         _run_alembic("downgrade", "0003")
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
@@ -325,6 +341,7 @@ def test_upgrade_creates_jobs_table_with_expected_columns(require_database):
         columns = {col["name"] for col in inspector.get_columns("jobs")}
         assert EXPECTED_COLUMNS.issubset(columns)
 
+        _clear_optimization_runs(engine)
         _run_alembic("downgrade", "base")
         inspector = inspect(engine)
         assert "jobs" not in inspector.get_table_names()
@@ -347,6 +364,7 @@ def test_upgrade_creates_milestone_1_tables_with_expected_columns(require_databa
                 f"{table_name} missing columns: {expected_columns - columns}"
             )
 
+        _clear_optimization_runs(engine)
         _run_alembic("downgrade", "base")
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
