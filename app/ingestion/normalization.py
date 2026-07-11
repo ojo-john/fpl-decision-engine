@@ -26,6 +26,7 @@ per-row.
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -50,6 +51,17 @@ def _parse_datetime(value: str | None) -> datetime | None:
     if value is None:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _parse_decimal(value) -> Decimal | None:
+    """Defensively parse a numeric field FPL may send as a string, ``null``, or ``""``.
+
+    Applied to ``points_per_game``/``form``/``ep_this``/``ep_next``, which
+    bootstrap-static sends as decimal-looking strings (e.g. ``"4.4"``).
+    """
+    if value in (None, ""):
+        return None
+    return Decimal(str(value))
 
 
 def _resolve_fk(id_map: dict[int, uuid.UUID], fpl_id: int | None) -> uuid.UUID | None:
@@ -277,6 +289,12 @@ def upsert_players(
                 "bps": row.get("bps", 0),
                 "selected_by_percent": selected_by_percent,
                 "chance_of_playing_next_round": row.get("chance_of_playing_next_round"),
+                "chance_of_playing_this_round": row.get("chance_of_playing_this_round"),
+                "points_per_game": _parse_decimal(row.get("points_per_game")),
+                "form": _parse_decimal(row.get("form")),
+                "ep_this": _parse_decimal(row.get("ep_this")),
+                "ep_next": _parse_decimal(row.get("ep_next")),
+                "starts": row.get("starts", 0),
                 "news": row.get("news"),
                 "is_quarantined": is_quarantined,
                 "quarantine_reason": quarantined_ids.get(fpl_id),

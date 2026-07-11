@@ -11,6 +11,8 @@ from packages.database.models.fixture import Fixture
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.ingestion_run import IngestionRun
 from packages.database.models.job import Job
+from packages.database.models.optimization_run import OptimizationRun
+from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
 from packages.database.models.position import Position
 from packages.database.models.raw_api_snapshot import RawApiSnapshot
@@ -25,6 +27,8 @@ __all__ = [
     "Gameweek",
     "IngestionRun",
     "Job",
+    "OptimizationRun",
+    "OptimizationRunPlayer",
     "Player",
     "Position",
     "RawApiSnapshot",

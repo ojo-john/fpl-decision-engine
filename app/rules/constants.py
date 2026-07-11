@@ -18,7 +18,7 @@ this also flows into the checksum computed in
 visible as a rules-config version change.
 """
 
-HAND_MAINTAINED_RULES_VERSION = 1
+HAND_MAINTAINED_RULES_VERSION = 2
 
 HAND_MAINTAINED_RULES: dict[str, dict] = {
     "hand_maintained.transfer_hit_cost": {
@@ -43,5 +43,12 @@ HAND_MAINTAINED_RULES: dict[str, dict] = {
     "hand_maintained.chip_effect.3xc": {
         "value": "Captain's score is multiplied by 3 instead of the normal 2.",
         "notes": "Chip scheduling windows ARE in bootstrap chips[]; this mechanical description is not.",
+    },
+    "hand_maintained.captain_multiplier": {
+        "value": 2,
+        "notes": "Base captain score multiplier (2x total points for the captained starter). "
+        "Not present anywhere in bootstrap-static game_config. Overridden to 3x by the "
+        "'3xc' (Triple Captain) chip — see hand_maintained.chip_effect.3xc. PROVISIONAL "
+        "until cross-validated against observed gameweek scoring in a later milestone.",
     },
 }

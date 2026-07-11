@@ -7,6 +7,7 @@ tests/fixtures/fpl_api sample files.
 """
 
 import uuid
+from decimal import Decimal
 
 from sqlalchemy import select
 
@@ -65,6 +66,15 @@ def test_data_ingestion_row_counts_and_quarantine(db_session, patched_fpl_client
     clean_codes = {900101, 900102, 900103, 900104}
     for code in clean_codes:
         assert players_by_code[code].is_quarantined is False
+
+    # Milestone 2 projection-input fields round-trip correctly from the fixture.
+    player_900101 = players_by_code[900101]
+    assert player_900101.points_per_game == Decimal("4.4")
+    assert player_900101.ep_next == Decimal("8.8")
+    assert player_900101.starts == 37
+    assert player_900101.chance_of_playing_this_round is None  # fixture has null for this player
+    player_900102 = players_by_code[900102]
+    assert player_900102.chance_of_playing_this_round == 100
 
     ingestion_run_id = output["ingestion_run_id"]
     issues = (

@@ -175,6 +175,12 @@ EXPECTED_TABLE_COLUMNS = {
         "bps",
         "selected_by_percent",
         "chance_of_playing_next_round",
+        "chance_of_playing_this_round",
+        "points_per_game",
+        "form",
+        "ep_this",
+        "ep_next",
+        "starts",
         "news",
         "is_quarantined",
         "quarantine_reason",
@@ -221,6 +227,54 @@ EXPECTED_TABLE_COLUMNS = {
     },
 }
 
+EXPECTED_MILESTONE_2_TABLE_COLUMNS = {
+    "optimization_runs": {
+        "id",
+        "job_id",
+        "season_id",
+        "rules_config_id",
+        "recommendation_type",
+        "source_optimization_run_id",
+        "run_status",
+        "solver_status",
+        "target_gameweek_id",
+        "target_gameweek_status",
+        "squad_player_ids",
+        "starting_xi_player_ids",
+        "bench_player_ids_ordered",
+        "captain_player_id",
+        "vice_captain_player_id",
+        "squad_total_cost",
+        "squad_projected_points",
+        "xi_projected_points",
+        "optimization_permitted_snapshot",
+        "data_quality_score_snapshot",
+        "rules_status_snapshot",
+        "projection_formula_version",
+        "error_code",
+        "error_message",
+        "parameters_json",
+        "started_at",
+        "completed_at",
+        "created_at",
+        "updated_at",
+    },
+    "optimization_run_players": {
+        "id",
+        "optimization_run_id",
+        "player_id",
+        "is_starting",
+        "bench_order",
+        "is_captain",
+        "is_vice_captain",
+        "projected_points",
+        "projection_source",
+        "now_cost_snapshot",
+        "created_at",
+        "updated_at",
+    },
+}
+
 
 def _run_alembic(*args: str) -> None:
     subprocess.run(
@@ -228,6 +282,32 @@ def _run_alembic(*args: str) -> None:
         cwd=REPO_ROOT,
         check=True,
     )
+
+
+def test_upgrade_creates_milestone_2_tables_with_expected_columns(require_database):
+    """Covers ``optimization_runs``/``optimization_run_players``, added in Milestone 2."""
+    from packages.database.session import engine
+
+    _run_alembic("upgrade", "head")
+    try:
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        for table_name, expected_columns in EXPECTED_MILESTONE_2_TABLE_COLUMNS.items():
+            assert table_name in table_names, f"expected table {table_name!r} to exist after upgrade head"
+            columns = {col["name"] for col in inspector.get_columns(table_name)}
+            assert expected_columns.issubset(columns), (
+                f"{table_name} missing columns: {expected_columns - columns}"
+            )
+
+        _run_alembic("downgrade", "0003")
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        for table_name in EXPECTED_MILESTONE_2_TABLE_COLUMNS:
+            assert table_name not in table_names, (
+                f"expected table {table_name!r} to be gone after downgrade to 0003"
+            )
+    finally:
+        _run_alembic("upgrade", "head")
 
 
 def test_upgrade_creates_jobs_table_with_expected_columns(require_database):
