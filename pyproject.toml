@@ -11,6 +11,7 @@ dependencies = [
     "psycopg[binary]",
     "pydantic-settings",
     "httpx",
+    "pulp",
 ]
 
 [dependency-groups]
@@ -39,6 +40,7 @@ select = ["E", "F", "I", "UP"]
 "packages/domain/jobs.py" = ["UP042"]
 "packages/domain/rules.py" = ["UP042"]
 "packages/domain/ingestion.py" = ["UP042"]
+"packages/domain/optimization.py" = ["UP042"]
 
 [tool.mypy]
 python_version = "3.12"

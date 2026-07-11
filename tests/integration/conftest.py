@@ -88,6 +88,97 @@ def unique_bootstrap_json(base: dict | None = None) -> dict:
     return bootstrap
 
 
+_OPTIMIZATION_POSITION_ELEMENT_TYPE = {"GKP": 1, "DEF": 2, "MID": 3, "FWD": 4}
+
+
+def build_optimization_bootstrap_json() -> dict:
+    """Bootstrap-static payload with a clean, programmatically generated ~60-player pool.
+
+    Starts from ``unique_bootstrap_json()`` (preserves the real
+    ``teams``/``element_types``/``game_config``/``chips``/``events`` from the
+    fixture sample and gives the season a fresh, collision-free label) but
+    replaces ``elements`` entirely with a synthetic pool of 60 players
+    spanning all 20 real teams (3 players/team, so the team_limit=3
+    constraint is never even close to binding) and all 4 positions, with
+    generous depth per position (10 GKP/18 DEF/20 MID/12 FWD) and varied
+    ``now_cost``/``ep_next``/``status`` values.
+
+    Costs are deliberately kept low enough that even the *most expensive*
+    legal 15-player combination (2 GKP + 5 DEF + 5 MID + 3 FWD, each at this
+    pool's max cost for its position) stays under the real GBP100.0m budget
+    (``squad_total_spend=1000``) — so both optimizer jobs always have a
+    feasible, comfortably-solvable candidate pool here, regardless of which
+    players end up picked.
+    """
+    bootstrap = unique_bootstrap_json()
+
+    position_plan = ["GKP"] * 10 + ["DEF"] * 18 + ["MID"] * 20 + ["FWD"] * 12
+    assert len(position_plan) == 60
+
+    base_cost_by_position = {"GKP": 42, "DEF": 42, "MID": 48, "FWD": 50}
+
+    elements = []
+    for index, position in enumerate(position_plan):
+        team_id = (index % 20) + 1
+        element_id = 30000 + index
+        code = 930000 + index
+
+        now_cost = base_cost_by_position[position] + (index % 7) * 3
+
+        # Most players are fully available; a handful exercise the
+        # availability-scaling ('d', partial chance) and hard-exclusion
+        # ('i') projection paths, without starving any position of enough
+        # remaining eligible depth to still be comfortably solvable.
+        if index % 17 == 0:
+            status, chance = "i", 0
+        elif index % 13 == 0:
+            status, chance = "d", 50
+        else:
+            status, chance = "a", None
+
+        ep_next = round(3.0 + (index % 11) * 0.55, 1)
+
+        elements.append(
+            {
+                "id": element_id,
+                "code": code,
+                "first_name": f"First{index}",
+                "second_name": f"Last{index}",
+                "web_name": f"Player{index}",
+                "team": team_id,
+                "element_type": _OPTIMIZATION_POSITION_ELEMENT_TYPE[position],
+                "now_cost": now_cost,
+                "status": status,
+                "total_points": 20 + index,
+                "minutes": 900 + index * 10,
+                "goals_scored": index % 5,
+                "assists": index % 4,
+                "clean_sheets": index % 6,
+                "goals_conceded": index % 8,
+                "own_goals": 0,
+                "penalties_saved": 0,
+                "penalties_missed": 0,
+                "yellow_cards": index % 3,
+                "red_cards": 0,
+                "saves": (index % 10) if position == "GKP" else 0,
+                "bonus": index % 6,
+                "bps": 100 + index,
+                "selected_by_percent": f"{(index % 30) + 1}.0",
+                "chance_of_playing_next_round": chance,
+                "chance_of_playing_this_round": chance,
+                "points_per_game": f"{2.0 + (index % 9) * 0.5:.1f}",
+                "form": f"{1.0 + (index % 6) * 0.4:.1f}",
+                "ep_this": f"{max(ep_next - 0.3, 0.0):.1f}",
+                "ep_next": f"{ep_next:.1f}",
+                "starts": 10 + (index % 20),
+                "news": "",
+            }
+        )
+
+    bootstrap["elements"] = elements
+    return bootstrap
+
+
 def make_fetch_result(endpoint: str, body, retrieved_at: datetime | None = None) -> FetchResult:
     """Build a FetchResult as if it came from a real, healthy FPLClient fetch."""
     retrieved_at = retrieved_at or datetime.now(UTC)
@@ -118,6 +209,39 @@ def patched_fpl_client(monkeypatch):
     """
     state = {
         "bootstrap": unique_bootstrap_json(),
+        "fixtures": load_fixtures_json(),
+        "event_status": {"leagues": "updated"},
+    }
+
+    def fetch_bootstrap_static(self):
+        return make_fetch_result("bootstrap_static", state["bootstrap"])
+
+    def fetch_fixtures(self, event=None):
+        endpoint = "fixtures_by_event" if event is not None else "fixtures"
+        return make_fetch_result(endpoint, state["fixtures"])
+
+    def fetch_event_status(self):
+        return make_fetch_result("event_status", state["event_status"])
+
+    monkeypatch.setattr(FPLClient, "fetch_bootstrap_static", fetch_bootstrap_static)
+    monkeypatch.setattr(FPLClient, "fetch_fixtures", fetch_fixtures)
+    monkeypatch.setattr(FPLClient, "fetch_event_status", fetch_event_status)
+
+    return state
+
+
+@pytest.fixture
+def patched_fpl_client_optimization(monkeypatch):
+    """Like ``patched_fpl_client``, but seeded with the ~60-player optimization pool.
+
+    Used by optimizer job integration tests: a DATA_INGESTION run against
+    this fixture gives SQUAD_OPTIMIZATION/LINEUP_OPTIMIZATION a clean,
+    comfortably-solvable candidate pool (see
+    ``build_optimization_bootstrap_json``) instead of the 10-row, mostly
+    intentionally-quarantined default sample.
+    """
+    state = {
+        "bootstrap": build_optimization_bootstrap_json(),
         "fixtures": load_fixtures_json(),
         "event_status": {"leagues": "updated"},
     }
