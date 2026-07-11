@@ -23,6 +23,12 @@ class OptimizationRunPlayer(Base):
         PG_UUID(as_uuid=True), ForeignKey("players.id"), nullable=False
     )
     is_starting: Mapped[bool] = mapped_column(SABoolean, nullable=False, default=False)
+    # Literal FPL bench slot number: 12 (reserve GK, only ever subs in for the
+    # starting GK), 13/14/15 (outfield subs, in real autosub priority order —
+    # see app.optimization.bench_order.order_bench for how this priority order
+    # is derived). Null for starters. Prior to the bench-ordering fix this
+    # stored a generic 1-4 rank; no migration needed for the semantics change
+    # since the column has no CHECK constraint (plain nullable Integer).
     bench_order: Mapped[int | None] = mapped_column(Integer)
     is_captain: Mapped[bool] = mapped_column(SABoolean, nullable=False, default=False)
     is_vice_captain: Mapped[bool] = mapped_column(SABoolean, nullable=False, default=False)
