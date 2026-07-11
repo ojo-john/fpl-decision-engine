@@ -267,3 +267,24 @@ export PATH="$PYENV_ROOT/versions/3.12.13/bin:$HOME/.local/bin:$PATH"
 `uv` itself pins the Python version via `.python-version` (`3.12.13`), so
 `uv run`/`uv sync` are deterministic regardless of shell type, once `uv`
 itself is on `PATH`.
+
+**PuLP's bundled CBC solver on Apple Silicon:** the squad/lineup optimizer
+(`app/optimization/squad_solver.py`, `lineup_solver.py`) uses PuLP, which
+ships a bundled CBC solver binary per platform. As of the PuLP version this
+project pins, that bundled binary for macOS is **x86_64 only** — there is no
+native `arm64` build (Linux does have one, which is why this is not an issue
+in CI, which runs on `ubuntu-latest`). On an Apple Silicon Mac without
+Rosetta 2, running `SQUAD_OPTIMIZATION`/`LINEUP_OPTIMIZATION` fails with:
+
+```
+[Errno 86] Bad CPU type in executable: '.../pulp/solverdir/cbc/osx/i64/cbc'
+```
+
+Fix (one-time, no admin password required beyond the license prompt):
+
+```bash
+softwareupdate --install-rosetta --agree-to-license
+```
+
+This is unrelated to any bug in this codebase — it's a one-time local
+machine-setup step for Apple Silicon, exactly like installing Docker Desktop.
