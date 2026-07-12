@@ -3,6 +3,7 @@
 import pytest
 
 from app.jobs.handlers.data_ingestion import DataIngestionJobRunner
+from app.jobs.handlers.feature_generation import FeatureGenerationJobRunner
 from app.jobs.handlers.historical_data_ingestion import HistoricalDataIngestionJobRunner
 from app.jobs.handlers.lineup_optimization import LineupOptimizationJobRunner
 from app.jobs.handlers.rules_sync import RulesSyncJobRunner
@@ -16,6 +17,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.RULES_SYNC,
     JobType.DATA_INGESTION,
     JobType.HISTORICAL_DATA_INGESTION,
+    JobType.FEATURE_GENERATION,
     JobType.SQUAD_OPTIMIZATION,
     JobType.LINEUP_OPTIMIZATION,
 }
@@ -35,6 +37,10 @@ def test_data_ingestion_resolves_to_its_runner():
 
 def test_historical_data_ingestion_resolves_to_its_runner():
     assert get_handler(JobType.HISTORICAL_DATA_INGESTION) is HistoricalDataIngestionJobRunner
+
+
+def test_feature_generation_resolves_to_its_runner():
+    assert get_handler(JobType.FEATURE_GENERATION) is FeatureGenerationJobRunner
 
 
 def test_squad_optimization_resolves_to_its_runner():
