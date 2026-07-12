@@ -20,6 +20,7 @@ class IngestionRunType(str, Enum):
 
     RULES_SYNC = "rules_sync"
     DATA_INGESTION = "data_ingestion"
+    HISTORICAL_DATA_INGESTION = "historical_data_ingestion"
 
 
 class IngestionRunStatus(str, Enum):

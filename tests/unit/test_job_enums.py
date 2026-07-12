@@ -9,6 +9,7 @@ from packages.domain.jobs import JobStatus, JobType, TriggerType
 EXPECTED_JOB_TYPE_VALUES = {
     "RULES_SYNC": "rules_sync",
     "DATA_INGESTION": "data_ingestion",
+    "HISTORICAL_DATA_INGESTION": "historical_data_ingestion",
     "FEATURE_GENERATION": "feature_generation",
     "MODEL_TRAINING": "model_training",
     "PROJECTION_GENERATION": "projection_generation",
