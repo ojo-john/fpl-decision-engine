@@ -33,5 +33,10 @@ reports/*
 reports/ingestion/*
 !reports/ingestion/.gitkeep
 
+# Generated ML model artifacts (Milestone 3 Layer 3+, e.g. .joblib files) -
+# durable copies are re-trainable from ingested data, not meant to be committed
+models/*
+!models/.gitkeep
+
 # SQLite (should not be used, but ignore stray files)
 *.sqlite3

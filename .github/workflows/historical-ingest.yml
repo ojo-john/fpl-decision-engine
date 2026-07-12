@@ -1,0 +1,150 @@
+name: Historical Ingest
+
+# Manual historical data backfill runner (workflow_dispatch only). Runs the
+# HISTORICAL_DATA_INGESTION job for one season (e.g. "2023-24") or every
+# usable season ("all"). Spins up its own ephemeral Postgres service
+# container, same pattern as ingest.yml/health.yml — see those files'
+# docstrings for the rationale. Never leaks DATABASE_URL or any other secret.
+on:
+  workflow_dispatch:
+    inputs:
+      season_label:
+        description: "Season to backfill (e.g. '2023-24'), or 'all' for every usable season"
+        required: true
+        type: string
+        default: "all"
+      requested_by:
+        description: "Who is requesting this run (defaults to the triggering actor)"
+        required: false
+        default: ""
+
+jobs:
+  historical-ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fpl
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: fpl_decision_engine
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fpl -d fpl_decision_engine"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://fpl:changeme@localhost:5432/fpl_decision_engine
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      - name: Run migrations
+        run: uv run alembic upgrade head
+
+      - name: Resolve requested_by
+        id: requested_by
+        run: |
+          value="${{ github.event.inputs.requested_by }}"
+          if [ -z "$value" ]; then
+            value="${{ github.actor }}"
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure a current season exists (required for season_label=all)
+        if: ${{ github.event.inputs.season_label == 'all' }}
+        run: |
+          uv run python scripts/run_job.py \
+            --job-type data_ingestion \
+            --requested-by "${{ steps.requested_by.outputs.value }}" \
+            --trigger-type github_manual \
+            --git-commit-sha "${{ github.sha }}" \
+            > /dev/null
+
+      - name: Run historical_data_ingestion job
+        run: |
+          uv run python - <<'EOF' > job_summary.json
+          import json
+
+          from app.jobs.service import execute_job
+          from packages.database.session import SessionLocal
+          from packages.domain.jobs import JobType, TriggerType
+
+          session = SessionLocal()
+          try:
+              job = execute_job(
+                  session,
+                  job_type=JobType.HISTORICAL_DATA_INGESTION,
+                  parameters={"season_label": "${{ github.event.inputs.season_label }}"},
+                  requested_by="${{ steps.requested_by.outputs.value }}",
+                  trigger_type=TriggerType.GITHUB_MANUAL,
+                  git_commit_sha="${{ github.sha }}",
+              )
+          finally:
+              session.close()
+
+          payload = {
+              "job_id": str(job.id),
+              "job_type": job.job_type.value if hasattr(job.job_type, "value") else job.job_type,
+              "status": job.status.value if hasattr(job.status, "value") else job.status,
+              "started_at": job.started_at.isoformat() if job.started_at else None,
+              "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+              "error_code": job.error_code,
+              "error_message": job.error_message,
+              "output": job.output_json,
+          }
+          print(json.dumps(payload))
+          EOF
+          cat job_summary.json
+          status=$(python -c "import json; print(json.load(open('job_summary.json'))['status'])")
+          if [ "$status" != "succeeded" ]; then
+            exit 1
+          fi
+
+      - name: Append job summary
+        if: always()
+        run: |
+          python - <<'EOF'
+          import json
+          import os
+
+          with open("job_summary.json") as f:
+              job = json.load(f)
+
+          output = job.get("output") or {}
+          season_results = output.get("season_results") or {}
+
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+          with open(summary_path, "a") as summary:
+              summary.write("## historical_data_ingestion Job Result\n\n")
+              summary.write("| Field | Value |\n| --- | --- |\n")
+              summary.write(f"| job_id | {job.get('job_id')} |\n")
+              summary.write(f"| status | {job.get('status')} |\n")
+              summary.write(f"| started_at | {job.get('started_at')} |\n")
+              summary.write(f"| completed_at | {job.get('completed_at')} |\n")
+              summary.write(f"| error_code | {job.get('error_code')} |\n")
+              summary.write(f"| error_message | {job.get('error_message')} |\n")
+              summary.write("\n")
+              for season_label, result in season_results.items():
+                  summary.write(f"### Season {season_label}: {result.get('status')}\n\n")
+                  report_markdown = result.get("report_markdown")
+                  if report_markdown:
+                      summary.write(report_markdown)
+                      summary.write("\n")
+                  elif result.get("error_message"):
+                      summary.write(f"Error: {result.get('error_message')}\n\n")
+          EOF
+
+      - name: Upload job summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-job-summary
+          path: job_summary.json
