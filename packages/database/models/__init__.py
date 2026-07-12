@@ -14,6 +14,7 @@ from packages.database.models.job import Job
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
+from packages.database.models.player_features import PlayerFeatures
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.position import Position
 from packages.database.models.raw_api_snapshot import RawApiSnapshot
@@ -31,6 +32,7 @@ __all__ = [
     "OptimizationRun",
     "OptimizationRunPlayer",
     "Player",
+    "PlayerFeatures",
     "PlayerGameweekStats",
     "Position",
     "RawApiSnapshot",

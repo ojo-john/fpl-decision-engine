@@ -276,6 +276,40 @@ EXPECTED_MILESTONE_2_TABLE_COLUMNS = {
 }
 
 
+EXPECTED_MILESTONE_3_LAYER2_TABLE_COLUMNS = {
+    "player_features": {
+        "id",
+        "player_id",
+        "season_id",
+        "gameweek_id",
+        "feature_version",
+        "cutoff_timestamp",
+        "computed_at",
+        "target_total_points",
+        "rolling_avg_points_3gw",
+        "rolling_avg_points_5gw",
+        "rolling_avg_points_10gw",
+        "rolling_avg_minutes_3gw",
+        "rolling_avg_minutes_5gw",
+        "season_avg_points_to_date",
+        "career_avg_points_prior_seasons",
+        "form_weighted_avg_points",
+        "home_avg_points",
+        "away_avg_points",
+        "next_fixture_difficulty",
+        "next_fixture_was_home",
+        "rest_days",
+        "price_at_time",
+        "ownership_at_time",
+        "position_short_name",
+        "is_missing_history",
+        "data_source",
+        "created_at",
+        "updated_at",
+    },
+}
+
+
 EXPECTED_MILESTONE_3_LAYER1_TABLE_COLUMNS = {
     "player_gameweek_stats": {
         "id",
@@ -369,6 +403,32 @@ def _clear_ingestion_runs(engine) -> None:
     with engine.begin() as conn:
         conn.execute(text("UPDATE rules_config SET source_ingestion_run_id = NULL"))
         conn.execute(text("DELETE FROM ingestion_runs"))
+
+
+def test_upgrade_creates_milestone_3_layer2_tables_with_expected_columns(require_database):
+    """Covers ``player_features`` (Milestone 3 Layer 2)."""
+    from packages.database.session import engine
+
+    _run_alembic("upgrade", "head")
+    try:
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        for table_name, expected_columns in EXPECTED_MILESTONE_3_LAYER2_TABLE_COLUMNS.items():
+            assert table_name in table_names, f"expected table {table_name!r} to exist after upgrade head"
+            columns = {col["name"] for col in inspector.get_columns(table_name)}
+            assert expected_columns.issubset(columns), (
+                f"{table_name} missing columns: {expected_columns - columns}"
+            )
+
+        _run_alembic("downgrade", "0008")
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        for table_name in EXPECTED_MILESTONE_3_LAYER2_TABLE_COLUMNS:
+            assert table_name not in table_names, (
+                f"expected table {table_name!r} to be gone after downgrade to 0008"
+            )
+    finally:
+        _run_alembic("upgrade", "head")
 
 
 def test_upgrade_creates_milestone_3_layer1_tables_with_expected_columns(require_database):
