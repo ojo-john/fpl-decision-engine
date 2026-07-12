@@ -650,7 +650,8 @@ def upsert_player_gameweek_stats(
     team_id_by_fpl_id: dict[int, uuid.UUID],
     data_source: str = "historical_merged_gw",
 ) -> tuple[NormalizationCounts, list[DataQualityIssue]]:
-    """Normalize ``merged_gw.csv`` rows into ``player_gameweek_stats``, keyed ``(player_id, gameweek_id)``.
+    """Normalize ``merged_gw.csv`` rows into ``player_gameweek_stats``, keyed
+    ``(player_id, gameweek_id, fixture_id)``.
 
     ``player_id`` is resolved via ``element`` (this season's element id,
     identical to ``players_raw.csv``'s own ``id`` column — the same id
@@ -664,11 +665,13 @@ def upsert_player_gameweek_stats(
     columns — there is no "quarantined but FK-null" option here, unlike
     players/fixtures) and recorded as a WARNING-severity issue for audit.
 
-    A double gameweek (a player featuring twice in the same round) can't be
-    represented under the ``(player_id, gameweek_id)`` unique constraint —
-    the first occurrence (file order) wins; the rest are dropped and
-    recorded as a WARNING-severity issue, never silently overwriting one
-    fixture's stats with the other's.
+    ``fixture_id`` is part of the uniqueness key (not just ``player_id``/
+    ``gameweek_id``) specifically so a Double Gameweek — a player featuring
+    twice in the same round, a real and recurring FPL mechanic, verified
+    against a real historical backfill (2024-25 season, round 24) — gets a
+    row per fixture instead of one silently overwriting/dropping the other.
+    A row is only treated as a genuine duplicate (dropped, recorded as a
+    WARNING) when the *same* ``(element, round, fixture)`` triple repeats.
     """
     normalized = [_normalize_pgw_row(row) for row in raw_merged_gw_rows]
 
@@ -687,13 +690,13 @@ def upsert_player_gameweek_stats(
         )
     )
 
-    seen_keys: set[tuple[int, int]] = set()
+    seen_keys: set[tuple[int, int, int | None]] = set()
     deduped: list[dict[str, Any]] = []
     for row in normalized:
-        element, round_num = row["element"], row["round"]
+        element, round_num, fixture = row["element"], row["round"], row["fixture"]
         if element is None or round_num is None:
             continue
-        key = (element, round_num)
+        key = (element, round_num, fixture)
         if key in seen_keys:
             issues.append(
                 DataQualityIssue(
@@ -702,8 +705,8 @@ def upsert_player_gameweek_stats(
                     severity=DataQualitySeverity.WARNING,
                     check_name="duplicate_gameweek_row",
                     message=(
-                        f"element={element} round={round_num}: extra row "
-                        "(e.g. a double gameweek) dropped, kept first occurrence"
+                        f"element={element} round={round_num} fixture={fixture}: "
+                        "true duplicate row dropped, kept first occurrence"
                     ),
                 )
             )
@@ -712,11 +715,11 @@ def upsert_player_gameweek_stats(
         deduped.append(row)
 
     existing_keys = {
-        (player_id, gameweek_id)
-        for (player_id, gameweek_id) in session.execute(
-            select(PlayerGameweekStats.player_id, PlayerGameweekStats.gameweek_id).where(
-                PlayerGameweekStats.season_id == season_id
-            )
+        (player_id, gameweek_id, fixture_id)
+        for (player_id, gameweek_id, fixture_id) in session.execute(
+            select(
+                PlayerGameweekStats.player_id, PlayerGameweekStats.gameweek_id, PlayerGameweekStats.fixture_id
+            ).where(PlayerGameweekStats.season_id == season_id)
         )
     }
 
@@ -728,13 +731,14 @@ def upsert_player_gameweek_stats(
         if player_id is None or gameweek_id is None:
             unresolved_count += 1
             continue
+        fixture_id = _resolve_fk(fixture_id_by_fpl_id, row["fixture"])
         values.append(
             {
                 "id": uuid.uuid4(),
                 "player_id": player_id,
                 "season_id": season_id,
                 "gameweek_id": gameweek_id,
-                "fixture_id": _resolve_fk(fixture_id_by_fpl_id, row["fixture"]),
+                "fixture_id": fixture_id,
                 "opponent_team_id": _resolve_fk(team_id_by_fpl_id, row["opponent_team"]),
                 "was_home": row["was_home"],
                 "position_short_name_at_time": row["position"],
@@ -782,9 +786,9 @@ def upsert_player_gameweek_stats(
         session,
         PlayerGameweekStats,
         values,
-        index_elements=["player_id", "gameweek_id"],
+        index_elements=["player_id", "gameweek_id", "fixture_id"],
         existing_keys=existing_keys,
-        key_fields=["player_id", "gameweek_id"],
+        key_fields=["player_id", "gameweek_id", "fixture_id"],
     )
 
     if unresolved_count:

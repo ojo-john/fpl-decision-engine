@@ -6,9 +6,12 @@ Populated by Milestone 3 Layer 1's historical data ingestion (see
 ``gws/merged_gw.csv`` per season (credit: @vaastav for the scraper/repackaging,
 and fantasy.premierleague.com for the underlying data — see that module's
 docstring for the full attribution/licensing note). One row per
-``(player_id, gameweek_id)`` — a player who didn't feature in a gameweek has
-no row here at all (never a zero-filled row), so absence is distinguishable
-from "played and recorded a zero".
+``(player_id, gameweek_id, fixture_id)`` — a player who didn't feature in a
+gameweek has no row here at all (never a zero-filled row), so absence is
+distinguishable from "played and recorded a zero". ``fixture_id`` is part of
+the key (not just ``player_id``/``gameweek_id``) so a Double Gameweek — a
+player with two fixtures in the same round — gets a row per fixture instead
+of one being silently dropped (see migration 0008).
 
 Same quarantine convention as ``players``/``fixtures``: a row that fails a
 row-level data quality check is still inserted (``is_quarantined=True``,
@@ -104,7 +107,16 @@ class PlayerGameweekStats(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("player_id", "gameweek_id", name="uq_player_gameweek_stats_player_gameweek"),
+        # Includes fixture_id (not just player_id/gameweek_id) so a Double
+        # Gameweek — a player with two fixtures in the same gameweek round,
+        # a real and recurring FPL mechanic — gets a row per fixture instead
+        # of silently dropping the second one. See migration 0008.
+        UniqueConstraint(
+            "player_id",
+            "gameweek_id",
+            "fixture_id",
+            name="uq_player_gameweek_stats_player_gameweek_fixture",
+        ),
         Index("ix_player_gameweek_stats_season_id", "season_id"),
         Index("ix_player_gameweek_stats_gameweek_id", "gameweek_id"),
     )
