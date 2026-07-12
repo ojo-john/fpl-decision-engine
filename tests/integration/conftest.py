@@ -10,6 +10,7 @@ and will run locally too once Docker is installed.
 """
 
 import copy
+import csv
 import itertools
 import json
 import time
@@ -20,6 +21,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.ingestion.historical_client import HistoricalFPLClient
 from packages.database.session import SessionLocal, engine
 from packages.domain.ingestion import EndpointHealth
 from packages.fpl_client import FetchResult, FPLClient
@@ -228,6 +230,43 @@ def patched_fpl_client(monkeypatch):
     monkeypatch.setattr(FPLClient, "fetch_event_status", fetch_event_status)
 
     return state
+
+
+# --- Historical ingestion fixture-data helpers (no live network access) -----
+
+HISTORICAL_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "historical"
+
+
+def _load_historical_csv(path: Path) -> list[dict]:
+    with path.open() as f:
+        return list(csv.DictReader(f))
+
+
+@pytest.fixture
+def patched_historical_fpl_client(monkeypatch):
+    """Monkeypatch HistoricalFPLClient so historical ingestion tests never hit the real network.
+
+    Returns the committed ``tests/fixtures/historical/2023-24/`` CSV files
+    (real, trimmed samples fetched from the actual live
+    raw.githubusercontent.com source) regardless of which ``season_label``
+    is requested — only one season's fixture data is committed.
+    """
+    season_dir = HISTORICAL_FIXTURES_DIR / "2023-24"
+    file_bodies = {
+        "teams": _load_historical_csv(season_dir / "teams.csv"),
+        "players_raw": _load_historical_csv(season_dir / "players_raw.csv"),
+        "fixtures": _load_historical_csv(season_dir / "fixtures.csv"),
+        "merged_gw": _load_historical_csv(season_dir / "gws" / "merged_gw.csv"),
+    }
+
+    def fetch_all_season_files(self, season_label):
+        return {
+            file_stem: make_fetch_result(f"historical_{season_label}_{file_stem}", body)
+            for file_stem, body in file_bodies.items()
+        }
+
+    monkeypatch.setattr(HistoricalFPLClient, "fetch_all_season_files", fetch_all_season_files)
+    return file_bodies
 
 
 @pytest.fixture

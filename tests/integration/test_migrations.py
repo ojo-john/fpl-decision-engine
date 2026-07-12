@@ -276,6 +276,59 @@ EXPECTED_MILESTONE_2_TABLE_COLUMNS = {
 }
 
 
+EXPECTED_MILESTONE_3_LAYER1_TABLE_COLUMNS = {
+    "player_gameweek_stats": {
+        "id",
+        "player_id",
+        "season_id",
+        "gameweek_id",
+        "fixture_id",
+        "opponent_team_id",
+        "was_home",
+        "position_short_name_at_time",
+        "minutes",
+        "total_points",
+        "goals_scored",
+        "assists",
+        "clean_sheets",
+        "goals_conceded",
+        "own_goals",
+        "penalties_saved",
+        "penalties_missed",
+        "yellow_cards",
+        "red_cards",
+        "saves",
+        "bonus",
+        "bps",
+        "ict_index",
+        "influence",
+        "creativity",
+        "threat",
+        "expected_goals",
+        "expected_assists",
+        "expected_goal_involvements",
+        "expected_goals_conceded",
+        "starts",
+        "defensive_contribution",
+        "clearances_blocks_interceptions",
+        "recoveries",
+        "tackles",
+        "xp_estimate",
+        "value_at_time",
+        "selected_by_count_at_time",
+        "transfers_in",
+        "transfers_out",
+        "transfers_balance",
+        "data_source",
+        "extra_stats_json",
+        "is_quarantined",
+        "quarantine_reason",
+        "created_at",
+        "updated_at",
+    },
+}
+
+
 def _run_alembic(*args: str) -> None:
     subprocess.run(
         [sys.executable, "-m", "alembic", *args],
@@ -299,6 +352,52 @@ def _clear_optimization_runs(engine) -> None:
         conn.execute(text("DELETE FROM optimization_runs"))
 
 
+def _clear_ingestion_runs(engine) -> None:
+    """Delete all ``ingestion_runs`` rows (cascades to raw_api_snapshots/data_quality_issues).
+
+    Migration 0006's downgrade narrows ``ingestion_runs.run_type`` back to
+    ``VARCHAR(14)`` — if any other integration test already persisted a
+    ``'historical_data_ingestion'`` run_type row (25 chars) on this shared,
+    non-ephemeral test database, that narrowing fails outright (Postgres
+    raises ``StringDataRightTruncation``). Same rationale as
+    ``_clear_optimization_runs`` above.
+
+    ``rules_config.source_ingestion_run_id`` also references ``ingestion_runs.id``
+    (nullably, without ``ondelete=CASCADE``) — nulled out first so the delete
+    below doesn't fail with a foreign key violation.
+    """
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE rules_config SET source_ingestion_run_id = NULL"))
+        conn.execute(text("DELETE FROM ingestion_runs"))
+
+
+def test_upgrade_creates_milestone_3_layer1_tables_with_expected_columns(require_database):
+    """Covers ``player_gameweek_stats`` and the ``ingestion_runs.run_type`` widening (Milestone 3 Layer 1)."""
+    from packages.database.session import engine
+
+    _run_alembic("upgrade", "head")
+    try:
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        for table_name, expected_columns in EXPECTED_MILESTONE_3_LAYER1_TABLE_COLUMNS.items():
+            assert table_name in table_names, f"expected table {table_name!r} to exist after upgrade head"
+            columns = {col["name"] for col in inspector.get_columns(table_name)}
+            assert expected_columns.issubset(columns), (
+                f"{table_name} missing columns: {expected_columns - columns}"
+            )
+
+        _clear_ingestion_runs(engine)
+        _run_alembic("downgrade", "0005")
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        for table_name in EXPECTED_MILESTONE_3_LAYER1_TABLE_COLUMNS:
+            assert table_name not in table_names, (
+                f"expected table {table_name!r} to be gone after downgrade to 0005"
+            )
+    finally:
+        _run_alembic("upgrade", "head")
+
+
 def test_upgrade_creates_milestone_2_tables_with_expected_columns(require_database):
     """Covers ``optimization_runs``/``optimization_run_players``, added in Milestone 2."""
     from packages.database.session import engine
@@ -315,6 +414,7 @@ def test_upgrade_creates_milestone_2_tables_with_expected_columns(require_databa
             )
 
         _clear_optimization_runs(engine)
+        _clear_ingestion_runs(engine)
         _run_alembic("downgrade", "0003")
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
@@ -342,6 +442,7 @@ def test_upgrade_creates_jobs_table_with_expected_columns(require_database):
         assert EXPECTED_COLUMNS.issubset(columns)
 
         _clear_optimization_runs(engine)
+        _clear_ingestion_runs(engine)
         _run_alembic("downgrade", "base")
         inspector = inspect(engine)
         assert "jobs" not in inspector.get_table_names()
@@ -365,6 +466,7 @@ def test_upgrade_creates_milestone_1_tables_with_expected_columns(require_databa
             )
 
         _clear_optimization_runs(engine)
+        _clear_ingestion_runs(engine)
         _run_alembic("downgrade", "base")
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
