@@ -212,9 +212,25 @@ def compute_features_for_player_gameweek(
         ownership_at_time = most_recent_row.selected_by_count_at_time
         position_short_name = most_recent_row.position_short_name_at_time
     else:
-        price_at_time = player.now_cost
-        ownership_at_time = None
-        position_short_name = None
+        # No strictly-prior row (this is the player's first tracked gameweek).
+        # Prefer this target gameweek's OWN price/ownership if it has a row --
+        # a player's price/ownership going into a gameweek's deadline is
+        # public, pre-deadline-knowable information (same category as
+        # next_fixture_difficulty below), not leakage, and is far more
+        # accurate than players.now_cost, which for a historical season is a
+        # single end-of-season snapshot (e.g. it would report a player's
+        # final price, not their true gameweek-1 price). Only fall back to
+        # now_cost when there's no row at all for this gameweek either
+        # (e.g. the player didn't feature and has no data anywhere yet).
+        target_gw_row = next((row for row in current_rows if row.gameweek_id == gameweek_id), None)
+        if target_gw_row is not None:
+            price_at_time = target_gw_row.value_at_time
+            ownership_at_time = target_gw_row.selected_by_count_at_time
+            position_short_name = target_gw_row.position_short_name_at_time
+        else:
+            price_at_time = player.now_cost
+            ownership_at_time = None
+            position_short_name = None
 
     if position_short_name is None and player.position_id is not None:
         position = session.get(Position, player.position_id)
@@ -440,9 +456,19 @@ def generate_features_for_season(
                 ownership_at_time = most_recent_row.selected_by_count_at_time
                 position_short_name = most_recent_row.position_short_name_at_time
             else:
-                price_at_time = player.now_cost
-                ownership_at_time = None
-                position_short_name = None
+                # See compute_features_for_player_gameweek's identical fallback
+                # for the full rationale: prefer this gameweek's own row (its
+                # price/ownership is pre-deadline-knowable, not leakage) over
+                # players.now_cost's stale end-of-season snapshot.
+                target_gw_row = next((row for row in player_rows if row.gameweek_id == gameweek.id), None)
+                if target_gw_row is not None:
+                    price_at_time = target_gw_row.value_at_time
+                    ownership_at_time = target_gw_row.selected_by_count_at_time
+                    position_short_name = target_gw_row.position_short_name_at_time
+                else:
+                    price_at_time = player.now_cost
+                    ownership_at_time = None
+                    position_short_name = None
 
             if position_short_name is None and player.position_id is not None:
                 position_short_name = position_short_name_by_id.get(player.position_id)
