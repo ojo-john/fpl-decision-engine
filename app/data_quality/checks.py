@@ -266,6 +266,32 @@ def check_schema_drift(endpoint: str, schema_drift_detected: bool) -> list[DataQ
     return []
 
 
+def check_missing_code(
+    rows: list[dict[str, Any]], entity_type: str = "player", id_key: str = "id", code_key: str = "code"
+) -> list[DataQualityIssue]:
+    """Flag rows with a blank/missing ``code`` — the cross-season identity join key.
+
+    ERROR severity (quarantine-worthy), unlike ``check_missing_required_fields``:
+    a player row missing ``code`` isn't just cosmetically incomplete, it can
+    never be joined to that same player in another season at all. Used by
+    historical ingestion only — the live FPL API always populates ``code``.
+    """
+    issues = []
+    for row in rows:
+        value = row.get(code_key)
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            issues.append(
+                DataQualityIssue(
+                    entity_type=entity_type,
+                    entity_fpl_id=row.get(id_key),
+                    severity=DataQualitySeverity.ERROR,
+                    check_name="missing_code",
+                    message=f"{code_key!r} is blank/missing — cannot be joined across seasons",
+                )
+            )
+    return issues
+
+
 def check_missing_required_fields(
     rows: list[dict[str, Any]],
     entity_type: str,

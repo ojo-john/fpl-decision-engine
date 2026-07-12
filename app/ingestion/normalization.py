@@ -76,6 +76,14 @@ def _resolve_fk(id_map: dict[int, uuid.UUID], fpl_id: int | None) -> uuid.UUID |
     return id_map.get(fpl_id)
 
 
+# Postgres' extended-query protocol caps a single statement at 65535 bound
+# parameters. Live endpoints (~800 players/~380 fixtures/season) never came
+# close, but a full historical season's player_gameweek_stats can be
+# ~25k-28k rows * ~45 columns — tens of millions of parameters in one
+# INSERT — so every batch must be chunked to stay safely under that limit.
+_MAX_BIND_PARAMS = 65535
+
+
 def _bulk_upsert(
     session: Session,
     model: type,
@@ -89,7 +97,10 @@ def _bulk_upsert(
     ``existing_keys`` is the set of ``key_fields``-tuples already present in
     the table *before* this call, used purely to classify each row as an
     insert or an update (Postgres' ``INSERT ... ON CONFLICT`` doesn't itself
-    report which rows were new).
+    report which rows were new). Automatically chunks ``values`` into
+    multiple ``INSERT`` statements if a single one would exceed Postgres'
+    bound-parameter limit (see ``_MAX_BIND_PARAMS``) — transparent to every
+    caller, live or historical.
     """
     if not values:
         return (0, 0)
@@ -103,14 +114,19 @@ def _bulk_upsert(
         else:
             inserted += 1
 
-    stmt = insert(model).values(values)
-    update_columns = {
-        col.name: col
-        for col in stmt.excluded
-        if col.name not in index_elements and col.name not in ("id", "created_at")
-    }
-    stmt = stmt.on_conflict_do_update(index_elements=index_elements, set_=update_columns)
-    session.execute(stmt)
+    columns_per_row = len(values[0])
+    chunk_size = max(1, _MAX_BIND_PARAMS // columns_per_row)
+
+    for start in range(0, len(values), chunk_size):
+        chunk = values[start : start + chunk_size]
+        stmt = insert(model).values(chunk)
+        update_columns = {
+            col.name: col
+            for col in stmt.excluded
+            if col.name not in index_elements and col.name not in ("id", "created_at")
+        }
+        stmt = stmt.on_conflict_do_update(index_elements=index_elements, set_=update_columns)
+        session.execute(stmt)
 
     return (inserted, updated)
 

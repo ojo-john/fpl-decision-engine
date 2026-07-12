@@ -58,6 +58,56 @@ def _issues_by_severity_table(issues: list[DataQualityIssue]) -> str:
     return "\n".join(lines)
 
 
+def render_historical_ingestion_report_markdown(
+    ingestion_run_id: str,
+    started_at: datetime,
+    completed_at: datetime | None,
+    status: str,
+    season_labels: list[str],
+    endpoint_rows: list[dict[str, Any]],
+    normalization_summary: dict[str, NormalizationCounts],
+    issues: list[DataQualityIssue],
+    data_quality_score: float,
+    optimization_permitted: bool,
+) -> str:
+    """Render the Markdown report for one HISTORICAL_DATA_INGESTION run.
+
+    Reuses the same table-building helpers as the live ingestion report
+    (``_endpoint_health_table``/``_normalization_table``/
+    ``_issues_by_severity_table``) but omits the "rules changes" section
+    entirely — there is no rules-versioning concept for historical seasons.
+    """
+    sections = [
+        "# Historical Ingestion Report",
+        "",
+        "## Run",
+        "",
+        "| Field | Value |",
+        "| --- | --- |",
+        f"| ingestion_run_id | {ingestion_run_id} |",
+        "| run_type | historical_data_ingestion |",
+        f"| seasons | {', '.join(season_labels)} |",
+        f"| started_at | {started_at.isoformat()} |",
+        f"| completed_at | {completed_at.isoformat() if completed_at else None} |",
+        f"| status | {status} |",
+        "",
+        "## Endpoint health",
+        "",
+        _endpoint_health_table(endpoint_rows),
+        "## Normalization summary",
+        "",
+        _normalization_table(normalization_summary),
+        "## Data quality",
+        "",
+        f"Score: **{data_quality_score:.2f}** / 100",
+        "",
+        f"Optimization permitted: **{optimization_permitted}**",
+        "",
+        _issues_by_severity_table(issues),
+    ]
+    return "\n".join(sections)
+
+
 def render_ingestion_report_markdown(
     ingestion_run_id: str,
     run_type: str,
