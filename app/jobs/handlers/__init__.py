@@ -2,6 +2,7 @@
 
 from app.jobs.handlers import (
     data_ingestion,  # noqa: F401  (import registers the handler)
+    historical_data_ingestion,  # noqa: F401  (import registers the handler)
     lineup_optimization,  # noqa: F401  (import registers the handler)
     rules_sync,  # noqa: F401  (import registers the handler)
     squad_optimization,  # noqa: F401  (import registers the handler)
@@ -10,6 +11,7 @@ from app.jobs.handlers import (
 
 __all__ = [
     "data_ingestion",
+    "historical_data_ingestion",
     "lineup_optimization",
     "rules_sync",
     "squad_optimization",
