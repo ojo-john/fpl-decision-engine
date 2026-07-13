@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class InitialSquadRequest(BaseModel):
@@ -66,3 +66,41 @@ class OptimizationErrorResponse(BaseModel):
     error_code: str | None
     error_message: str | None
     job_id: str
+
+
+class TransferOptimizationRequest(BaseModel):
+    manager_squad_snapshot_id: uuid.UUID
+    horizon_gameweeks: int = Field(default=6, ge=4, le=8)
+    requested_by: str | None = None
+
+
+class TransferMoveOut(BaseModel):
+    player_out_id: uuid.UUID
+    player_out_web_name: str | None
+    player_in_id: uuid.UUID
+    player_in_web_name: str | None
+    player_out_selling_price: int
+    player_in_cost: int
+    projected_points_gain_over_horizon: Decimal
+
+
+class TransferScenarioOut(BaseModel):
+    transfers_count: int
+    moves: list[TransferMoveOut]
+    raw_horizon_points_gain: Decimal
+    hit_cost: int
+    net_horizon_points_gain: Decimal
+    is_recommended: bool
+
+
+class TransferOptimizationRunOut(BaseModel):
+    transfer_optimization_run_id: uuid.UUID
+    manager_squad_snapshot_id: uuid.UUID
+    run_status: str
+    horizon_gameweek_count: int
+    free_transfers_available: int
+    bank: int
+    recommended_action: str  # "roll" | "one_transfer" | "two_transfers"
+    scenarios: list[TransferScenarioOut]  # always 3, for transparency/comparison
+    started_at: datetime
+    completed_at: datetime | None

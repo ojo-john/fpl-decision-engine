@@ -12,7 +12,7 @@ import uuid
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.jobs.service import execute_job
 from apps.api.dependencies import get_db
@@ -21,12 +21,21 @@ from apps.api.schemas.optimization import (
     LineupRequest,
     OptimizationRunOut,
     OptimizationRunPlayerOut,
+    TransferMoveOut,
+    TransferOptimizationRequest,
+    TransferOptimizationRunOut,
+    TransferScenarioOut,
 )
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
 from packages.database.models.position import Position
+from packages.database.models.transfer_optimization_run import TransferOptimizationRun
+from packages.database.models.transfer_optimization_run_move import TransferOptimizationRunMove
+from packages.database.models.transfer_optimization_run_scenario import TransferOptimizationRunScenario
 from packages.domain.jobs import JobStatus, JobType, TriggerType
+
+_RECOMMENDED_ACTION_BY_TRANSFERS_COUNT = {0: "roll", 1: "one_transfer", 2: "two_transfers"}
 
 router = APIRouter(prefix="/optimize", tags=["optimization"])
 
@@ -103,6 +112,100 @@ def optimize_initial_squad(
     assert job.output_json is not None  # a SUCCEEDED job always has output_json
     optimization_run_id = uuid.UUID(job.output_json["optimization_run_id"])
     return _load_run_response(db, optimization_run_id)
+
+
+def _load_transfer_run_response(
+    db: Session, transfer_optimization_run_id: uuid.UUID
+) -> TransferOptimizationRunOut:
+    run = db.get(TransferOptimizationRun, transfer_optimization_run_id)
+    assert run is not None  # a SUCCEEDED job always leaves its transfer_optimization_runs row behind
+
+    scenario_rows = (
+        db.execute(
+            select(TransferOptimizationRunScenario)
+            .where(
+                TransferOptimizationRunScenario.transfer_optimization_run_id == transfer_optimization_run_id
+            )
+            .order_by(TransferOptimizationRunScenario.transfers_count)
+        )
+        .scalars()
+        .all()
+    )
+
+    player_out = aliased(Player)
+    player_in = aliased(Player)
+
+    scenarios_out: list[TransferScenarioOut] = []
+    for scenario in scenario_rows:
+        move_rows = db.execute(
+            select(TransferOptimizationRunMove, player_out.web_name, player_in.web_name)
+            .join(player_out, TransferOptimizationRunMove.player_out_id == player_out.id)
+            .join(player_in, TransferOptimizationRunMove.player_in_id == player_in.id)
+            .where(TransferOptimizationRunMove.transfer_optimization_run_scenario_id == scenario.id)
+            .order_by(TransferOptimizationRunMove.move_index)
+        ).all()
+
+        moves_out = [
+            TransferMoveOut(
+                player_out_id=move.player_out_id,
+                player_out_web_name=out_web_name,
+                player_in_id=move.player_in_id,
+                player_in_web_name=in_web_name,
+                player_out_selling_price=move.player_out_selling_price_snapshot,
+                player_in_cost=move.player_in_cost_snapshot,
+                projected_points_gain_over_horizon=move.projected_points_gain_over_horizon,
+            )
+            for move, out_web_name, in_web_name in move_rows
+        ]
+
+        scenarios_out.append(
+            TransferScenarioOut(
+                transfers_count=scenario.transfers_count,
+                moves=moves_out,
+                raw_horizon_points_gain=scenario.raw_horizon_points_gain,
+                hit_cost=scenario.hit_cost,
+                net_horizon_points_gain=scenario.net_horizon_points_gain,
+                is_recommended=scenario.is_recommended,
+            )
+        )
+
+    assert run.recommended_transfers_count is not None  # a SUCCEEDED run always sets this
+    recommended_action = _RECOMMENDED_ACTION_BY_TRANSFERS_COUNT[run.recommended_transfers_count]
+
+    return TransferOptimizationRunOut(
+        transfer_optimization_run_id=run.id,
+        manager_squad_snapshot_id=run.manager_squad_snapshot_id,
+        run_status=run.run_status.value,
+        horizon_gameweek_count=len(run.horizon_gameweek_ids_json or []),
+        free_transfers_available=run.free_transfers_available_snapshot,
+        bank=run.bank_snapshot,
+        recommended_action=recommended_action,
+        scenarios=scenarios_out,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+    )
+
+
+@router.post("/transfers", response_model=TransferOptimizationRunOut)
+def optimize_transfers(
+    body: TransferOptimizationRequest, db: Session = Depends(get_db)
+) -> TransferOptimizationRunOut | JSONResponse:
+    job = execute_job(
+        db,
+        job_type=JobType.TRANSFER_OPTIMIZATION,
+        parameters={
+            "manager_squad_snapshot_id": str(body.manager_squad_snapshot_id),
+            "horizon_gameweeks": body.horizon_gameweeks,
+        },
+        requested_by=body.requested_by,
+        trigger_type=TriggerType.API,
+    )
+    if job.status != JobStatus.SUCCEEDED:
+        return _error_response(job)
+
+    assert job.output_json is not None  # a SUCCEEDED job always has output_json
+    transfer_optimization_run_id = uuid.UUID(job.output_json["transfer_optimization_run_id"])
+    return _load_transfer_run_response(db, transfer_optimization_run_id)
 
 
 @router.post("/lineup", response_model=OptimizationRunOut)
