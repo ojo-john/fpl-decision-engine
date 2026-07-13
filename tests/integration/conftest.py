@@ -302,6 +302,62 @@ def patched_fpl_client_optimization(monkeypatch):
     return state
 
 
+# --- Manager-facing fixture data (Milestone 4 Layer 1, no live network access) -----
+
+MANAGER_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "fpl_api" / "manager"
+
+
+def load_manager_entry_json() -> dict:
+    return json.loads((MANAGER_FIXTURES_DIR / "entry.json").read_text())
+
+
+def load_manager_history_json() -> dict:
+    return json.loads((MANAGER_FIXTURES_DIR / "history.json").read_text())
+
+
+def load_manager_picks_json() -> dict:
+    return json.loads((MANAGER_FIXTURES_DIR / "picks.json").read_text())
+
+
+def load_manager_transfers_json() -> list:
+    return json.loads((MANAGER_FIXTURES_DIR / "transfers.json").read_text())
+
+
+@pytest.fixture
+def patched_fpl_client_manager(monkeypatch):
+    """Monkeypatch FPLClient's manager-facing methods, serving the committed manager fixture files.
+
+    Mirrors ``patched_fpl_client_optimization``'s exact monkeypatch style.
+    Returns a mutable ``state`` dict (``entry``/``history``/``picks``/``transfers``)
+    a test can edit before calling MANAGER_SYNC again.
+    """
+    state = {
+        "entry": load_manager_entry_json(),
+        "history": load_manager_history_json(),
+        "picks": load_manager_picks_json(),
+        "transfers": load_manager_transfers_json(),
+    }
+
+    def fetch_manager_entry(self, manager_id):
+        return make_fetch_result("manager_entry", state["entry"])
+
+    def fetch_manager_history(self, manager_id):
+        return make_fetch_result("manager_history", state["history"])
+
+    def fetch_manager_picks(self, manager_id, event):
+        return make_fetch_result("manager_picks", state["picks"])
+
+    def fetch_manager_transfers(self, manager_id):
+        return make_fetch_result("manager_transfers", state["transfers"])
+
+    monkeypatch.setattr(FPLClient, "fetch_manager_entry", fetch_manager_entry)
+    monkeypatch.setattr(FPLClient, "fetch_manager_history", fetch_manager_history)
+    monkeypatch.setattr(FPLClient, "fetch_manager_picks", fetch_manager_picks)
+    monkeypatch.setattr(FPLClient, "fetch_manager_transfers", fetch_manager_transfers)
+
+    return state
+
+
 @pytest.fixture
 def patched_fpl_client_optimization_with_active_gameweek(monkeypatch):
     """Like patched_fpl_client_optimization, but with one gameweek left unfinished.

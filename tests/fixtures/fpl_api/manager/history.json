@@ -1,0 +1,72 @@
+{
+  "current": [
+    {
+      "event": 1,
+      "points": 55,
+      "total_points": 55,
+      "rank": 500000,
+      "overall_rank": 500000,
+      "bank": 0,
+      "value": 1000,
+      "event_transfers": 0,
+      "event_transfers_cost": 0,
+      "points_on_bench": 4
+    },
+    {
+      "event": 2,
+      "points": 60,
+      "total_points": 115,
+      "rank": 400000,
+      "overall_rank": 420000,
+      "bank": 0,
+      "value": 1002,
+      "event_transfers": 5,
+      "event_transfers_cost": 0,
+      "points_on_bench": 6
+    },
+    {
+      "event": 3,
+      "points": 48,
+      "total_points": 163,
+      "rank": 380000,
+      "overall_rank": 400000,
+      "bank": 5,
+      "value": 1005,
+      "event_transfers": 1,
+      "event_transfers_cost": 0,
+      "points_on_bench": 2
+    },
+    {
+      "event": 4,
+      "points": 40,
+      "total_points": 203,
+      "rank": 360000,
+      "overall_rank": 380000,
+      "bank": 10,
+      "value": 1008,
+      "event_transfers": 3,
+      "event_transfers_cost": -4,
+      "points_on_bench": 10
+    },
+    {
+      "event": 5,
+      "points": 47,
+      "total_points": 250,
+      "rank": 150000,
+      "overall_rank": 150000,
+      "bank": 25,
+      "value": 1005,
+      "event_transfers": 0,
+      "event_transfers_cost": 0,
+      "points_on_bench": 8
+    }
+  ],
+  "past": [],
+  "chips": [
+    {
+      "name": "wildcard",
+      "event": 2,
+      "time": "2025-08-22T10:00:00Z"
+    }
+  ]
+}
