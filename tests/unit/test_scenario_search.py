@@ -110,8 +110,9 @@ def test_one_transfer_excludes_unaffordable_best_looking_swap():
 
 def test_one_transfer_excludes_team_limit_breaching_swap():
     # Squad already has 3 players from TEAM_A (at the team_limit) plus the OUT candidate.
-    # None of these three share the OUT candidate's DEF position, so the 1-transfer
-    # search never needs to price a swap for them (only `out` has a selling price below).
+    # None of these three share the OUT candidate's DEF position, so the 1-transfer search
+    # never actually considers swapping them out -- but every squad member still needs a
+    # priced exit, per evaluate_transfer_scenarios' own precondition.
     p1 = _candidate("GKP", _TEAM_A, cost=40, horizon_points=5.0)
     p2 = _candidate("MID", _TEAM_A, cost=40, horizon_points=5.0)
     p3 = _candidate("FWD", _TEAM_A, cost=40, horizon_points=5.0)
@@ -124,7 +125,7 @@ def test_one_transfer_excludes_team_limit_breaching_swap():
     scenarios, _ = evaluate_transfer_scenarios(
         squad_candidates=[p1, p2, p3, out],
         in_shortlists_by_position={"DEF": [in_bad, in_good]},
-        selling_prices={out.player_id: 50},
+        selling_prices={p1.player_id: 40, p2.player_id: 40, p3.player_id: 40, out.player_id: 50},
         team_limit=3,
         bank=0,
         free_transfers_available=1,
@@ -159,7 +160,12 @@ def test_two_transfer_excludes_joint_team_limit_violation_but_finds_legal_altern
     scenarios, _ = evaluate_transfer_scenarios(
         squad_candidates=[mc_owned_1, mc_owned_2, ars_out, che_out],
         in_shortlists_by_position={"DEF": [mc_in_def], "MID": [mc_in_mid, liv_in_mid]},
-        selling_prices={ars_out.player_id: 50, che_out.player_id: 50},
+        selling_prices={
+            mc_owned_1.player_id: 45,
+            mc_owned_2.player_id: 45,
+            ars_out.player_id: 50,
+            che_out.player_id: 50,
+        },
         team_limit=3,
         bank=0,
         free_transfers_available=2,
