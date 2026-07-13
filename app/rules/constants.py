@@ -18,7 +18,7 @@ this also flows into the checksum computed in
 visible as a rules-config version change.
 """
 
-HAND_MAINTAINED_RULES_VERSION = 2
+HAND_MAINTAINED_RULES_VERSION = 3
 
 HAND_MAINTAINED_RULES: dict[str, dict] = {
     "hand_maintained.transfer_hit_cost": {
@@ -50,5 +50,12 @@ HAND_MAINTAINED_RULES: dict[str, dict] = {
         "Not present anywhere in bootstrap-static game_config. Overridden to 3x by the "
         "'3xc' (Triple Captain) chip — see hand_maintained.chip_effect.3xc. PROVISIONAL "
         "until cross-validated against observed gameweek scoring in a later milestone.",
+    },
+    "hand_maintained.free_transfers_per_gameweek": {
+        "value": 1,
+        "notes": "1 free transfer accrues per gameweek (capped at 1 + rules.max_extra_free_transfers "
+        "total banked); frozen (neither consumed nor accrued) during a wildcard/free-hit "
+        "gameweek. Not present anywhere in bootstrap-static game_config. PROVISIONAL until "
+        "cross-validated against observed transfer/points deltas in a later milestone.",
     },
 }

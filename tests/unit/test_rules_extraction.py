@@ -77,6 +77,13 @@ def test_hand_maintained_captain_multiplier_present_as_provisional(snapshot):
     assert field.source == "hand_maintained"
 
 
+def test_hand_maintained_free_transfers_per_gameweek_present_as_provisional(snapshot):
+    field = _field(snapshot, "hand_maintained.free_transfers_per_gameweek")
+    assert field.value == 1
+    assert field.confidence == RuleConfidence.PROVISIONAL
+    assert field.source == "hand_maintained"
+
+
 def test_chips_flattened_with_windows(snapshot):
     wildcard_fields = {f.path for f in snapshot.fields if f.path.startswith("chips.wildcard.")}
     assert "chips.wildcard.window_1.start_event" in wildcard_fields
