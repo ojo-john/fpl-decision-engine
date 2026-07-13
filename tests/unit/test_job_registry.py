@@ -6,6 +6,7 @@ from app.jobs.handlers.data_ingestion import DataIngestionJobRunner
 from app.jobs.handlers.feature_generation import FeatureGenerationJobRunner
 from app.jobs.handlers.historical_data_ingestion import HistoricalDataIngestionJobRunner
 from app.jobs.handlers.lineup_optimization import LineupOptimizationJobRunner
+from app.jobs.handlers.manager_sync import ManagerSyncJobRunner
 from app.jobs.handlers.model_training import ModelTrainingJobRunner
 from app.jobs.handlers.rules_sync import RulesSyncJobRunner
 from app.jobs.handlers.squad_optimization import SquadOptimizationJobRunner
@@ -22,6 +23,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.MODEL_TRAINING,
     JobType.SQUAD_OPTIMIZATION,
     JobType.LINEUP_OPTIMIZATION,
+    JobType.MANAGER_SYNC,
 }
 
 
@@ -55,6 +57,10 @@ def test_lineup_optimization_resolves_to_its_runner():
 
 def test_model_training_resolves_to_its_runner():
     assert get_handler(JobType.MODEL_TRAINING) is ModelTrainingJobRunner
+
+
+def test_manager_sync_resolves_to_its_runner():
+    assert get_handler(JobType.MANAGER_SYNC) is ManagerSyncJobRunner
 
 
 @pytest.mark.parametrize(
