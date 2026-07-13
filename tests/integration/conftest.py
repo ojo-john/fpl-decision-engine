@@ -300,3 +300,46 @@ def patched_fpl_client_optimization(monkeypatch):
     monkeypatch.setattr(FPLClient, "fetch_event_status", fetch_event_status)
 
     return state
+
+
+@pytest.fixture
+def patched_fpl_client_optimization_with_active_gameweek(monkeypatch):
+    """Like patched_fpl_client_optimization, but with one gameweek left unfinished.
+
+    Milestone 3 Layer 4's champion-aware projection path
+    (app.optimization.projection.project_player_with_champion) only engages
+    once the optimizer resolves a concrete target gameweek (see
+    app.optimization.gameweek_resolution) -- the plain
+    patched_fpl_client_optimization fixture's bootstrap sample has every
+    gameweek finished (a realistic close-season snapshot, which is exactly
+    why its own tests assert NO_ACTIVE_GAMEWEEK). This variant marks the last
+    event unfinished so champion-aware optimizer integration tests can
+    exercise the live projection path end-to-end.
+    """
+    bootstrap = build_optimization_bootstrap_json()
+    for event in bootstrap["events"]:
+        event["is_current"] = False
+    bootstrap["events"][-1]["finished"] = False
+    bootstrap["events"][-1]["is_current"] = True
+
+    state = {
+        "bootstrap": bootstrap,
+        "fixtures": load_fixtures_json(),
+        "event_status": {"leagues": "updated"},
+    }
+
+    def fetch_bootstrap_static(self):
+        return make_fetch_result("bootstrap_static", state["bootstrap"])
+
+    def fetch_fixtures(self, event=None):
+        endpoint = "fixtures_by_event" if event is not None else "fixtures"
+        return make_fetch_result(endpoint, state["fixtures"])
+
+    def fetch_event_status(self):
+        return make_fetch_result("event_status", state["event_status"])
+
+    monkeypatch.setattr(FPLClient, "fetch_bootstrap_static", fetch_bootstrap_static)
+    monkeypatch.setattr(FPLClient, "fetch_fixtures", fetch_fixtures)
+    monkeypatch.setattr(FPLClient, "fetch_event_status", fetch_event_status)
+
+    return state
