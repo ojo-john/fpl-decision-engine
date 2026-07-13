@@ -37,6 +37,7 @@ __all__ = [
     "IDENTIFIER_LABEL_AUDIT_COLUMNS",
     "KNOWN_POSITIONS",
     "build_feature_matrix",
+    "build_feature_row",
     "select_non_degenerate_columns",
     "align_columns",
     "build_decision_tree",
@@ -111,6 +112,27 @@ def _one_hot_position(position_short_name: str | None) -> dict[str, float]:
     }
 
 
+def _feature_record(row: PlayerFeatures) -> dict[str, float]:
+    """Encode one ``PlayerFeatures`` row's feature columns into a plain ``dict``.
+
+    Shared by ``build_feature_matrix`` (training/evaluation, many rows) and
+    ``build_feature_row`` (live inference, exactly one row) so the two can
+    never silently diverge in how a row's features are encoded — only
+    ``build_feature_matrix``'s row-level ``target_total_points`` filtering is
+    specific to the training/evaluation context (see that function's
+    docstring vs. ``build_feature_row``'s).
+    """
+    record: dict[str, float] = {}
+    for column in PlayerFeatures.__table__.columns:
+        name = column.name
+        if name in IDENTIFIER_LABEL_AUDIT_COLUMNS or name == "position_short_name":
+            continue
+        value = getattr(row, name)
+        record[name] = float(value) if value is not None else float("nan")
+    record.update(_one_hot_position(row.position_short_name))
+    return record
+
+
 def build_feature_matrix(feature_rows: Sequence[PlayerFeatures]) -> tuple[pd.DataFrame, pd.Series]:
     """Build ``(X, y)`` for training/evaluating a tree-based candidate against a list of ``PlayerFeatures``.
 
@@ -127,17 +149,7 @@ def build_feature_matrix(feature_rows: Sequence[PlayerFeatures]) -> tuple[pd.Dat
     """
     playable_rows = [row for row in feature_rows if row.target_total_points is not None]
 
-    records: list[dict[str, float]] = []
-    for row in playable_rows:
-        record: dict[str, float] = {}
-        for column in PlayerFeatures.__table__.columns:
-            name = column.name
-            if name in IDENTIFIER_LABEL_AUDIT_COLUMNS or name == "position_short_name":
-                continue
-            value = getattr(row, name)
-            record[name] = float(value) if value is not None else float("nan")
-        record.update(_one_hot_position(row.position_short_name))
-        records.append(record)
+    records = [_feature_record(row) for row in playable_rows]
 
     x = pd.DataFrame.from_records(records)
     y = pd.Series(
@@ -145,6 +157,24 @@ def build_feature_matrix(feature_rows: Sequence[PlayerFeatures]) -> tuple[pd.Dat
         name="target_total_points",
     )
     return x, y
+
+
+def build_feature_row(feature_row: PlayerFeatures) -> pd.DataFrame:
+    """Build a single-row feature matrix for LIVE inference — deliberately no ``target_total_points`` filter.
+
+    ``build_feature_matrix`` excludes any row with a NULL label, which is
+    correct for training/evaluation (there is nothing to score against) but
+    wrong for live inference: a projection is always for a gameweek that
+    hasn't been played yet, so ``target_total_points`` is *always* NULL on
+    the row being projected — that is the expected, normal state, not
+    invalid data, and must never cause the row to be silently dropped
+    (which would look like "no prediction" rather than the truth, "not
+    playable yet"). Reuses the exact same per-row feature-encoding logic as
+    ``build_feature_matrix`` (``_feature_record``) so live inference and
+    training features are computed identically — this function only differs
+    in skipping the label-based row filter.
+    """
+    return pd.DataFrame.from_records([_feature_record(feature_row)])
 
 
 def select_non_degenerate_columns(x_train: pd.DataFrame) -> list[str]:
