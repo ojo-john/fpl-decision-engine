@@ -23,5 +23,8 @@ ingest:
 features:
 	uv run python -c "from app.jobs.service import execute_job; from packages.database.session import SessionLocal; from packages.domain.jobs import JobType, TriggerType; session = SessionLocal(); job = execute_job(session, job_type=JobType.FEATURE_GENERATION, parameters={'season_label': 'all'}, requested_by='local', trigger_type=TriggerType.LOCAL); print(job.status, job.output_json); session.close()"
 
-train recommend review-gameweek backtest full-pipeline:
-	@echo "make $@: not yet implemented — planned for a later milestone (out of scope for Milestone 1)"
+train:
+	uv run python -c "from app.jobs.service import execute_job; from packages.database.session import SessionLocal; from packages.domain.jobs import JobType, TriggerType; session = SessionLocal(); job = execute_job(session, job_type=JobType.MODEL_TRAINING, requested_by='local', trigger_type=TriggerType.LOCAL); print(job.status, job.output_json); session.close()"
+
+recommend review-gameweek backtest full-pipeline:
+	@echo "make $@: not yet implemented — planned for a later milestone"
