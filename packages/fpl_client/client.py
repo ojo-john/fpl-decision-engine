@@ -15,7 +15,15 @@ from typing import Any
 import httpx
 
 from packages.domain.ingestion import EndpointHealth
-from packages.fpl_client.endpoints import BOOTSTRAP_STATIC_URL, EVENT_STATUS_URL, FIXTURES_URL
+from packages.fpl_client.endpoints import (
+    BOOTSTRAP_STATIC_URL,
+    EVENT_STATUS_URL,
+    FIXTURES_URL,
+    MANAGER_ENTRY_URL_TEMPLATE,
+    MANAGER_HISTORY_URL_TEMPLATE,
+    MANAGER_PICKS_URL_TEMPLATE,
+    MANAGER_TRANSFERS_URL_TEMPLATE,
+)
 from packages.fpl_client.fingerprint import schema_signature, sha256_hex
 from packages.fpl_client.health import classify_health
 from packages.fpl_client.models import FetchResult
@@ -76,6 +84,22 @@ class FPLClient:
 
     def fetch_event_status(self) -> FetchResult:
         return self._get("event_status", EVENT_STATUS_URL, params=None)
+
+    def fetch_manager_entry(self, manager_id: int) -> FetchResult:
+        url = MANAGER_ENTRY_URL_TEMPLATE.format(manager_id=manager_id)
+        return self._get("manager_entry", url, params=None)
+
+    def fetch_manager_history(self, manager_id: int) -> FetchResult:
+        url = MANAGER_HISTORY_URL_TEMPLATE.format(manager_id=manager_id)
+        return self._get("manager_history", url, params=None)
+
+    def fetch_manager_picks(self, manager_id: int, event: int) -> FetchResult:
+        url = MANAGER_PICKS_URL_TEMPLATE.format(manager_id=manager_id, event=event)
+        return self._get("manager_picks", url, params=None)
+
+    def fetch_manager_transfers(self, manager_id: int) -> FetchResult:
+        url = MANAGER_TRANSFERS_URL_TEMPLATE.format(manager_id=manager_id)
+        return self._get("manager_transfers", url, params=None)
 
     def _get(self, endpoint_name: str, url: str, params: dict[str, Any] | None) -> FetchResult:
         attempt_count = 0

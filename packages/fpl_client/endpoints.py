@@ -10,3 +10,11 @@ BASE_URL = "https://fantasy.premierleague.com/api"
 BOOTSTRAP_STATIC_URL = f"{BASE_URL}/bootstrap-static/"
 FIXTURES_URL = f"{BASE_URL}/fixtures/"
 EVENT_STATUS_URL = f"{BASE_URL}/event-status/"
+
+# Manager-facing endpoints (Milestone 4 Layer 1) — fully public, no
+# authentication needed, verified live against real manager ids during
+# planning. ``{manager_id}``/``{event}`` are filled in by the caller.
+MANAGER_ENTRY_URL_TEMPLATE = BASE_URL + "/entry/{manager_id}/"
+MANAGER_HISTORY_URL_TEMPLATE = BASE_URL + "/entry/{manager_id}/history/"
+MANAGER_PICKS_URL_TEMPLATE = BASE_URL + "/entry/{manager_id}/event/{event}/picks/"
+MANAGER_TRANSFERS_URL_TEMPLATE = BASE_URL + "/entry/{manager_id}/transfers/"
