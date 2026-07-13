@@ -15,6 +15,18 @@ champion whose artifact is missing/corrupted/fails to deserialize is treated
 exactly the same way (logged, ``None`` returned) rather than raising —
 graceful degradation only, never an exception that could take down an
 optimization run.
+
+A second, related degradation: if the flagged champion's family is in
+``packages.domain.modeling.LIVE_INCAPABLE_MODEL_FAMILIES`` (today, only
+``BASELINE_RULES_EP_NEXT`` — see that constant's docstring for exactly why),
+it is *structurally* incapable of ever producing a live prediction, not just
+occasionally unavailable. Loading it as-is would mean the live optimizer
+gets zero benefit from an entire successful MODEL_TRAINING run, 100% of the
+time, even though a perfectly usable sibling candidate (e.g. a tree model)
+from that same run might score only marginally worse historically. So in
+that one case, this module substitutes the best-aggregate-MAE sibling from
+the SAME training run whose family isn't live-incapable, and loads that
+instead — falling back to ``None`` only if no such sibling exists.
 """
 
 import logging
@@ -27,8 +39,9 @@ import joblib
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from packages.database.models.model_metric import ModelMetric
 from packages.database.models.model_version import ModelVersion
-from packages.domain.modeling import ModelFamily
+from packages.domain.modeling import LIVE_INCAPABLE_MODEL_FAMILIES, ModelFamily
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +75,31 @@ def load_current_champion(session: Session) -> LoadedChampion | None:
     if version is None:
         return None
 
+    if version.model_family in LIVE_INCAPABLE_MODEL_FAMILIES:
+        substitute = _best_live_capable_sibling(session, version)
+        if substitute is None:
+            logger.warning(
+                "Champion model_version_id=%s (family=%s) cannot produce a live "
+                "prediction (see LIVE_INCAPABLE_MODEL_FAMILIES) and no live-capable "
+                "sibling from the same training run (training_job_id=%s) was found; "
+                "optimization will fall back to the non-ML projection formula for "
+                "this run.",
+                version.id,
+                version.model_family.value,
+                version.training_job_id,
+            )
+            return None
+        logger.info(
+            "Champion model_version_id=%s (family=%s) cannot produce a live "
+            "prediction; substituting best live-capable sibling from the same "
+            "training run: model_version_id=%s (family=%s).",
+            version.id,
+            version.model_family.value,
+            substitute.id,
+            substitute.model_family.value,
+        )
+        version = substitute
+
     if version.artifact_uri is None:
         # Baseline family: pure lookup/formula, nothing to deserialize.
         return LoadedChampion(
@@ -90,3 +128,33 @@ def load_current_champion(session: Session) -> LoadedChampion | None:
         feature_version=version.feature_version,
         sklearn_model=sklearn_model,
     )
+
+
+def _best_live_capable_sibling(session: Session, champion: ModelVersion) -> ModelVersion | None:
+    """The best-aggregate-MAE ``ModelVersion`` from ``champion``'s own training run, excluding
+    ``LIVE_INCAPABLE_MODEL_FAMILIES`` — used only when the flagged champion itself can't run live.
+
+    Scoped to the SAME ``training_job_id`` (not "the best live-capable
+    ModelVersion ever recorded") so this always compares candidates that were
+    actually validated together, on the same feature version and seasons —
+    never mixing results across different training runs. Returns ``None`` if
+    ``training_job_id`` is unset (should not happen for a real training run —
+    see ``app.jobs.handlers.model_training``, which always sets it — but this
+    is exactly the kind of thing that must degrade quietly rather than raise)
+    or if every sibling from that run is also live-incapable.
+    """
+    if champion.training_job_id is None:
+        return None
+    rows = session.execute(
+        select(ModelVersion, ModelMetric.mae)
+        .join(ModelMetric, ModelMetric.model_version_id == ModelVersion.id)
+        .where(
+            ModelVersion.training_job_id == champion.training_job_id,
+            ModelMetric.fold_index.is_(None),
+            ModelVersion.model_family.notin_(LIVE_INCAPABLE_MODEL_FAMILIES),
+        )
+    ).all()
+    if not rows:
+        return None
+    best_version, _ = min(rows, key=lambda row: row[1])
+    return best_version

@@ -38,3 +38,23 @@ BASELINE_MODEL_FAMILIES = frozenset(
         ModelFamily.BASELINE_RULES_EP_NEXT,
     }
 )
+
+# Families that can never produce a LIVE prediction, regardless of how well
+# they score in walk-forward validation: BASELINE_RULES_EP_NEXT reads
+# player_gameweek_stats.xp_estimate for the CURRENT (target) gameweek as its
+# historical-backtesting proxy for FPL's own ep_next figure (see
+# app/modeling/baselines.py) — but live DATA_INGESTION never populates
+# player_gameweek_stats (that needs the /live/ endpoint, deferred to a later
+# milestone), so this family always returns None for a live player, 100% of
+# the time, not just in edge cases.
+#
+# Champion selection (app/modeling/champion.py) is deliberately UNAWARE of
+# this distinction — picking purely on historical walk-forward accuracy is
+# the honest, correct thing for it to do, and this family legitimately can
+# be (and often is) the most accurate one historically. Enforcing "but can
+# this actually run live" is instead the job of live champion *loading*
+# (app/optimization/champion_loader.py), which substitutes the best
+# live-capable sibling from the same training run when the flagged champion
+# itself falls in this set — otherwise the live optimizer would silently get
+# zero benefit from an entire successful training run.
+LIVE_INCAPABLE_MODEL_FAMILIES = frozenset({ModelFamily.BASELINE_RULES_EP_NEXT})
