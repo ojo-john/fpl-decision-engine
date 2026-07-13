@@ -12,6 +12,10 @@ dependencies = [
     "pydantic-settings",
     "httpx",
     "pulp",
+    "scikit-learn>=1.9.0",
+    "joblib>=1.5.3",
+    "pandas>=3.0.3",
+    "numpy>=2.5.1",
 ]
 
 [dependency-groups]
@@ -41,6 +45,7 @@ select = ["E", "F", "I", "UP"]
 "packages/domain/rules.py" = ["UP042"]
 "packages/domain/ingestion.py" = ["UP042"]
 "packages/domain/optimization.py" = ["UP042"]
+"packages/domain/modeling.py" = ["UP042"]
 
 [tool.mypy]
 python_version = "3.12"
