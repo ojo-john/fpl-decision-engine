@@ -9,24 +9,30 @@ every candidate, matching ``PlayerProjection.is_eligible`` (see
 Performance note (IN-candidate pool, ~700 non-owned players across all
 positions): computing the full horizon-summed projection
 (``compute_horizon_points``, ``app.transfers.horizon_projection``) for every
-one of those ~700 players would mean ``horizon_length`` calls to
+one of those ~700 players means ``horizon_length`` calls to
 ``project_player_with_champion`` PER PLAYER — when a champion model is
 loaded, each of those calls issues its own DB feature-row query, so that's
-plausibly several thousand DB round trips before any shortlisting even
-happens. This is a read-heavy, no-ML-training operation, so a modest number
-of extra calls is not a real concern — but several thousand is enough to be
-worth avoiding cheaply. ``build_in_shortlists`` therefore uses a two-stage
-approach: first, a cheap SINGLE-gameweek projection (one
-``project_player_with_champion`` call per player, against only the
-horizon's first gameweek — the same order of cost
-``SQUAD_OPTIMIZATION``'s own candidate-building already pays today) ranks
-the whole pool and cuts it down to ``_GW1_PREFILTER_SIZE`` per position;
-only THEN does the much smaller prefiltered set (~4 positions *
-``_GW1_PREFILTER_SIZE`` players) pay the full ``horizon_length``-multiplied
-cost of ``compute_horizon_points``. This bounds the expensive part of this
-function to a small, roughly constant number of calls regardless of how
-large the total player pool grows — a deliberate, justified optimization,
-not a premature one.
+plausibly a few thousand DB round trips before any shortlisting happens
+(~700 * horizon_length, e.g. ~4,200 for a 6-gameweek horizon). This module
+deliberately does NOT try to cut that down with a cheap single-gameweek
+prefilter first (rank by gameweek 1 alone, only pay the full horizon cost
+for the top slice) — an earlier version of this code did exactly that, and
+code review caught a real bias it introduces: once a champion model is
+loaded, its prediction is fixture-aware per target gameweek (via
+``compute_features_for_player_gameweek``), so a player with a hard gameweek-1
+fixture (or a gameweek-1 blank) but an easy run — or a double gameweek — later
+in the horizon would rank outside a gameweek-1-only prefilter and get
+permanently excluded before Stage 2 ever saw their true horizon-summed value.
+That's exactly backwards: fixture-swing and blank/double-gameweek players are
+the whole reason multi-gameweek horizon planning exists, so silently
+excluding them by construction would defeat this feature's own purpose. This
+module instead computes ``compute_horizon_points`` directly for every
+eligible non-owned player, per the master plan's own explicit reasoning that
+this is a read-heavy, no-ML-training operation where a few thousand extra
+DB-read-backed calls is an acceptable, bounded cost for a background
+optimization job (not a live low-latency path) — correctness (surfacing the
+true best horizon target) outweighs a micro-optimization that would
+systematically hide exactly the players this feature is meant to find.
 """
 
 import uuid
@@ -36,18 +42,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.optimization.champion_loader import LoadedChampion
-from app.optimization.projection import project_player, project_player_with_champion
+from app.optimization.projection import project_player
 from app.transfers.horizon_projection import compute_horizon_points
 from packages.database.models.player import Player
 from packages.database.models.position import Position
 
 IN_CANDIDATE_SHORTLIST_SIZE = 25
-
-# Generous single-gameweek prefilter width per position — wide enough that a
-# genuine top-IN_CANDIDATE_SHORTLIST_SIZE horizon target essentially never
-# gets squeezed out just for ranking outside the top 50 on gameweek-1 alone.
-# See module docstring for why this two-stage approach exists at all.
-_GW1_PREFILTER_SIZE = 50
 
 
 @dataclass(frozen=True)
@@ -92,6 +92,17 @@ def build_out_candidates(
     to transfer out) — unlike IN candidates, where hard-excluded players are
     never worth bringing in and are filtered out before shortlisting (see
     ``build_in_shortlists``).
+
+    Squad membership itself is likewise never filtered on ``is_quarantined``
+    here (unlike ``build_in_shortlists``, which excludes quarantined players
+    from the IN pool entirely): a manager's real 15-player squad is exactly
+    what it is regardless of a later data-quality flag on one member's row,
+    and there is no other candidate to substitute it with as an OUT
+    candidate. A quarantined squad member's ``horizon_points``/``now_cost``
+    reliability is the caller's concern (e.g. falling back to last-known-good
+    values), not something this function can silently paper over by
+    excluding a player who is still, in reality, occupying one of the
+    manager's 15 squad slots.
     """
     return [
         TransferCandidate(
@@ -143,9 +154,12 @@ def build_in_shortlists(
     the top of its position's projected-points ranking over the horizon; a
     player ranked ~80th at their position is not going to be the single best
     transfer target even accounting for budget/team-limit interaction. This
-    is explicitly a bounded heuristic, not a claim of global optimality —
-    see the module docstring for the two-stage prefilter used to keep the
-    cost of computing this ranking itself bounded.
+    is explicitly a bounded heuristic, not a claim of global optimality — see
+    the module docstring for why the *ranking itself* is computed directly
+    (full ``compute_horizon_points`` for every eligible player) rather than
+    via a cheaper single-gameweek prefilter, which would bias against
+    exactly the fixture-swing/blank/double-gameweek players this feature
+    exists to surface.
 
     Returns an empty dict if ``horizon_gameweek_ids`` is empty (nothing to
     project against — the real off-season state, not an error; see
@@ -167,10 +181,7 @@ def build_in_shortlists(
         p.id: p for p in session.execute(select(Position).where(Position.season_id == season_id)).scalars()
     }
 
-    first_gameweek_id = horizon_gameweek_ids[0]
-
-    # Stage 1: cheap single-gameweek prefilter over the whole non-owned pool.
-    ranked_by_position: dict[str, list[tuple[float, Player]]] = {}
+    candidates: list[TransferCandidate] = []
     for player in players:
         if player.id in excluded_player_ids:
             continue
@@ -188,27 +199,11 @@ def build_in_shortlists(
         # call just to throw its result away.
         if not project_player(player).is_eligible:
             continue
-        gw1_points = project_player_with_champion(
-            session, player, first_gameweek_id, champion
-        ).projected_points
-        ranked_by_position.setdefault(position.short_name, []).append((gw1_points, player))
-
-    prefiltered_players: list[tuple[Player, str]] = []
-    for position_short_name, ranked in ranked_by_position.items():
-        ranked.sort(key=lambda item: (-item[0], str(item[1].id)))
-        prefiltered_players.extend(
-            (player, position_short_name) for _, player in ranked[:_GW1_PREFILTER_SIZE]
-        )
-
-    # Stage 2: full horizon sum, only for the prefiltered set.
-    candidates: list[TransferCandidate] = []
-    for player, position_short_name in prefiltered_players:
-        assert player.team_id is not None  # narrowed above; for mypy only
         horizon_points = compute_horizon_points(session, player, horizon_gameweek_ids, champion)
         candidates.append(
             TransferCandidate(
                 player_id=player.id,
-                position_short_name=position_short_name,
+                position_short_name=position.short_name,
                 team_id=player.team_id,
                 now_cost=player.now_cost,
                 horizon_points=horizon_points,

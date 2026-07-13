@@ -59,5 +59,16 @@ def resolve_horizon_gameweeks(session: Session, season_id: uuid.UUID, horizon_le
     empty list if there are zero unfinished gameweeks at all (the real
     off-season state this codebase has hit repeatedly in live testing) —
     callers must treat an empty list as "nothing to plan for", not an error.
+
+    ``horizon_length`` must be a positive integer: this is a caller
+    configuration value (e.g. a hand-maintained constant), not user/external
+    input, and a non-positive value here is always a misconfiguration, never
+    a legitimate request. Raises ``ValueError`` rather than silently
+    returning ``[]`` — an empty return here would otherwise be
+    indistinguishable from the genuine, normal off-season state this
+    function is explicitly designed to signal gracefully, masking a real bug
+    as a benign no-op.
     """
+    if horizon_length < 1:
+        raise ValueError(f"horizon_length must be a positive integer, got {horizon_length}")
     return _unfinished_gameweek_ids_ordered(session, season_id, limit=horizon_length)

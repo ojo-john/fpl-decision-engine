@@ -22,9 +22,20 @@ scope.
 
 import itertools
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 
 from app.transfers.candidates import TransferCandidate
+
+
+class InvalidScenarioSearchInputError(ValueError):
+    """Raised when ``evaluate_transfer_scenarios`` is called with input that violates its contract.
+
+    Fails fast at this function's own boundary rather than letting a
+    malformed caller input surface as an opaque ``KeyError`` deep inside a
+    search loop — see the specific checks in ``evaluate_transfer_scenarios``
+    for what's validated and why.
+    """
 
 
 @dataclass(frozen=True)
@@ -47,15 +58,12 @@ def _hit_cost(transfers_count: int, free_transfers_available: int, transfer_hit_
     return max(0, transfers_count - free_transfers_available) * transfer_hit_cost_magnitude
 
 
-def _team_counts(candidates: list[TransferCandidate]) -> dict[uuid.UUID, int]:
-    counts: dict[uuid.UUID, int] = {}
-    for candidate in candidates:
-        counts[candidate.team_id] = counts.get(candidate.team_id, 0) + 1
-    return counts
+def _team_counts(candidates: list[TransferCandidate]) -> Counter[uuid.UUID]:
+    return Counter(candidate.team_id for candidate in candidates)
 
 
 def _swap_is_team_legal(
-    base_counts: dict[uuid.UUID, int],
+    base_counts: Counter[uuid.UUID],
     outs: list[TransferCandidate],
     ins: list[TransferCandidate],
     team_limit: int,
@@ -68,11 +76,9 @@ def _swap_is_team_legal(
     incoming players from the same club that together push that club over
     the limit, even though neither swap alone would).
     """
-    counts = dict(base_counts)
-    for out in outs:
-        counts[out.team_id] = counts.get(out.team_id, 0) - 1
-    for in_candidate in ins:
-        counts[in_candidate.team_id] = counts.get(in_candidate.team_id, 0) + 1
+    counts = base_counts.copy()
+    counts.subtract(out.team_id for out in outs)
+    counts.update(in_candidate.team_id for in_candidate in ins)
     return all(count <= team_limit for count in counts.values())
 
 
@@ -82,7 +88,7 @@ def _best_one_transfer_moves(
     selling_prices: dict[uuid.UUID, int],
     team_limit: int,
     bank: int,
-    base_team_counts: dict[uuid.UUID, int],
+    base_team_counts: Counter[uuid.UUID],
 ) -> tuple[list[TransferMove], float]:
     """Exhaustive best single (out, in) swap by ``points_gain``, respecting budget/team-limit legality.
 
@@ -140,7 +146,7 @@ def _best_two_transfer_moves(
     selling_prices: dict[uuid.UUID, int],
     team_limit: int,
     bank: int,
-    base_team_counts: dict[uuid.UUID, int],
+    base_team_counts: Counter[uuid.UUID],
 ) -> tuple[list[TransferMove], float]:
     """Exhaustive best pair-of-pairs 2-transfer search: JOINT budget + JOINT team-limit legality.
 
@@ -152,10 +158,19 @@ def _best_two_transfer_moves(
     best_gain = 0.0
     found = False
 
+    # _in_pair_candidates' result depends only on the (position_a, position_b)
+    # pair, of which a real squad (4 distinct positions) has very few ordered
+    # combinations -- cached here so it's built at most once per distinct
+    # position pair rather than once per one of the up-to-105 OUT pairs.
+    in_pairs_by_position_pair: dict[tuple[str, str], list[tuple[TransferCandidate, TransferCandidate]]] = {}
+
     for out_a, out_b in itertools.combinations(squad_candidates, 2):
-        in_pairs = _in_pair_candidates(
-            out_a.position_short_name, out_b.position_short_name, in_shortlists_by_position
-        )
+        position_pair = (out_a.position_short_name, out_b.position_short_name)
+        if position_pair not in in_pairs_by_position_pair:
+            in_pairs_by_position_pair[position_pair] = _in_pair_candidates(
+                out_a.position_short_name, out_b.position_short_name, in_shortlists_by_position
+            )
+        in_pairs = in_pairs_by_position_pair[position_pair]
         for in_a, in_b in in_pairs:
             if in_a.player_id == in_b.player_id:
                 continue
@@ -237,7 +252,44 @@ def evaluate_transfer_scenarios(
     ties broken toward FEWER transfers (a transfer is never recommended "for
     free" when an equally-good cheaper option exists — a transfer must
     clear its true cost, never win on being merely equal to it).
+
+    Preconditions (validated at this boundary; raises
+    ``InvalidScenarioSearchInputError`` rather than failing deep inside a
+    search loop with an opaque ``KeyError``):
+
+    - ``transfer_hit_cost_magnitude`` must be non-negative. Layer 1's
+      ``app.transfers.rules.TransferRules.transfer_hit_cost`` is stored
+      SIGNED (e.g. ``-4``) — callers must pass ``abs(rules.transfer_hit_cost)``
+      here, not the raw signed value, or every hit would silently turn into a
+      points BONUS instead of a cost.
+    - ``selling_prices`` must contain an entry for every player in
+      ``squad_candidates`` — every squad member is a potential OUT candidate,
+      so every one of them needs a priced exit.
+
+    ``squad_candidates`` is also assumed to represent the manager's COMPLETE
+    squad (all 15 members, not a filtered subset) — ``_team_counts`` derives
+    each club's current count from exactly this list, so silently omitting a
+    squad member here would undercount their club and could let a swap
+    breach ``team_limit`` in the real squad without this function ever
+    seeing it. This one isn't runtime-checked (this function has no
+    independent way to know the "real" squad size), so it's the caller's
+    responsibility.
     """
+    if transfer_hit_cost_magnitude < 0:
+        raise InvalidScenarioSearchInputError(
+            "transfer_hit_cost_magnitude must be a non-negative magnitude, got "
+            f"{transfer_hit_cost_magnitude}. app.transfers.rules.TransferRules.transfer_hit_cost is "
+            "stored SIGNED (e.g. -4) -- pass abs(rules.transfer_hit_cost), not the raw signed value."
+        )
+
+    missing_selling_prices = [c.player_id for c in squad_candidates if c.player_id not in selling_prices]
+    if missing_selling_prices:
+        raise InvalidScenarioSearchInputError(
+            f"selling_prices is missing an entry for {len(missing_selling_prices)} squad candidate(s), "
+            f"e.g. {missing_selling_prices[0]}. Every squad_candidates player is a potential OUT "
+            "candidate and needs a selling price -- see app.transfers.selling_price."
+        )
+
     base_team_counts = _team_counts(squad_candidates)
 
     scenario0 = TransferScenario(
