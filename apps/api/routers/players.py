@@ -6,7 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.optimization.projection import PROJECTION_FORMULA_VERSION, project_player
+from app.optimization.champion_loader import load_current_champion
+from app.optimization.gameweek_resolution import resolve_target_gameweek
+from app.optimization.projection import (
+    PROJECTION_FORMULA_VERSION,
+    project_player,
+    project_player_with_champion,
+)
 from apps.api.dependencies import get_db
 from apps.api.schemas.players import (
     PlayerDetail,
@@ -113,11 +119,26 @@ def get_player(player_id: uuid.UUID, db: Session = Depends(get_db)) -> PlayerDet
 
 @router.get("/{player_id}/projection", response_model=PlayerProjectionResponse)
 def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -> PlayerProjectionResponse:
+    """Champion-aware live projection — mirrors exactly what the optimizer would actually use.
+
+    Resolves a target gameweek scoped to the player's own season (same
+    ``resolve_target_gameweek`` helper the optimizer jobs use) and, if one
+    resolves and a champion model exists, uses
+    ``project_player_with_champion``; falls back to the plain
+    ``project_player`` formula otherwise (no active gameweek, or no
+    champion yet) — identical fallback behavior to the optimizer jobs.
+    """
     player = db.get(Player, player_id)
     if player is None:
         raise HTTPException(status_code=404, detail=f"Player {player_id} not found.")
 
-    projection = project_player(player)
+    target_gameweek_id, _ = resolve_target_gameweek(db, player.season_id)
+    if target_gameweek_id is None:
+        projection = project_player(player)
+    else:
+        champion = load_current_champion(db)
+        projection = project_player_with_champion(db, player, target_gameweek_id, champion)
+
     return PlayerProjectionResponse(
         player_id=player.id,
         projected_points=projection.projected_points,

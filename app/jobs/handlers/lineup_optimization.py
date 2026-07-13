@@ -26,12 +26,18 @@ from sqlalchemy.orm import Session
 from app.jobs.registry import register_handler
 from app.jobs.runner import JobContext, JobResult, JobRunner
 from app.optimization.candidates import OptimizationCandidate
+from app.optimization.champion_loader import LoadedChampion, load_current_champion
 from app.optimization.constraints import get_captain_multiplier, load_optimization_constraints
 from app.optimization.gameweek_resolution import resolve_target_gameweek
 from app.optimization.gate import check_optimization_gate
 from app.optimization.lineup_solver import solve_lineup
 from app.optimization.persistence import build_run_player_rows_and_xi_points
-from app.optimization.projection import PROJECTION_FORMULA_VERSION, project_player
+from app.optimization.projection import (
+    PROJECTION_FORMULA_VERSION,
+    PlayerProjection,
+    project_player,
+    project_player_with_champion,
+)
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.player import Player
 from packages.database.models.position import Position
@@ -114,8 +120,30 @@ def _parse_lineup_input(
     return player_ids, None
 
 
+def _project(
+    session: Session,
+    player: Player,
+    target_gameweek_id: uuid.UUID | None,
+    champion: LoadedChampion | None,
+) -> PlayerProjection:
+    """Champion-aware projection when a target gameweek is resolved, else the plain formula.
+
+    Same rationale as ``squad_optimization``'s identical helper: a champion
+    model has nothing to project against without a concrete target
+    gameweek, so every candidate falls back to ``project_player`` exactly as
+    it did before this layer whenever none is resolved.
+    """
+    if target_gameweek_id is None:
+        return project_player(player)
+    return project_player_with_champion(session, player, target_gameweek_id, champion)
+
+
 def _build_lineup_candidates(
-    session: Session, season_id: uuid.UUID, player_ids: list[uuid.UUID]
+    session: Session,
+    season_id: uuid.UUID,
+    player_ids: list[uuid.UUID],
+    target_gameweek_id: uuid.UUID | None,
+    champion: LoadedChampion | None,
 ) -> list[OptimizationCandidate]:
     """Build one candidate per requested player id that actually resolves in this season.
 
@@ -139,7 +167,7 @@ def _build_lineup_candidates(
         position = positions_by_id.get(player.position_id)
         if position is None:
             continue
-        projection = project_player(player)
+        projection = _project(session, player, target_gameweek_id, champion)
         candidates.append(
             OptimizationCandidate(
                 player_id=player.id,
@@ -216,7 +244,12 @@ class LineupOptimizationJobRunner(JobRunner):
                 session.commit()
                 session.refresh(run_row)
 
-                candidates = _build_lineup_candidates(session, season_id, player_ids)
+                # Loaded ONCE per job run, never per-player — see
+                # app.optimization.champion_loader's own docstring.
+                champion = load_current_champion(session)
+                candidates = _build_lineup_candidates(
+                    session, season_id, player_ids, target_gameweek_id, champion
+                )
                 solution = solve_lineup(candidates, constraints.position_requirements)
 
                 if solution.solver_status != SolverStatus.OPTIMAL:
