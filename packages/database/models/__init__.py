@@ -25,6 +25,9 @@ from packages.database.models.rules_config import RulesConfig
 from packages.database.models.rules_config_field import RulesConfigField
 from packages.database.models.season import Season
 from packages.database.models.team import Team
+from packages.database.models.transfer_optimization_run import TransferOptimizationRun
+from packages.database.models.transfer_optimization_run_move import TransferOptimizationRunMove
+from packages.database.models.transfer_optimization_run_scenario import TransferOptimizationRunScenario
 
 __all__ = [
     "DataQualityIssue",
@@ -46,4 +49,7 @@ __all__ = [
     "RulesConfigField",
     "Season",
     "Team",
+    "TransferOptimizationRun",
+    "TransferOptimizationRunMove",
+    "TransferOptimizationRunScenario",
 ]
