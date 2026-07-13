@@ -11,6 +11,7 @@ from app.jobs.handlers.model_training import ModelTrainingJobRunner
 from app.jobs.handlers.rules_sync import RulesSyncJobRunner
 from app.jobs.handlers.squad_optimization import SquadOptimizationJobRunner
 from app.jobs.handlers.system_health import SystemHealthJobRunner
+from app.jobs.handlers.transfer_optimization import TransferOptimizationJobRunner
 from app.jobs.registry import JobHandlerNotImplementedError, get_handler
 from packages.domain.jobs import JobType
 
@@ -24,6 +25,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.SQUAD_OPTIMIZATION,
     JobType.LINEUP_OPTIMIZATION,
     JobType.MANAGER_SYNC,
+    JobType.TRANSFER_OPTIMIZATION,
 }
 
 
@@ -61,6 +63,10 @@ def test_model_training_resolves_to_its_runner():
 
 def test_manager_sync_resolves_to_its_runner():
     assert get_handler(JobType.MANAGER_SYNC) is ManagerSyncJobRunner
+
+
+def test_transfer_optimization_resolves_to_its_runner():
+    assert get_handler(JobType.TRANSFER_OPTIMIZATION) is TransferOptimizationJobRunner
 
 
 @pytest.mark.parametrize(
