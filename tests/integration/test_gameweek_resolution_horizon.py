@@ -11,6 +11,7 @@ would be unnecessary overhead for testing pure gameweek-ordering logic.
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from app.optimization.gameweek_resolution import resolve_horizon_gameweeks
@@ -90,3 +91,16 @@ def test_resolve_horizon_gameweeks_empty_for_season_with_no_gameweeks_at_all(db_
     assert result == []
     # sanity: this season really has zero gameweek rows, not a query bug
     assert db_session.execute(select(Gameweek).where(Gameweek.season_id == season_id)).first() is None
+
+
+@pytest.mark.parametrize("horizon_length", [0, -1])
+def test_resolve_horizon_gameweeks_rejects_non_positive_horizon_length(db_session, horizon_length):
+    """A non-positive horizon_length is always a misconfiguration (e.g. a bad hand-maintained
+    constant), never a legitimate request -- it must raise, not silently return [] and get
+    confused with the genuine off-season no-active-gameweek state.
+    """
+    season_id = _make_season(db_session)
+    _make_gameweek(db_session, season_id, 1, deadline_offset_days=7, finished=False)
+
+    with pytest.raises(ValueError):
+        resolve_horizon_gameweeks(db_session, season_id, horizon_length=horizon_length)

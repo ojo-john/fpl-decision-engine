@@ -10,7 +10,7 @@ import uuid
 import pytest
 
 from app.transfers.candidates import TransferCandidate
-from app.transfers.scenario_search import evaluate_transfer_scenarios
+from app.transfers.scenario_search import InvalidScenarioSearchInputError, evaluate_transfer_scenarios
 
 _TEAM_A = uuid.uuid4()
 _TEAM_B = uuid.uuid4()
@@ -321,3 +321,45 @@ def test_two_transfer_recommended_when_it_clearly_beats_zero_and_one_with_no_hit
     assert recommended.transfers_count == 2
     selected_in_ids = {move.player_in.player_id for move in recommended.moves}
     assert selected_in_ids == {in_def.player_id, in_mid.player_id}
+
+
+# --- Input validation: fail fast at the boundary, never a wrong answer ------
+
+
+def test_negative_transfer_hit_cost_magnitude_is_rejected():
+    """Layer 1's TransferRules.transfer_hit_cost is stored SIGNED (e.g. -4) -- if a caller ever
+    wires that raw signed value straight through instead of abs()-ing it first, hit costs would
+    silently invert into a points bonus. This must be rejected loudly, not silently miscomputed.
+    """
+    out = _candidate("DEF", _TEAM_A, cost=50, horizon_points=20.0)
+
+    with pytest.raises(InvalidScenarioSearchInputError):
+        evaluate_transfer_scenarios(
+            squad_candidates=[out],
+            in_shortlists_by_position={},
+            selling_prices={out.player_id: 50},
+            team_limit=3,
+            bank=0,
+            free_transfers_available=1,
+            transfer_hit_cost_magnitude=-4,  # the Layer-1-signed value, passed by mistake
+        )
+
+
+def test_missing_selling_price_for_squad_member_is_rejected():
+    """Every squad_candidates player is a potential OUT candidate and needs a priced exit --
+    a caller that omits one gets a clear, typed error here instead of an opaque KeyError deep
+    inside the search loop.
+    """
+    out1 = _candidate("DEF", _TEAM_A, cost=50, horizon_points=20.0)
+    out2 = _candidate("MID", _TEAM_B, cost=50, horizon_points=20.0)
+
+    with pytest.raises(InvalidScenarioSearchInputError):
+        evaluate_transfer_scenarios(
+            squad_candidates=[out1, out2],
+            in_shortlists_by_position={},
+            selling_prices={out1.player_id: 50},  # out2's selling price is missing
+            team_limit=3,
+            bank=0,
+            free_transfers_available=1,
+            transfer_hit_cost_magnitude=4,
+        )
