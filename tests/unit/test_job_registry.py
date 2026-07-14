@@ -4,6 +4,7 @@ import pytest
 
 from app.jobs.handlers.data_ingestion import DataIngestionJobRunner
 from app.jobs.handlers.feature_generation import FeatureGenerationJobRunner
+from app.jobs.handlers.h2h_simulation import H2HSimulationJobRunner
 from app.jobs.handlers.historical_data_ingestion import HistoricalDataIngestionJobRunner
 from app.jobs.handlers.league_sync import LeagueSyncJobRunner
 from app.jobs.handlers.lineup_optimization import LineupOptimizationJobRunner
@@ -28,6 +29,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.MANAGER_SYNC,
     JobType.LEAGUE_SYNC,
     JobType.TRANSFER_OPTIMIZATION,
+    JobType.H2H_SIMULATION,
 }
 
 
@@ -73,6 +75,10 @@ def test_transfer_optimization_resolves_to_its_runner():
 
 def test_league_sync_resolves_to_its_runner():
     assert get_handler(JobType.LEAGUE_SYNC) is LeagueSyncJobRunner
+
+
+def test_h2h_simulation_resolves_to_its_runner():
+    assert get_handler(JobType.H2H_SIMULATION) is H2HSimulationJobRunner
 
 
 @pytest.mark.parametrize(
