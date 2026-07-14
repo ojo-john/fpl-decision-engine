@@ -62,6 +62,7 @@ any other unexpected failure while computing their profile) must never
 abort the whole run — it degrades only that rival's own profile.
 """
 
+import itertools
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -442,51 +443,26 @@ def _load_latest_snapshot_per_event(session: Session, fpl_manager_id: int) -> li
     return sorted(latest_by_event.values(), key=lambda r: r.fpl_event_id)
 
 
-def _build_transfer_target_candidates(
-    session: Session, season_id: uuid.UUID, squad_player_ids: list[str]
+# How many of the rival's weakest squad positions get transfer-target coverage. 2 (not 1) so a
+# 2-transfer draw in Milestone 5 Layer 3's simulator can swap two DIFFERENT weak spots instead of
+# approximating both swaps against a single tracked position (see app.h2h.simulate's own docstring
+# on that previously-documented limitation).
+_WEAKEST_POSITIONS_TRACKED = 2
+
+
+def _ranked_candidates_for_position(
+    session: Session,
+    season_id: uuid.UUID,
+    position_id: uuid.UUID,
+    position_short_name: str | None,
+    owned_ids: set[uuid.UUID],
 ) -> list[TransferTargetCandidate]:
-    """Heuristic replacement-player candidates for a rival's single weakest squad position.
-
-    Deliberately simple, cheap, advisory-only: identifies the one position
-    where the rival's current squad's average projected points
-    (``app.optimization.projection.project_player`` — the plain ep_next/
-    points_per_game heuristic, not the champion-aware path, which needs a
-    resolved target-gameweek id and loaded champion context that doesn't
-    reliably exist in this per-rival-per-league-sync setting) is lowest, then
-    ranks unowned same-position players by projected points. This is a
-    heuristic signal, not a claim of precision — see
-    ``RivalStateResult.predicted_likely_transfer_targets``'s own framing.
-    """
-    squad_uuids = [uuid.UUID(pid) for pid in squad_player_ids]
-    squad_players = session.execute(select(Player).where(Player.id.in_(squad_uuids))).scalars().all()
-    if not squad_players:
-        return []
-
-    projected_points_by_position: dict[uuid.UUID, list[float]] = {}
-    for player in squad_players:
-        if player.position_id is None:
-            continue
-        projection = project_player(player)
-        projected_points_by_position.setdefault(player.position_id, []).append(projection.projected_points)
-
-    if not projected_points_by_position:
-        return []
-
-    weakest_position_id = min(
-        projected_points_by_position,
-        key=lambda position_id: (
-            sum(projected_points_by_position[position_id]) / len(projected_points_by_position[position_id])
-        ),
-    )
-    position = session.get(Position, weakest_position_id)
-    position_short_name = position.short_name if position is not None else None
-
-    owned_ids = {player.id for player in squad_players}
+    """Unowned, eligible same-position players, ranked by projected points descending."""
     candidates = (
         session.execute(
             select(Player).where(
                 Player.season_id == season_id,
-                Player.position_id == weakest_position_id,
+                Player.position_id == position_id,
                 Player.is_quarantined.is_(False),
             )
         )
@@ -517,9 +493,74 @@ def _build_transfer_target_candidates(
                 ),
             )
         )
-
     scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [candidate for _, candidate in scored[:_TOP_TRANSFER_TARGET_CANDIDATES]]
+    return [candidate for _, candidate in scored]
+
+
+def _interleave_by_position(
+    ranked_lists: list[list[TransferTargetCandidate]],
+) -> list[TransferTargetCandidate]:
+    """Round-robin merge so every tracked weak position is represented near the front of the ranking.
+
+    Without this, a simple concatenation would let one deep, well-stocked position push a
+    thinner-but-still-weak second position entirely out of the eventual top-N slice.
+    """
+    merged: list[TransferTargetCandidate] = []
+    for group in itertools.zip_longest(*ranked_lists):
+        merged.extend(candidate for candidate in group if candidate is not None)
+    return merged
+
+
+def _build_transfer_target_candidates(
+    session: Session, season_id: uuid.UUID, squad_player_ids: list[str]
+) -> list[TransferTargetCandidate]:
+    """Heuristic replacement-player candidates for a rival's weakest squad position(s).
+
+    Deliberately simple, cheap, advisory-only: identifies the ``_WEAKEST_POSITIONS_TRACKED``
+    positions where the rival's current squad's average projected points
+    (``app.optimization.projection.project_player`` — the plain ep_next/
+    points_per_game heuristic, not the champion-aware path, which needs a
+    resolved target-gameweek id and loaded champion context that doesn't
+    reliably exist in this per-rival-per-league-sync setting) is lowest, then
+    ranks unowned same-position players by projected points for each, and
+    interleaves the results so both positions are represented in the final
+    ranking rather than one crowding the other out. This is a heuristic
+    signal, not a claim of precision — see
+    ``RivalStateResult.predicted_likely_transfer_targets``'s own framing.
+    """
+    squad_uuids = [uuid.UUID(pid) for pid in squad_player_ids]
+    squad_players = session.execute(select(Player).where(Player.id.in_(squad_uuids))).scalars().all()
+    if not squad_players:
+        return []
+
+    projected_points_by_position: dict[uuid.UUID, list[float]] = {}
+    for player in squad_players:
+        if player.position_id is None:
+            continue
+        projection = project_player(player)
+        projected_points_by_position.setdefault(player.position_id, []).append(projection.projected_points)
+
+    if not projected_points_by_position:
+        return []
+
+    weakest_position_ids = sorted(
+        projected_points_by_position,
+        key=lambda position_id: (
+            sum(projected_points_by_position[position_id]) / len(projected_points_by_position[position_id])
+        ),
+    )[:_WEAKEST_POSITIONS_TRACKED]
+
+    owned_ids = {player.id for player in squad_players}
+    ranked_by_position: list[list[TransferTargetCandidate]] = []
+    for position_id in weakest_position_ids:
+        position = session.get(Position, position_id)
+        position_short_name = position.short_name if position is not None else None
+        ranked_by_position.append(
+            _ranked_candidates_for_position(session, season_id, position_id, position_short_name, owned_ids)
+        )
+
+    merged = _interleave_by_position(ranked_by_position)
+    return merged[:_TOP_TRANSFER_TARGET_CANDIDATES]
 
 
 def _compute_and_upsert_rival_profile(

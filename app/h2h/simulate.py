@@ -38,6 +38,13 @@ Scope (deliberately bounded, not silently missing):
   — in both of those residual cases, this module still samples residual
   noise around a ``projected_points=0.0`` floor for that draw rather than
   hard-zeroing it, which can slightly overstate that player's ceiling.
+- Multi-transfer draws swap the top-2 DISTINCT weakest positions Layer 2
+  tracked (``app.jobs.handlers.league_sync._build_transfer_target_candidates``
+  now identifies up to 2 weak positions, not just 1) — falling back to
+  repeating the single tracked position if Layer 2 only ever found
+  candidates for one (thin squad data). This is still an approximation of a
+  real 2-transfer plan (Layer 2 has no notion of a coordinated 2-move
+  strategy, just 2 independent weak-spot signals), not a full plan search.
 - Chip usage for the TARGET gameweek is never modeled/predicted for either
   side (no wildcard/bench-boost/triple-captain simulation) — the user side
   applies whatever multiplier its own actual pick record carries (which
@@ -236,29 +243,40 @@ def _weighted_choice(
     return rng.choices(targets, weights=weights, k=1)[0]
 
 
-def _select_out_indices(
-    squad: list[_DrawSquadMember], positions: list[str | None], target_position: str | None, count: int
-) -> list[int]:
-    """Pick ``count`` squad indices to transfer OUT: the weakest-projected player(s) at ``target_position``.
+def _ranked_target_positions(targets: tuple[RivalTransferTargetInput, ...]) -> list[str | None]:
+    """Distinct target positions in Layer 2's own ranked order (first-appearance order).
 
-    Falls back to the weakest-projected player(s) overall (any position) to
-    fill any remaining slots if fewer than ``count`` players occupy that
-    position -- a documented simplification, since Layer 2's
-    predicted_likely_transfer_targets only ever tracks a single "weakest
-    position" per rival, not a full replacement plan.
+    Layer 2 (``app.jobs.handlers.league_sync._build_transfer_target_candidates``) interleaves
+    candidates from its top-2 tracked weakest positions, weakest-first, so the first-seen distinct
+    positions here are already the rival's weakest-to-least-weak squad spots.
+    """
+    seen: list[str | None] = []
+    for target in targets:
+        if target.position not in seen:
+            seen.append(target.position)
+    return seen
+
+
+def _select_out_index(
+    squad: list[_DrawSquadMember],
+    positions: list[str | None],
+    target_position: str | None,
+    excluded: set[int],
+) -> int:
+    """Pick ONE squad index to transfer OUT: the weakest-projected player at ``target_position``
+    not already claimed by an earlier swap this draw. Falls back to the weakest-projected player
+    overall (any position, still excluding already-claimed indices) if none of that position remain.
     """
     by_position = sorted(
-        (i for i in range(len(squad)) if positions[i] == target_position),
+        (i for i in range(len(squad)) if positions[i] == target_position and i not in excluded),
         key=lambda i: squad[i].projected_points,
     )
-    chosen = by_position[:count]
-    if len(chosen) < count:
-        remaining = sorted(
-            (i for i in range(len(squad)) if i not in chosen),
-            key=lambda i: squad[i].projected_points,
-        )
-        chosen += remaining[: count - len(chosen)]
-    return chosen
+    if by_position:
+        return by_position[0]
+    remaining = sorted(
+        (i for i in range(len(squad)) if i not in excluded), key=lambda i: squad[i].projected_points
+    )
+    return remaining[0]
 
 
 def _simulate_rival_draw(
@@ -280,9 +298,20 @@ def _simulate_rival_draw(
         category = _sample_transfer_category(rng, no_p, one_p, multi_p)
         swap_count = {"no_transfer": 0, "one_transfer": 1, "multi_transfer": 2}[category]
         if swap_count:
-            target_position = targets[0].position
-            for idx in _select_out_indices(squad, positions, target_position, swap_count):
-                chosen = _weighted_choice(rng, targets)
+            # Multi-transfer swaps the top-2 DISTINCT weakest positions Layer 2 tracked (see
+            # _ranked_target_positions) -- falls back to repeating the single weakest position if
+            # Layer 2 only ever found candidates for one (thin data), never fabricating a second.
+            positions_ranked = _ranked_target_positions(targets)
+            positions_to_fill = positions_ranked[:swap_count]
+            while len(positions_to_fill) < swap_count and positions_ranked:
+                positions_to_fill.append(positions_ranked[-1])
+
+            used_indices: set[int] = set()
+            for target_position in positions_to_fill[: len(squad)]:
+                idx = _select_out_index(squad, positions, target_position, used_indices)
+                used_indices.add(idx)
+                position_targets = tuple(t for t in targets if t.position == target_position) or targets
+                chosen = _weighted_choice(rng, position_targets)
                 squad[idx] = _DrawSquadMember(
                     fpl_element_id=None,  # a transferred-in player was never observed as this rival's captain
                     projected_points=chosen.projected_points,

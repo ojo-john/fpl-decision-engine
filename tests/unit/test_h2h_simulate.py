@@ -149,6 +149,44 @@ def test_rival_transfer_sampling_varies_the_simulated_squad_across_draws_when_mu
     assert result.rival_score_mean > 20.0
 
 
+def test_multi_transfer_swaps_two_distinct_weak_positions_not_the_same_one_twice():
+    # 2 DEF + 2 MID held, all zero-residual (deterministic). Targets carry two
+    # DISTINCT positions (DEF first -- the weakest tracked -- then MID), each
+    # with only one candidate and a different point value, so the outcome is
+    # fully deterministic and unambiguously proves BOTH positions got swapped
+    # independently (a bug that swapped the same position twice, or ignored
+    # position entirely, could not land on exactly this total).
+    held = (
+        _rival_held(player_id="d0", fpl_element_id=1, position="DEF", projected_points=5.0, own_residuals=()),
+        _rival_held(player_id="d1", fpl_element_id=2, position="DEF", projected_points=5.0, own_residuals=()),
+        _rival_held(player_id="m0", fpl_element_id=3, position="MID", projected_points=5.0, own_residuals=()),
+        _rival_held(player_id="m1", fpl_element_id=4, position="MID", projected_points=5.0, own_residuals=()),
+    )
+    targets = (
+        _rival_target(player_id="def-target", position="DEF", projected_points=20.0, own_residuals=()),
+        _rival_target(player_id="mid-target", position="MID", projected_points=30.0, own_residuals=()),
+    )
+    inputs = SimulationInputs(
+        user_players=(_user_player(),),
+        rival_held_players=held,
+        rival_transfer_targets=targets,
+        rival_no_transfer_probability=0.0,
+        rival_one_transfer_probability=0.0,
+        rival_multi_transfer_probability=1.0,
+        rival_state_confidence=RivalStateConfidence.MEDIUM,
+        sample_count=25,
+    )
+
+    result = simulate_matchup(inputs, random.Random(17))
+
+    # Untouched DEF (5) + untouched MID (5) + swapped DEF (20) + swapped MID (30, doubled by the
+    # cold-start captain fallback since it's the highest scorer every draw) = 5+5+20+60 = 90,
+    # exactly every draw -- deterministic since each position group has one candidate and zero
+    # residual noise. A bug that swapped the same position twice (or ignored position entirely)
+    # could not land on exactly this total.
+    assert result.rival_score_mean == 90.0
+
+
 def test_cold_start_captain_fallback_captains_best_projected_player_without_crashing():
     # Zero residual noise makes each draw's per-player score exactly its
     # projection, so the fallback captain choice (highest score THAT draw) is
