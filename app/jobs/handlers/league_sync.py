@@ -47,25 +47,50 @@ rather than duplicating it) — a rival's squad element resolution is exactly
 the same "resolve to this season's ``Player.fpl_element_id``, report
 unresolved ids, never block on it" logic ``MANAGER_SYNC`` already
 established.
+
+Milestone 5 Layer 2 (H2H Strategy: rival-state derivation/prediction) is
+appended to this same handler rather than built as its own job type — after
+every rival's ``RivalGameweekSnapshot`` row is persisted for this run (the
+block above), ``_compute_and_upsert_rival_profile`` runs for every rival in
+the league (regardless of *this run's* picks-fetch outcome — it reuses
+whatever ``RivalGameweekSnapshot``/``/history/`` data already exists),
+computing the pure ``app.h2h.rival_state.compute_rival_state`` output and
+upserting one current-state ``RivalProfile`` row per ``(season_id,
+fpl_manager_id)``. Mirrors ``_sync_one_rival``'s per-rival failure
+isolation discipline exactly: one rival's ``/history/`` fetch failing (or
+any other unexpected failure while computing their profile) must never
+abort the whole run — it degrades only that rival's own profile.
 """
 
 import logging
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.h2h.rival_state import (
+    CaptainObservation,
+    RivalStateInputs,
+    TransferTargetCandidate,
+    compute_rival_state,
+)
 from app.ingestion.normalization import _bulk_upsert
 from app.jobs.handlers.manager_sync import _resolve_players
 from app.jobs.registry import register_handler
 from app.jobs.runner import JobContext, JobResult, JobRunner
 from app.optimization.gameweek_resolution import resolve_most_recent_finished_gameweek_event
+from app.optimization.projection import project_player
+from app.transfers.rules import load_current_rules_config_id, load_transfer_rules
 from packages.database.models.h2h_match import H2HMatch
 from packages.database.models.league import League
 from packages.database.models.league_entry import LeagueEntry
 from packages.database.models.league_sync_run import LeagueSyncRun
+from packages.database.models.player import Player
+from packages.database.models.position import Position
 from packages.database.models.rival_gameweek_snapshot import RivalGameweekSnapshot
+from packages.database.models.rival_profile import RivalProfile
+from packages.database.models.rules_config import RulesConfig
 from packages.database.models.season import Season
 from packages.database.session import SessionLocal
 from packages.domain.h2h import LeagueSyncRunStatus, LeagueType, PicksAvailability
@@ -73,6 +98,8 @@ from packages.domain.jobs import JobStatus, JobType
 from packages.fpl_client import FetchResult, FPLClient
 
 logger = logging.getLogger(__name__)
+
+_TOP_TRANSFER_TARGET_CANDIDATES = 5
 
 
 class _LeagueMatchesFetchFailedError(Exception):
@@ -360,6 +387,277 @@ def _sync_one_rival(
         return _minimal_snapshot(fpl_manager_id, fpl_event_id, as_of, PicksAvailability.FETCH_FAILED, None)
 
 
+def _load_chip_inventory(session: Session, rules_config_id: uuid.UUID) -> list[str]:
+    """Distinct chip names available this season, from the current rules_config's raw chips[].
+
+    De-duplicated (a chip typically appears twice in FPL's raw ``chips[]`` --
+    once per season half -- ``app.h2h.rival_state`` also de-duplicates this
+    same inventory defensively, so passing a pre-deduplicated list here is a
+    belt-and-braces choice, not a requirement).
+    """
+    raw_chips = session.execute(
+        select(RulesConfig.raw_chips_json).where(RulesConfig.id == rules_config_id)
+    ).scalar_one()
+    return list(dict.fromkeys(chip["name"] for chip in raw_chips))
+
+
+def _load_population_mean_selected_by_percent(session: Session, season_id: uuid.UUID) -> float | None:
+    """Season-wide average ownership %, across non-quarantined players -- the population signal.
+
+    ``None`` if no players are ingested yet (e.g. a brand-new season with no
+    completed DATA_INGESTION run) -- callers must treat this as "population
+    comparison unavailable", not an error.
+    """
+    mean_value = session.execute(
+        select(func.avg(Player.selected_by_percent)).where(
+            Player.season_id == season_id, Player.is_quarantined.is_(False)
+        )
+    ).scalar_one_or_none()
+    return float(mean_value) if mean_value is not None else None
+
+
+def _load_latest_snapshot_per_event(session: Session, fpl_manager_id: int) -> list[RivalGameweekSnapshot]:
+    """One snapshot row per distinct ``fpl_event_id`` for this manager -- the most recently created attempt.
+
+    ``RivalGameweekSnapshot`` is insert-only (see its own docstring): repeated
+    ``LEAGUE_SYNC`` runs targeting the same still-most-recent-finished
+    gameweek can leave multiple attempt rows for the same ``(fpl_manager_id,
+    fpl_event_id)``. Layer 2's tendency/captain-frequency statistics must
+    count each real gameweek exactly once (its latest attempt), or a
+    re-synced-but-unchanged gameweek would silently inflate that gameweek's
+    weight in the computed distribution.
+    """
+    rows = (
+        session.execute(
+            select(RivalGameweekSnapshot)
+            .where(RivalGameweekSnapshot.fpl_manager_id == fpl_manager_id)
+            .order_by(RivalGameweekSnapshot.fpl_event_id.asc(), RivalGameweekSnapshot.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    latest_by_event: dict[int, RivalGameweekSnapshot] = {}
+    for row in rows:
+        latest_by_event.setdefault(row.fpl_event_id, row)
+    return sorted(latest_by_event.values(), key=lambda r: r.fpl_event_id)
+
+
+def _build_transfer_target_candidates(
+    session: Session, season_id: uuid.UUID, squad_player_ids: list[str]
+) -> list[TransferTargetCandidate]:
+    """Heuristic replacement-player candidates for a rival's single weakest squad position.
+
+    Deliberately simple, cheap, advisory-only: identifies the one position
+    where the rival's current squad's average projected points
+    (``app.optimization.projection.project_player`` — the plain ep_next/
+    points_per_game heuristic, not the champion-aware path, which needs a
+    resolved target-gameweek id and loaded champion context that doesn't
+    reliably exist in this per-rival-per-league-sync setting) is lowest, then
+    ranks unowned same-position players by projected points. This is a
+    heuristic signal, not a claim of precision — see
+    ``RivalStateResult.predicted_likely_transfer_targets``'s own framing.
+    """
+    squad_uuids = [uuid.UUID(pid) for pid in squad_player_ids]
+    squad_players = session.execute(select(Player).where(Player.id.in_(squad_uuids))).scalars().all()
+    if not squad_players:
+        return []
+
+    projected_points_by_position: dict[uuid.UUID, list[float]] = {}
+    for player in squad_players:
+        if player.position_id is None:
+            continue
+        projection = project_player(player)
+        projected_points_by_position.setdefault(player.position_id, []).append(projection.projected_points)
+
+    if not projected_points_by_position:
+        return []
+
+    weakest_position_id = min(
+        projected_points_by_position,
+        key=lambda position_id: (
+            sum(projected_points_by_position[position_id]) / len(projected_points_by_position[position_id])
+        ),
+    )
+    position = session.get(Position, weakest_position_id)
+    position_short_name = position.short_name if position is not None else None
+
+    owned_ids = {player.id for player in squad_players}
+    candidates = (
+        session.execute(
+            select(Player).where(
+                Player.season_id == season_id,
+                Player.position_id == weakest_position_id,
+                Player.is_quarantined.is_(False),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    scored: list[tuple[float, TransferTargetCandidate]] = []
+    for candidate in candidates:
+        if candidate.id in owned_ids:
+            continue
+        projection = project_player(candidate)
+        if not projection.is_eligible:
+            continue
+        scored.append(
+            (
+                projection.projected_points,
+                TransferTargetCandidate(
+                    player_id=str(candidate.id),
+                    web_name=candidate.web_name,
+                    position=position_short_name,
+                    projected_points=projection.projected_points,
+                    selected_by_percent=(
+                        float(candidate.selected_by_percent)
+                        if candidate.selected_by_percent is not None
+                        else None
+                    ),
+                ),
+            )
+        )
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [candidate for _, candidate in scored[:_TOP_TRANSFER_TARGET_CANDIDATES]]
+
+
+def _compute_and_upsert_rival_profile(
+    session: Session,
+    client: FPLClient,
+    season_id: uuid.UUID,
+    league_id: uuid.UUID,
+    fpl_manager_id: int,
+    chip_inventory: list[str],
+    free_transfers_cap: int,
+    population_mean_selected_by_percent: float | None,
+    now: datetime,
+) -> None:
+    """Compute one rival's full Layer 2 state and upsert their ``RivalProfile`` row. Never raises.
+
+    This is the one deliberate broad-except boundary for Layer 2 (mirrors
+    ``_sync_one_rival``'s own docstring): any failure while computing one
+    rival's profile (network, an unexpected bug in candidate-ranking, a
+    query failure) must never abort the rest of the league sync. A rival's
+    own ``/history/`` fetch failing specifically degrades ONLY that rival's
+    profile to ``history_available=False`` (maximally-low-confidence,
+    mostly-unknown — see ``app.h2h.rival_state``), rather than skipping the
+    row entirely; anything else unexpected skips upserting this rival's
+    profile for this run only (any prior profile row is left untouched).
+    """
+    try:
+        history_available = False
+        history_current_rows: list[dict] = []
+        history_chip_rows: list[dict] = []
+        try:
+            history_result = client.fetch_manager_history(fpl_manager_id)
+            if history_result.raw_body is not None:
+                assert isinstance(history_result.raw_body, dict)  # history always returns a JSON object
+                history_current_rows = history_result.raw_body.get("current", [])
+                history_chip_rows = history_result.raw_body.get("chips", [])
+                history_available = True
+            else:
+                logger.warning(
+                    "league_sync.rival_history_fetch_failed",
+                    extra={
+                        "fpl_manager_id": fpl_manager_id,
+                        "http_status": history_result.http_status,
+                        "error": history_result.error_message,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 - a history-fetch failure degrades, never aborts
+            logger.warning(
+                "league_sync.rival_history_fetch_raised",
+                extra={"fpl_manager_id": fpl_manager_id, "error": str(exc)},
+            )
+
+        latest_snapshots = _load_latest_snapshot_per_event(session, fpl_manager_id)
+        available_snapshots = [
+            s for s in latest_snapshots if s.picks_availability == PicksAvailability.AVAILABLE
+        ]
+        captain_observations = [
+            CaptainObservation(fpl_event_id=s.fpl_event_id, captain_element_id=s.captain_element_id)
+            for s in available_snapshots
+        ]
+        last_known_snapshot = available_snapshots[-1] if available_snapshots else None
+
+        squad_selected_by_percent: list[float] | None = None
+        transfer_target_candidates: list[TransferTargetCandidate] = []
+        if last_known_snapshot is not None and last_known_snapshot.squad_player_ids:
+            squad_uuids = [uuid.UUID(pid) for pid in last_known_snapshot.squad_player_ids]
+            squad_players = session.execute(select(Player).where(Player.id.in_(squad_uuids))).scalars().all()
+            ownerships = [
+                float(p.selected_by_percent) for p in squad_players if p.selected_by_percent is not None
+            ]
+            squad_selected_by_percent = ownerships or None
+            transfer_target_candidates = _build_transfer_target_candidates(
+                session, season_id, last_known_snapshot.squad_player_ids
+            )
+
+        inputs = RivalStateInputs(
+            fpl_manager_id=fpl_manager_id,
+            chip_inventory=chip_inventory,
+            free_transfers_cap=free_transfers_cap,
+            history_available=history_available,
+            history_current_rows=history_current_rows,
+            history_chip_rows=history_chip_rows,
+            captain_observations=captain_observations,
+            last_known_snapshot_id=last_known_snapshot.id if last_known_snapshot is not None else None,
+            squad_selected_by_percent=squad_selected_by_percent,
+            population_mean_selected_by_percent=population_mean_selected_by_percent,
+            transfer_target_candidates=transfer_target_candidates,
+        )
+        result = compute_rival_state(inputs)
+
+        existing_keys = {
+            (row_season_id, row_manager_id)
+            for (row_season_id, row_manager_id) in session.execute(
+                select(RivalProfile.season_id, RivalProfile.fpl_manager_id).where(
+                    RivalProfile.season_id == season_id, RivalProfile.fpl_manager_id == fpl_manager_id
+                )
+            )
+        }
+        values = [
+            {
+                "id": uuid.uuid4(),
+                "season_id": season_id,
+                "fpl_manager_id": fpl_manager_id,
+                "league_id": league_id,
+                "last_known_snapshot_id": result.last_known_snapshot_id,
+                "derived_free_transfers_min": result.derived_free_transfers_min,
+                "derived_free_transfers_max": result.derived_free_transfers_max,
+                "derived_free_transfers_confidence": result.derived_free_transfers_confidence,
+                "derived_likely_remaining_chips_json": result.derived_likely_remaining_chips,
+                "predicted_no_transfer_probability": result.predicted_no_transfer_probability,
+                "predicted_one_transfer_probability": result.predicted_one_transfer_probability,
+                "predicted_multi_transfer_probability": result.predicted_multi_transfer_probability,
+                "predicted_hit_probability": result.predicted_hit_probability,
+                "predicted_captain_probabilities_json": result.predicted_captain_probabilities,
+                "predicted_likely_transfer_targets_json": result.predicted_likely_transfer_targets,
+                "tendency_features_json": result.tendency_features,
+                "unknowns_json": result.unknowns,
+                "evidence_json": result.evidence,
+                "overall_confidence": result.overall_confidence,
+                "computed_at": now,
+            }
+        ]
+        _bulk_upsert(
+            session,
+            RivalProfile,
+            values,
+            index_elements=["season_id", "fpl_manager_id"],
+            existing_keys=existing_keys,
+            key_fields=["season_id", "fpl_manager_id"],
+        )
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 - one rival's profile failure must never abort the whole run
+        session.rollback()
+        logger.warning(
+            "league_sync.rival_profile_computation_failed",
+            extra={"fpl_manager_id": fpl_manager_id, "error": str(exc)},
+        )
+
+
 @register_handler(JobType.LEAGUE_SYNC)
 class LeagueSyncJobRunner(JobRunner):
     """Syncs an H2H league's standings/matches, plus each rival's latest finished-gameweek picks."""
@@ -457,6 +755,37 @@ class LeagueSyncJobRunner(JobRunner):
                         else:
                             rivals_unavailable += 1
 
+                # Milestone 5 Layer 2: compute + upsert one RivalProfile per
+                # rival, for every rival in the league regardless of this
+                # run's picks-fetch outcome (see _compute_and_upsert_rival_profile's
+                # own docstring) -- independent of fpl_event_id/the picks
+                # loop above, since /history/ data exists whether or not a
+                # gameweek has finished yet this season.
+                rules_config_id = load_current_rules_config_id(session, season.id)
+                transfer_rules = load_transfer_rules(session, rules_config_id)
+                chip_inventory = _load_chip_inventory(session, rules_config_id)
+                population_mean_selected_by_percent = _load_population_mean_selected_by_percent(
+                    session, season.id
+                )
+
+                rival_profiles_computed = 0
+                for entry_row in standings_results:
+                    fpl_manager_id = entry_row["entry"]
+                    if exclude_fpl_manager_id is not None and fpl_manager_id == exclude_fpl_manager_id:
+                        continue
+                    _compute_and_upsert_rival_profile(
+                        session,
+                        client,
+                        season.id,
+                        league.id,
+                        fpl_manager_id,
+                        chip_inventory,
+                        transfer_rules.free_transfers_cap,
+                        population_mean_selected_by_percent,
+                        now,
+                    )
+                    rival_profiles_computed += 1
+
                 run_row.run_status = (
                     LeagueSyncRunStatus.SUCCEEDED
                     if rivals_unavailable == 0
@@ -474,6 +803,7 @@ class LeagueSyncJobRunner(JobRunner):
                         "league_id": str(league.id),
                         "rivals_synced_count": rivals_synced,
                         "rivals_unavailable_count": rivals_unavailable,
+                        "rival_profiles_computed_count": rival_profiles_computed,
                         "run_status": run_row.run_status.value,
                     },
                     error_code=None,

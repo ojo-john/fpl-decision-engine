@@ -400,6 +400,23 @@ def _not_found_fetch_result(manager_id: int, event: int) -> FetchResult:
     )
 
 
+def _not_found_history_fetch_result(manager_id: int) -> FetchResult:
+    return FetchResult(
+        endpoint="manager_history",
+        request_url=f"https://fantasy.premierleague.com/api/entry/{manager_id}/history/",
+        request_params=None,
+        retrieved_at=datetime.now(UTC),
+        http_status=404,
+        attempt_count=1,
+        latency_ms=10,
+        health_status=EndpointHealth.BLOCKED,
+        checksum_sha256=None,
+        schema_signature=None,
+        raw_body=None,
+        error_message="http_status_404",
+    )
+
+
 @pytest.fixture
 def patched_fpl_client_league(monkeypatch):
     """Monkeypatch FPLClient's H2H-league-facing methods, serving the committed league fixture files.
@@ -410,11 +427,22 @@ def patched_fpl_client_league(monkeypatch):
     entry D's picks fetch raises, simulating an unexpected client-level
     failure (``FETCH_FAILED``) — see ``app.jobs.handlers.league_sync``'s own
     per-rival failure-isolation docstring.
+
+    ``fetch_manager_history`` (Milestone 5 Layer 2) is mocked independently
+    of the picks outcome above, exactly matching Layer 2's own "reuse
+    whatever history exists regardless of this run's picks-fetch outcome"
+    discipline: entry C's picks are unavailable but its *history* fetch still
+    succeeds here (a deliberate, meaningful test case), entry D's history
+    fetch raises (simulating an unexpected client-level failure distinct
+    from its picks failure), and every other manager id (B, self) gets a
+    real, richer 5-gameweek history (reusing the same committed
+    ``tests/fixtures/fpl_api/manager/history.json`` Milestone 4 fixture).
     """
     state = {
         "standings": load_league_standings_json(),
         "matches": load_league_matches_json(),
         "picks_b": load_league_picks_b_json(),
+        "history": load_manager_history_json(),
     }
 
     def fetch_h2h_league_standings(self, league_id, page=1):
@@ -432,9 +460,17 @@ def patched_fpl_client_league(monkeypatch):
             raise RuntimeError("simulated rival picks fetch failure")
         raise AssertionError(f"unexpected manager_id {manager_id} in patched_fpl_client_league")
 
+    def fetch_manager_history(self, manager_id):
+        if manager_id == LEAGUE_RIVAL_D_FPL_MANAGER_ID:
+            raise RuntimeError("simulated rival history fetch failure")
+        if manager_id == LEAGUE_RIVAL_C_FPL_MANAGER_ID:
+            return _not_found_history_fetch_result(manager_id)
+        return make_fetch_result("manager_history", state["history"])
+
     monkeypatch.setattr(FPLClient, "fetch_h2h_league_standings", fetch_h2h_league_standings)
     monkeypatch.setattr(FPLClient, "fetch_h2h_matches", fetch_h2h_matches)
     monkeypatch.setattr(FPLClient, "fetch_manager_picks", fetch_manager_picks)
+    monkeypatch.setattr(FPLClient, "fetch_manager_history", fetch_manager_history)
 
     return state
 
