@@ -1,0 +1,29 @@
+{
+  "league": {
+    "id": 88888,
+    "name": "Test H2H League",
+    "created": "2026-07-01T00:00:00Z",
+    "closed": false,
+    "max_entries": null,
+    "league_type": "x",
+    "scoring": "h",
+    "admin_entry": 2001,
+    "start_event": 1,
+    "code_privacy": "x",
+    "has_cup": true,
+    "cup_league": null,
+    "rank": null,
+    "ko_rounds": 3
+  },
+  "new_entries": {"has_next": false, "page": 1, "results": []},
+  "standings": {
+    "has_next": false,
+    "page": 1,
+    "results": [
+      {"id": 1, "division": 1, "entry": 2001, "player_name": "Self Manager", "rank": 1, "last_rank": 1, "rank_sort": 1, "total": 220, "entry_name": "Self FC", "matches_played": 4, "matches_won": 3, "matches_drawn": 0, "matches_lost": 1, "points_for": 240},
+      {"id": 2, "division": 1, "entry": 2002, "player_name": "Rival B", "rank": 2, "last_rank": 2, "rank_sort": 2, "total": 200, "entry_name": "B FC", "matches_played": 4, "matches_won": 2, "matches_drawn": 1, "matches_lost": 1, "points_for": 230},
+      {"id": 3, "division": 1, "entry": 2003, "player_name": "Rival C", "rank": 3, "last_rank": 3, "rank_sort": 3, "total": 180, "entry_name": "C FC", "matches_played": 4, "matches_won": 1, "matches_drawn": 1, "matches_lost": 2, "points_for": 220},
+      {"id": 4, "division": 1, "entry": 2004, "player_name": "Rival D", "rank": 4, "last_rank": 4, "rank_sort": 4, "total": 160, "entry_name": "D FC", "matches_played": 4, "matches_won": 1, "matches_drawn": 0, "matches_lost": 3, "points_for": 210}
+    ]
+  }
+}

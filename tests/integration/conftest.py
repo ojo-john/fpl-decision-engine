@@ -358,6 +358,87 @@ def patched_fpl_client_manager(monkeypatch):
     return state
 
 
+# --- H2H league fixture data (Milestone 5 Layer 1, no live network access) -----
+
+LEAGUE_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "fpl_api" / "league"
+
+# Synthetic 4-entry H2H league: entry A is "self" (excluded via
+# exclude_fpl_manager_id in tests that model the calling user), B/C/D are
+# rivals exercising the three PicksAvailability outcomes.
+LEAGUE_SELF_FPL_MANAGER_ID = 2001
+LEAGUE_RIVAL_B_FPL_MANAGER_ID = 2002  # picks resolve cleanly (HTTP 200)
+LEAGUE_RIVAL_C_FPL_MANAGER_ID = 2003  # picks fetch returns a clean HTTP 404
+LEAGUE_RIVAL_D_FPL_MANAGER_ID = 2004  # picks fetch raises (simulated client-level failure)
+
+
+def load_league_standings_json() -> dict:
+    return json.loads((LEAGUE_FIXTURES_DIR / "standings.json").read_text())
+
+
+def load_league_matches_json() -> dict:
+    return json.loads((LEAGUE_FIXTURES_DIR / "matches.json").read_text())
+
+
+def load_league_picks_b_json() -> dict:
+    return json.loads((LEAGUE_FIXTURES_DIR / "picks_b.json").read_text())
+
+
+def _not_found_fetch_result(manager_id: int, event: int) -> FetchResult:
+    return FetchResult(
+        endpoint="manager_picks",
+        request_url=f"https://fantasy.premierleague.com/api/entry/{manager_id}/event/{event}/picks/",
+        request_params=None,
+        retrieved_at=datetime.now(UTC),
+        http_status=404,
+        attempt_count=1,
+        latency_ms=10,
+        health_status=EndpointHealth.BLOCKED,
+        checksum_sha256=None,
+        schema_signature=None,
+        raw_body=None,
+        error_message="http_status_404",
+    )
+
+
+@pytest.fixture
+def patched_fpl_client_league(monkeypatch):
+    """Monkeypatch FPLClient's H2H-league-facing methods, serving the committed league fixture files.
+
+    Mirrors ``patched_fpl_client_manager``'s exact monkeypatch style. Entry B
+    (``LEAGUE_RIVAL_B_FPL_MANAGER_ID``)'s picks resolve cleanly; entry C's
+    picks fetch returns a clean HTTP 404 (``UNAVAILABLE_PRIVATE_OR_NOT_RELEASED``);
+    entry D's picks fetch raises, simulating an unexpected client-level
+    failure (``FETCH_FAILED``) — see ``app.jobs.handlers.league_sync``'s own
+    per-rival failure-isolation docstring.
+    """
+    state = {
+        "standings": load_league_standings_json(),
+        "matches": load_league_matches_json(),
+        "picks_b": load_league_picks_b_json(),
+    }
+
+    def fetch_h2h_league_standings(self, league_id, page=1):
+        return make_fetch_result("h2h_league_standings", state["standings"])
+
+    def fetch_h2h_matches(self, league_id, event=None, entry=None, page=1):
+        return make_fetch_result("h2h_league_matches", state["matches"])
+
+    def fetch_manager_picks(self, manager_id, event):
+        if manager_id == LEAGUE_RIVAL_B_FPL_MANAGER_ID:
+            return make_fetch_result("manager_picks", state["picks_b"])
+        if manager_id == LEAGUE_RIVAL_C_FPL_MANAGER_ID:
+            return _not_found_fetch_result(manager_id, event)
+        if manager_id == LEAGUE_RIVAL_D_FPL_MANAGER_ID:
+            raise RuntimeError("simulated rival picks fetch failure")
+        raise AssertionError(f"unexpected manager_id {manager_id} in patched_fpl_client_league")
+
+    monkeypatch.setattr(FPLClient, "fetch_h2h_league_standings", fetch_h2h_league_standings)
+    monkeypatch.setattr(FPLClient, "fetch_h2h_matches", fetch_h2h_matches)
+    monkeypatch.setattr(FPLClient, "fetch_manager_picks", fetch_manager_picks)
+
+    return state
+
+
 @pytest.fixture
 def patched_fpl_client_optimization_with_active_gameweek(monkeypatch):
     """Like patched_fpl_client_optimization, but with one gameweek left unfinished.
