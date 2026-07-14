@@ -75,3 +75,11 @@ class RivalStateConfidence(str, Enum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
+
+class H2HSimulationRunStatus(str, Enum):
+    """Lifecycle status of an ``h2h_simulation_runs`` row (Milestone 5 Layer 3)."""
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"

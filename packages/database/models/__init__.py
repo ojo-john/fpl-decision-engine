@@ -10,6 +10,7 @@ from packages.database.models.data_quality_issue import DataQualityIssue
 from packages.database.models.fixture import Fixture
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.h2h_match import H2HMatch
+from packages.database.models.h2h_simulation_run import H2HSimulationRun
 from packages.database.models.ingestion_run import IngestionRun
 from packages.database.models.job import Job
 from packages.database.models.league import League
@@ -40,6 +41,7 @@ __all__ = [
     "Fixture",
     "Gameweek",
     "H2HMatch",
+    "H2HSimulationRun",
     "IngestionRun",
     "Job",
     "League",
