@@ -26,6 +26,7 @@ from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.position import Position
 from packages.database.models.raw_api_snapshot import RawApiSnapshot
 from packages.database.models.rival_gameweek_snapshot import RivalGameweekSnapshot
+from packages.database.models.rival_profile import RivalProfile
 from packages.database.models.rules_config import RulesConfig
 from packages.database.models.rules_config_field import RulesConfigField
 from packages.database.models.season import Season
@@ -55,6 +56,7 @@ __all__ = [
     "Position",
     "RawApiSnapshot",
     "RivalGameweekSnapshot",
+    "RivalProfile",
     "RulesConfig",
     "RulesConfigField",
     "Season",

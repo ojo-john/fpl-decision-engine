@@ -53,3 +53,25 @@ class PicksAvailability(str, Enum):
     # Genuinely different from a clean 404: a timeout, connection error, or
     # non-404 non-2xx response (5xx, 429 exhausted, etc).
     FETCH_FAILED = "fetch_failed"
+
+
+class RivalStateConfidence(str, Enum):
+    """How confident Layer 2's derived/predicted ``rival_profiles`` fields are, given the evidence so far.
+
+    Deliberately a distinct enum from ``packages.domain.rules.RuleConfidence``
+    (explicit Milestone 5 plan decision, not an oversight) — ``RuleConfidence``
+    means "how authoritative is this rule VALUE" (confirmed-by-the-API vs.
+    hand-maintained-guess); this means something else entirely: "how much
+    evidence backs this STATISTICAL ESTIMATE about a rival's behavior". A
+    rule's confidence never changes based on sample size; a rival's does.
+
+    ``overall_confidence`` on a ``RivalProfile`` row is always the honest
+    floor across every sub-computation (see ``app.h2h.rival_state``) — e.g. a
+    rival profiled from a single observed gameweek snapshot gets ``LOW``
+    overall even if every other input looks clean, because a single
+    observation is never evidence of a stable tendency.
+    """
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
