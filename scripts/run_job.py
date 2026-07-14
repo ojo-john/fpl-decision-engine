@@ -5,6 +5,10 @@ Usage:
     uv run python scripts/run_job.py --job-type system_health \\
         --requested-by me --trigger-type local
 
+    uv run python scripts/run_job.py --job-type league_sync \\
+        --requested-by me --trigger-type local \\
+        --parameters '{"fpl_league_id": 759345, "exclude_fpl_manager_id": 4923902}'
+
 Prints a JSON object describing the job outcome to stdout. Never prints
 DATABASE_URL or any other environment variable — only fields explicitly
 selected from the resulting Job row.
@@ -45,17 +49,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--idempotency-key", default=None, help="Optional idempotency key.")
     parser.add_argument("--git-commit-sha", default=None, help="Optional git commit SHA to record.")
+    parser.add_argument(
+        "--parameters",
+        default=None,
+        help="Optional job parameters as a JSON object string (e.g. '{\"fpl_manager_id\": 123}').",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    parameters = json.loads(args.parameters) if args.parameters is not None else None
 
     session = SessionLocal()
     try:
         job = execute_job(
             session,
             job_type=JobType(args.job_type),
+            parameters=parameters,
             requested_by=args.requested_by,
             trigger_type=TriggerType(args.trigger_type),
             idempotency_key=args.idempotency_key,
