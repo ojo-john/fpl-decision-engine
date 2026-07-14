@@ -38,10 +38,38 @@ no ``raw_picks_json`` (e.g. a hand-built ``MANUAL_ENTRY`` squad with no picks
 recorded) cannot be simulated at all in this v1 — refused up front with
 ``SNAPSHOT_MISSING_PICKS_DATA``/``RIVAL_SQUAD_MISSING_PICKS_DATA``, a known,
 documented limitation rather than a silent guess at an ordering.
+
+Autosub: a starting player hard-excluded from playing (``project_player_with_
+champion``'s ``is_eligible=False`` — injured/suspended/unavailable) is
+replaced by ``_resolve_effective_starting_xi`` with the highest-priority
+ELIGIBLE bench player of the same broad class (goalkeeper-for-goalkeeper;
+any outfield position for any outfield position, in the manager's own bench
+order) — for BOTH the user and the rival side. This is a deliberately
+simplified version of real FPL autosub: it does not enforce that the
+resulting XI still satisfies each position's minimum-play count (e.g. never
+fewer than 3 defenders), which would need a small formation-legality solver;
+a same-class swap is correct for the overwhelming majority of real
+single-injury cases but not guaranteed for unusual multi-injury/formation
+combinations. On the user side, if the ORIGINAL captain is autosubbed out,
+the armband transfers to the vice-captain (if they themselves are still in
+the final XI) exactly once — matching FPL's own single-level captain-to-
+vice-captain fallback (no further fallback if the vice is unavailable too).
+An autosubbed-IN bench player can never inherit the armband either way.
+
+Residual sourcing: ``_ResidualCache`` prefers a player's own current-season
+``player_gameweek_stats`` history; when that's empty (the realistic
+early-season/fresh-database state — no gameweeks of the CURRENT season have
+been played/ingested yet), it falls back to a same-position pool drawn
+across EVERY ingested season (matched by ``Position.short_name``, since
+``Position``/``Player`` rows are season-scoped and a position's own id
+differs season to season) rather than a current-season-only pool that would
+otherwise be silently empty and force every projection down to zero-variance
+noise until the current season's own history accumulates.
 """
 
 import random
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -64,7 +92,7 @@ from app.optimization.gameweek_resolution import (
     resolve_target_gameweek,
 )
 from app.optimization.gate import check_optimization_gate
-from app.optimization.projection import project_player_with_champion
+from app.optimization.projection import PlayerProjection, project_player_with_champion
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.h2h_simulation_run import H2HSimulationRun
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
@@ -105,10 +133,17 @@ def _parse_uuid_parameter(parameters: dict | None, key: str) -> uuid.UUID:
         ) from None
 
 
-def _starting_xi_picks(raw_picks_json: dict | None) -> list[dict]:
+def _split_starting_and_bench(raw_picks_json: dict | None) -> tuple[list[dict], list[dict]]:
+    """Split a picks payload into (starting XI, bench-in-priority-order)."""
     if not raw_picks_json or not raw_picks_json.get("picks"):
-        return []
-    return [p for p in raw_picks_json["picks"] if p.get("position", 99) <= _STARTING_XI_MAX_POSITION]
+        return [], []
+    picks = raw_picks_json["picks"]
+    starters = [p for p in picks if p.get("position", 99) <= _STARTING_XI_MAX_POSITION]
+    bench = sorted(
+        (p for p in picks if p.get("position", 0) > _STARTING_XI_MAX_POSITION),
+        key=lambda p: p.get("position", 99),
+    )
+    return starters, bench
 
 
 def _resolve_players_by_element(
@@ -131,19 +166,38 @@ def _positions_by_id(session: Session, season_id: uuid.UUID) -> dict[uuid.UUID, 
     return {p.id: p.short_name for p in rows}
 
 
+def _position_short_name(positions_by_id: dict[uuid.UUID, str], player: Player) -> str | None:
+    if player.position_id is None:
+        return None
+    return positions_by_id.get(player.position_id)
+
+
 class _ResidualCache:
     """Per-job-run cache of empirical (actual - xP) residuals: one query per player, one per position.
 
     Scoped to a single job run (never persisted/shared across runs) --
     residual pools are cheap to recompute and the whole point is to reflect
-    the CURRENT season's data at simulation time.
+    the latest data at simulation time.
+
+    ``for_position`` prefers a CURRENT-season, same-position pool, but falls
+    back to an ALL-seasons, same-position pool (matched by
+    ``Position.short_name``, since ``Position``/``Player`` rows -- and
+    therefore ``position_id`` -- are season-scoped) when the current
+    season's own pool is empty. This matters concretely at the start of a
+    fresh season (the realistic state for a brand-new current season with no
+    gameweeks played/ingested yet): without this fallback, EVERY player's
+    residual sampling would silently degrade to zero noise (see
+    ``app.h2h.simulate._sample_residual``'s final fallback) simply because
+    the current season hasn't accumulated its own history yet, not because
+    no relevant empirical data exists anywhere in the system.
     """
 
     def __init__(self, session: Session, season_id: uuid.UUID):
         self._session = session
         self._season_id = season_id
         self._by_player: dict[uuid.UUID, tuple[float, ...]] = {}
-        self._by_position: dict[uuid.UUID, tuple[float, ...]] = {}
+        self._by_position_current_season: dict[uuid.UUID, tuple[float, ...]] = {}
+        self._by_position_all_seasons: dict[str, tuple[float, ...]] = {}
 
     def for_player(self, player_id: uuid.UUID) -> tuple[float, ...]:
         if player_id not in self._by_player:
@@ -156,10 +210,18 @@ class _ResidualCache:
             self._by_player[player_id] = tuple(float(total) - float(xp) for total, xp in rows)
         return self._by_player[player_id]
 
-    def for_position(self, position_id: uuid.UUID | None) -> tuple[float, ...]:
-        if position_id is None:
-            return ()
-        if position_id not in self._by_position:
+    def for_position(
+        self, position_id: uuid.UUID | None, position_short_name: str | None
+    ) -> tuple[float, ...]:
+        current_season_pool = self._current_season_pool(position_id) if position_id is not None else ()
+        if current_season_pool:
+            return current_season_pool
+        if position_short_name is not None:
+            return self._all_seasons_pool(position_short_name)
+        return ()
+
+    def _current_season_pool(self, position_id: uuid.UUID) -> tuple[float, ...]:
+        if position_id not in self._by_position_current_season:
             rows = self._session.execute(
                 select(PlayerGameweekStats.total_points, PlayerGameweekStats.xp_estimate)
                 .join(Player, Player.id == PlayerGameweekStats.player_id)
@@ -169,8 +231,107 @@ class _ResidualCache:
                     PlayerGameweekStats.xp_estimate.is_not(None),
                 )
             ).all()
-            self._by_position[position_id] = tuple(float(total) - float(xp) for total, xp in rows)
-        return self._by_position[position_id]
+            self._by_position_current_season[position_id] = tuple(
+                float(total) - float(xp) for total, xp in rows
+            )
+        return self._by_position_current_season[position_id]
+
+    def _all_seasons_pool(self, position_short_name: str) -> tuple[float, ...]:
+        if position_short_name not in self._by_position_all_seasons:
+            rows = self._session.execute(
+                select(PlayerGameweekStats.total_points, PlayerGameweekStats.xp_estimate)
+                .join(Player, Player.id == PlayerGameweekStats.player_id)
+                .join(Position, Position.id == Player.position_id)
+                .where(
+                    Position.short_name == position_short_name,
+                    PlayerGameweekStats.xp_estimate.is_not(None),
+                )
+            ).all()
+            self._by_position_all_seasons[position_short_name] = tuple(
+                float(total) - float(xp) for total, xp in rows
+            )
+        return self._by_position_all_seasons[position_short_name]
+
+
+@dataclass(frozen=True)
+class _ResolvedSlot:
+    """One final starting-XI slot for a side, after a simplified real-FPL autosub.
+
+    ``original_starter_element`` is always the ORIGINAL starting-XI pick's
+    raw FPL element id this slot corresponds to -- used only to determine
+    whether the user's captain/vice-captain armband survives (an autosubbed-
+    IN bench player can never inherit it, see ``_resolve_captain_multipliers``).
+    ``player``/``projection`` are for whichever player will actually be
+    scored in this slot: the original starter, or their autosub replacement.
+    """
+
+    original_starter_element: int
+    is_autosub: bool
+    player: Player
+    projection: PlayerProjection
+
+
+def _resolve_effective_starting_xi(
+    session: Session,
+    starters: list[dict],
+    bench: list[dict],
+    player_by_element: dict[int, Player],
+    positions_by_id: dict[uuid.UUID, str],
+    target_gameweek_id: uuid.UUID,
+    champion: LoadedChampion | None,
+) -> list[_ResolvedSlot]:
+    """Resolve the EFFECTIVE starting XI: apply a simplified real-FPL autosub. See module docstring."""
+
+    def _resolve(pick: dict) -> tuple[dict, Player, PlayerProjection] | None:
+        player = player_by_element.get(pick["element"])
+        if player is None:
+            return None  # unresolved element (renamed/removed player) -- degrades gracefully
+        projection = project_player_with_champion(session, player, target_gameweek_id, champion)
+        return pick, player, projection
+
+    resolved_starters = [r for r in (_resolve(p) for p in starters) if r is not None]
+    resolved_bench = [r for r in (_resolve(p) for p in bench) if r is not None]
+
+    def _is_gk(player: Player) -> bool:
+        return _position_short_name(positions_by_id, player) == "GKP"
+
+    gk_bench = [r for r in resolved_bench if _is_gk(r[1])]
+    outfield_bench = [r for r in resolved_bench if not _is_gk(r[1])]
+    used_bench_elements: set[int] = set()
+
+    slots: list[_ResolvedSlot] = []
+    for pick, player, projection in resolved_starters:
+        if projection.is_eligible:
+            slots.append(_ResolvedSlot(pick["element"], False, player, projection))
+            continue
+        queue = gk_bench if _is_gk(player) else outfield_bench
+        replacement = next(
+            (r for r in queue if r[0]["element"] not in used_bench_elements and r[2].is_eligible), None
+        )
+        if replacement is None:
+            slots.append(_ResolvedSlot(pick["element"], False, player, projection))  # no eligible sub
+            continue
+        used_bench_elements.add(replacement[0]["element"])
+        slots.append(_ResolvedSlot(pick["element"], True, replacement[1], replacement[2]))
+    return slots
+
+
+def _resolve_captain_multipliers(starters: list[dict], replaced_elements: set[int]) -> dict[int, int]:
+    """Map ORIGINAL starter element id -> final multiplier, transferring the armband captain-to-vice
+    exactly once when the captain was autosubbed out (real FPL has no further fallback). Absent keys
+    default to multiplier 1 for the caller.
+    """
+    captain_pick = next((p for p in starters if p.get("is_captain")), None)
+    if captain_pick is None:
+        return {}
+    captain_multiplier_value = captain_pick.get("multiplier", 1)
+    captain_element = captain_pick["element"]
+    if captain_element not in replaced_elements:
+        return {captain_element: captain_multiplier_value}
+    vice_pick = next((p for p in starters if p.get("is_vice_captain")), None)
+    if vice_pick is not None and vice_pick["element"] not in replaced_elements:
+        return {vice_pick["element"]: captain_multiplier_value}
+    return {}  # captain AND vice both unavailable this gameweek -- no armband boost, matches real FPL
 
 
 def _build_user_players(
@@ -181,25 +342,34 @@ def _build_user_players(
     champion: LoadedChampion | None,
     residuals: _ResidualCache,
 ) -> list[UserPlayerInput]:
-    picks = _starting_xi_picks(snapshot.raw_picks_json)
-    if not picks:
+    starters, bench = _split_starting_and_bench(snapshot.raw_picks_json)
+    if not starters:
         raise _SimulationBuildError("User snapshot's starting XI could not be read from raw_picks_json.")
 
-    player_by_element = _resolve_players_by_element(session, season_id, {p["element"] for p in picks})
+    player_by_element = _resolve_players_by_element(
+        session, season_id, {p["element"] for p in starters + bench}
+    )
+    positions_by_id = _positions_by_id(session, season_id)
+
+    slots = _resolve_effective_starting_xi(
+        session, starters, bench, player_by_element, positions_by_id, target_gameweek_id, champion
+    )
+    replaced_elements = {s.original_starter_element for s in slots if s.is_autosub}
+    multiplier_by_original_element = _resolve_captain_multipliers(starters, replaced_elements)
 
     user_players: list[UserPlayerInput] = []
-    for pick in picks:
-        player = player_by_element.get(pick["element"])
-        if player is None:
-            continue  # unresolved element (renamed/removed player) -- degrades gracefully, see docstring
-        projection = project_player_with_champion(session, player, target_gameweek_id, champion)
+    for slot in slots:
+        multiplier = (
+            1 if slot.is_autosub else multiplier_by_original_element.get(slot.original_starter_element, 1)
+        )
+        position_short_name = _position_short_name(positions_by_id, slot.player)
         user_players.append(
             UserPlayerInput(
-                player_id=str(player.id),
-                projected_points=projection.projected_points,
-                multiplier=pick.get("multiplier", 1),
-                own_residuals=residuals.for_player(player.id),
-                position_residuals=residuals.for_position(player.position_id),
+                player_id=str(slot.player.id),
+                projected_points=slot.projection.projected_points,
+                multiplier=multiplier,
+                own_residuals=residuals.for_player(slot.player.id),
+                position_residuals=residuals.for_position(slot.player.position_id, position_short_name),
             )
         )
     if not user_players:
@@ -217,27 +387,30 @@ def _build_rival_held_players(
     champion: LoadedChampion | None,
     residuals: _ResidualCache,
 ) -> list[RivalHeldPlayerInput]:
-    picks = _starting_xi_picks(rival_snapshot.raw_picks_json)
-    if not picks:
+    starters, bench = _split_starting_and_bench(rival_snapshot.raw_picks_json)
+    if not starters:
         raise _SimulationBuildError("Rival snapshot's starting XI could not be read from raw_picks_json.")
 
-    player_by_element = _resolve_players_by_element(session, season_id, {p["element"] for p in picks})
-    positions = _positions_by_id(session, season_id)
+    player_by_element = _resolve_players_by_element(
+        session, season_id, {p["element"] for p in starters + bench}
+    )
+    positions_by_id = _positions_by_id(session, season_id)
+
+    slots = _resolve_effective_starting_xi(
+        session, starters, bench, player_by_element, positions_by_id, target_gameweek_id, champion
+    )
 
     held: list[RivalHeldPlayerInput] = []
-    for pick in picks:
-        player = player_by_element.get(pick["element"])
-        if player is None:
-            continue  # unresolved element -- degrades gracefully, mirrors the user-side handling
-        projection = project_player_with_champion(session, player, target_gameweek_id, champion)
+    for slot in slots:
+        position_short_name = _position_short_name(positions_by_id, slot.player)
         held.append(
             RivalHeldPlayerInput(
-                player_id=str(player.id),
-                fpl_element_id=pick["element"],
-                position=positions.get(player.position_id) if player.position_id is not None else None,
-                projected_points=projection.projected_points,
-                own_residuals=residuals.for_player(player.id),
-                position_residuals=residuals.for_position(player.position_id),
+                player_id=str(slot.player.id),
+                fpl_element_id=slot.player.fpl_element_id,
+                position=position_short_name,
+                projected_points=slot.projection.projected_points,
+                own_residuals=residuals.for_player(slot.player.id),
+                position_residuals=residuals.for_position(slot.player.position_id, position_short_name),
             )
         )
     if not held:
@@ -274,7 +447,7 @@ def _build_rival_transfer_targets(
                 position=candidate.get("position"),
                 projected_points=projection.projected_points,
                 own_residuals=residuals.for_player(player.id),
-                position_residuals=residuals.for_position(player.position_id),
+                position_residuals=residuals.for_position(player.position_id, candidate.get("position")),
             )
         )
     return targets

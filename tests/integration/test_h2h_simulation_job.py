@@ -12,24 +12,42 @@ starts at, see ``test_rival_profile.py``), entry C's picks are unavailable
 refusal path).
 
 The user's own squad is a hand-built ``MANUAL_ENTRY`` ``ManagerSquadSnapshot``
-with a real ``raw_picks_json`` (11 starters + 4 bench, one captain) drawn
-from the same ~60-player pool -- mirrors
+with a real ``raw_picks_json`` (11 starters + 4 bench, one captain, one
+vice-captain) drawn from the same ~60-player pool -- mirrors
 ``test_transfer_optimization_job.py``'s own "hand-verifiable manual snapshot"
 discipline, but this job additionally NEEDS ``raw_picks_json`` (not just
 ``squad_player_ids``) to resolve a starting XI/captain at all (see
 ``app.jobs.handlers.h2h_simulation``'s own docstring).
+
+Two of the default squad's 11 starters (elements 30017/30034, see
+``build_optimization_bootstrap_json``'s ``index % 17 == 0`` rule) are
+deliberately HARD-EXCLUDED (status ``"i"``) in the synthetic pool -- this is
+not an oversight, it's what exercises the real-FPL-style autosub path
+(``_resolve_effective_starting_xi``) even in the "happy path" test, since a
+real squad legitimately has injured players some weeks. Score assertions
+that depend on autosub having actually happened use a wide INEQUALITY
+threshold (comfortably separating "autosub happened" from "it didn't"),
+never a tight closeness check against an exact float -- ``player_gameweek_stats``
+residual pooling is now cross-season (see ``_ResidualCache``'s own
+docstring), so a persistent, repeatedly-rerun local Postgres can
+legitimately accumulate extra historical residual data across suite
+invocations that would make an exact-value assertion flaky.
 """
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
 
 from app.jobs.service import execute_job
+from packages.database.models.gameweek import Gameweek
 from packages.database.models.h2h_simulation_run import H2HSimulationRun
 from packages.database.models.ingestion_run import IngestionRun
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
+from packages.database.models.player_gameweek_stats import PlayerGameweekStats
+from packages.database.models.position import Position
 from packages.database.models.rival_profile import RivalProfile
 from packages.database.models.rules_config import RulesConfig
 from packages.database.models.season import Season
@@ -45,29 +63,38 @@ from tests.integration.conftest import (
 
 FPL_LEAGUE_ID = 88891  # distinct from test_league_sync_job.py's 88888/test_rival_profile.py's 88889
 
-# 11 starters (one captained) + 4 bench, all drawn from the ~60-player
-# synthetic optimization pool (element ids 30000-30059, see
+# 11 starters (one captained, one vice-captained) + 4 bench, all drawn from
+# the ~60-player synthetic optimization pool (element ids 30000-30059, see
 # build_optimization_bootstrap_json in conftest.py) -- deliberately disjoint
 # from the rival's own squad (picks_b.json's 30000/30010-13/30028-31/30048-50)
-# so the two sides are visibly distinct squads.
+# so the two sides are visibly distinct squads. 30017 (DEF) and 30034 (MID)
+# are hard-excluded (status "i") in the pool; 30052 (FWD) is doubtful
+# (status "d", down-weighted, NOT hard-excluded/autosubbed); every bench
+# element (30004 GKP/30019 DEF/30038 MID/30054 FWD) is healthy.
 _USER_STARTING_ELEMENTS = [30003, 30015, 30016, 30017, 30018, 30033, 30034, 30035, 30036, 30052, 30053]
-_USER_CAPTAIN_ELEMENT = 30034
+_USER_CAPTAIN_ELEMENT = 30033
+_USER_VICE_CAPTAIN_ELEMENT = 30035
 _USER_BENCH_ELEMENTS = [30004, 30019, 30038, 30054]
 
 
-def _user_raw_picks_json() -> dict:
+def _user_raw_picks_json(
+    starting_elements: list[int] = _USER_STARTING_ELEMENTS,
+    bench_elements: list[int] = _USER_BENCH_ELEMENTS,
+    captain_element: int = _USER_CAPTAIN_ELEMENT,
+    vice_captain_element: int = _USER_VICE_CAPTAIN_ELEMENT,
+) -> dict:
     picks = []
-    for position, element in enumerate(_USER_STARTING_ELEMENTS, start=1):
+    for position, element in enumerate(starting_elements, start=1):
         picks.append(
             {
                 "element": element,
                 "position": position,
-                "multiplier": 2 if element == _USER_CAPTAIN_ELEMENT else 1,
-                "is_captain": element == _USER_CAPTAIN_ELEMENT,
-                "is_vice_captain": False,
+                "multiplier": 2 if element == captain_element else 1,
+                "is_captain": element == captain_element,
+                "is_vice_captain": element == vice_captain_element,
             }
         )
-    for offset, element in enumerate(_USER_BENCH_ELEMENTS):
+    for offset, element in enumerate(bench_elements):
         picks.append(
             {
                 "element": element,
@@ -83,6 +110,73 @@ def _user_raw_picks_json() -> dict:
         "entry_history": {"event": 1, "bank": 5},
         "picks": picks,
     }
+
+
+def _seed_cross_season_mid_residuals(db_session) -> None:
+    """Seed a handful of ``player_gameweek_stats`` rows for a wholly SEPARATE historical
+    season/player sharing the "MID" position's short_name, with a wide (actual - xP) spread.
+
+    Used to verify ``_ResidualCache``'s cross-season fallback: the CURRENT season (freshly
+    ingested via DATA_INGESTION in these tests) has zero player_gameweek_stats of its own, so
+    without this fallback every MID starter's residual sampling would silently degrade to
+    zero-variance noise.
+    """
+    other_season = Season(label=f"h2h-hist-{uuid.uuid4().hex[:8]}", is_current=False)  # String(20) max
+    db_session.add(other_season)
+    db_session.flush()
+
+    position = Position(
+        fpl_element_type_id=3,
+        season_id=other_season.id,
+        singular_name="Midfielder",
+        short_name="MID",
+        squad_select=5,
+        squad_min_play=2,
+        squad_max_play=5,
+    )
+    db_session.add(position)
+    db_session.flush()
+
+    other_player = Player(
+        fpl_element_id=999001,
+        season_id=other_season.id,
+        position_id=position.id,
+        now_cost=50,
+        last_synced_at=datetime.now(UTC),
+    )
+    db_session.add(other_player)
+    db_session.flush()
+
+    # One row per DISTINCT historical gameweek (never several rows sharing one
+    # (player_id, gameweek_id) pair differentiated only by a NULL fixture_id --
+    # that's only legal under the CURRENT 3-column unique constraint, and
+    # test_migrations.py's own downgrade cycle reverts to an older 2-column
+    # (player_id, gameweek_id) constraint that would reject it). Wide, clearly
+    # non-zero residual spread: actual points swing far from xP.
+    for event, (total_points, xp_estimate) in enumerate(
+        [(2, 6.0), (14, 6.0), (1, 6.0), (12, 6.0), (7, 6.0)], start=1
+    ):
+        gameweek = Gameweek(
+            fpl_event_id=event,
+            season_id=other_season.id,
+            name=f"Historical GW{event}",
+            deadline_time=datetime.now(UTC),
+            finished=True,
+            last_synced_at=datetime.now(UTC),
+        )
+        db_session.add(gameweek)
+        db_session.flush()
+        db_session.add(
+            PlayerGameweekStats(
+                player_id=other_player.id,
+                season_id=other_season.id,
+                gameweek_id=gameweek.id,
+                total_points=total_points,
+                xp_estimate=xp_estimate,
+                data_source="test",
+            )
+        )
+    db_session.commit()
 
 
 def _seed_players_with_active_gameweek(db_session):
@@ -112,8 +206,12 @@ def _rival_profile(db_session, season_id, fpl_manager_id: int) -> RivalProfile:
     ).scalar_one()
 
 
-def _create_manual_user_snapshot(db_session, season_id, raw_picks_json: dict | None) -> ManagerSquadSnapshot:
-    all_elements = _USER_STARTING_ELEMENTS + _USER_BENCH_ELEMENTS
+def _create_manual_user_snapshot(
+    db_session, season_id, raw_picks_json: dict | None, squad_elements: list[int] | None = None
+) -> ManagerSquadSnapshot:
+    all_elements = (
+        squad_elements if squad_elements is not None else _USER_STARTING_ELEMENTS + _USER_BENCH_ELEMENTS
+    )
     players = {
         eid: db_session.execute(
             select(Player).where(Player.season_id == season_id, Player.fpl_element_id == eid)
@@ -213,6 +311,69 @@ def test_h2h_simulation_happy_path_produces_a_sane_succeeded_run(
 
     assert output["win_probability"] == pytest.approx(float(run_row.win_probability))
     assert output["confidence"] == RivalStateConfidence.LOW.value
+
+    # Autosub actually happened for the squad's 2 hard-excluded starters (see this
+    # module's own docstring): without it, 30017/30034 would contribute 0 each and
+    # the mean would sit around ~49; with their bench replacements (ep_next 7.4/5.8)
+    # correctly subbed in, it should sit comfortably higher. Wide inequality, not a
+    # tight closeness check -- see module docstring on cross-season residual pooling.
+    assert float(run_row.user_score_mean) > 55
+
+
+def test_h2h_simulation_captain_autosubbed_out_transfers_armband_to_vice_captain(
+    db_session, patched_fpl_client_optimization_with_active_gameweek, patched_fpl_client_league
+):
+    """A minimal, dedicated 3-starter squad (not the shared 11-man fixture) to keep the expected
+    score gap between "armband transferred correctly" and "armband lost/mis-assigned" large and
+    unambiguous, regardless of any residual-bootstrap noise/bias from other tests' data.
+
+    Captain = 30034 (MID, hard-excluded/injured) -> autosubbed out by 30038 (MID, healthy, never
+    inherits the armband). Vice-captain = 30053 (FWD, ep_next=8.0, healthy) -> should inherit the
+    2x armband. Filler = 30015 (DEF, ep_next=5.2, untouched). Expected sums: armband correctly
+    transferred ~= 5.2 + 8.0*2 + 5.8 = 27.0; armband lost (bug) ~= 5.2 + 8.0 + 5.8 = 19.0; armband
+    wrongly given to the sub (bug) ~= 5.2 + 8.0 + 5.8*2 = 24.8. A ">23" threshold cleanly separates
+    "transferred" from both bug scenarios.
+    """
+    season_id = _seed_players_with_active_gameweek(db_session)
+    _run_league_sync(db_session)
+    rival_profile = _rival_profile(db_session, season_id, LEAGUE_RIVAL_B_FPL_MANAGER_ID)
+
+    starting_elements = [30015, 30034, 30053]  # DEF (healthy), MID (injured, captain), FWD (healthy, vice)
+    bench_elements = [30038]  # MID (healthy) -- the only eligible same-class replacement available
+    picks_json = _user_raw_picks_json(
+        starting_elements=starting_elements,
+        bench_elements=bench_elements,
+        captain_element=30034,
+        vice_captain_element=30053,
+    )
+    snapshot = _create_manual_user_snapshot(
+        db_session, season_id, picks_json, squad_elements=starting_elements + bench_elements
+    )
+
+    job = _run_h2h_simulation(db_session, snapshot.id, rival_profile.id)
+
+    assert job.status == JobStatus.SUCCEEDED
+    run_row = db_session.get(H2HSimulationRun, uuid.UUID(job.output_json["h2h_simulation_run_id"]))
+    assert float(run_row.user_score_mean) > 23.0
+
+
+def test_h2h_simulation_residual_bootstrap_uses_cross_season_position_pool_when_current_season_is_cold(
+    db_session, patched_fpl_client_optimization_with_active_gameweek, patched_fpl_client_league
+):
+    season_id = _seed_players_with_active_gameweek(db_session)
+    _run_league_sync(db_session)
+    rival_profile = _rival_profile(db_session, season_id, LEAGUE_RIVAL_B_FPL_MANAGER_ID)
+    snapshot = _create_manual_user_snapshot(db_session, season_id, _user_raw_picks_json())
+
+    _seed_cross_season_mid_residuals(db_session)
+
+    job = _run_h2h_simulation(db_session, snapshot.id, rival_profile.id)
+
+    assert job.status == JobStatus.SUCCEEDED
+    run_row = db_session.get(H2HSimulationRun, uuid.UUID(job.output_json["h2h_simulation_run_id"]))
+    # Non-zero variance now present on the user side -- the current season has zero
+    # player_gameweek_stats of its own, so this can only come from the cross-season fallback.
+    assert float(run_row.user_score_floor) < float(run_row.user_score_ceiling)
 
 
 def test_h2h_simulation_accepts_an_explicit_target_fpl_event_id(

@@ -18,25 +18,41 @@ every player-gameweek is instead resolved by an empirical-residual bootstrap:
 sample a historical ``(actual_total_points - projected_points)`` residual
 and add it to this gameweek's point estimate, per draw.
 
-Scope (v1, deliberately deferred, not silently missing):
+Scope (deliberately bounded, not silently missing):
 
-- Only the STARTING XI's summed score is simulated for both sides — no
-  bench/autosub logic. A blank/red-flagged starter is not auto-subbed in
-  this simulation even though the real game would substitute them; this
-  can bias a squad with weak bench cover as if it always fields exactly 11.
+- This module always simulates exactly the 11-player list it's handed — it
+  has no concept of a bench itself. ``app.jobs.handlers.h2h_simulation``
+  (the only real caller) DOES now resolve a simplified real-FPL autosub
+  before calling in (``_resolve_effective_starting_xi``): a starting player
+  hard-excluded from playing is replaced by the highest-priority ELIGIBLE
+  bench player of the same broad class (GK-for-GK, any-outfield-for-any-
+  outfield), for both sides, with the user's captain armband transferring to
+  the vice-captain exactly once if the original captain is subbed out. That
+  caller-side autosub does NOT enforce full per-position formation legality
+  (e.g. never fewer than 3 defenders) — a same-class swap is correct for the
+  overwhelming majority of real single-injury cases, not guaranteed for
+  unusual multi-injury combinations. It also cannot rescue a squad whose
+  bench is itself exhausted/all-ineligible, or a rival's stochastically
+  sampled transfer-IN target (drawn from Layer 2's
+  ``predicted_likely_transfer_targets``, never itself eligibility-filtered)
+  — in both of those residual cases, this module still samples residual
+  noise around a ``projected_points=0.0`` floor for that draw rather than
+  hard-zeroing it, which can slightly overstate that player's ceiling.
 - Chip usage for the TARGET gameweek is never modeled/predicted for either
   side (no wildcard/bench-boost/triple-captain simulation) — the user side
   applies whatever multiplier its own actual pick record carries (which
   *does* capture a real triple-captain if the caller resolved one from
   ``raw_picks_json``), but the rival side always uses a plain 2x captain
   multiplier (``_RIVAL_CAPTAIN_MULTIPLIER``) regardless of the rival's own
-  remaining-chip inventory, since Layer 2 has no chip-USE prediction for a
-  future gameweek, only a remaining-chip inventory.
-- A transferred-out player who was ineligible (injured/suspended, hence
-  ``projected_points=0.0`` from ``project_player_with_champion``) still
-  degrades to residual noise sampled from their own historical availability
-  mix -- this can slightly overstate a genuinely-injured player's ceiling.
-  Deferred rather than special-cased in v1.
+  remaining-chip inventory. This is a deliberate, NOT-fixed limitation:
+  Layer 2 (``app.h2h.rival_state``) only derives a remaining-chip
+  INVENTORY, never a probability of USING a specific chip on a specific
+  future gameweek — fabricating such a probability here with no real
+  evidence behind it would be exactly the kind of falsely-precise estimate
+  this codebase's confidence-handling philosophy exists to avoid (see
+  ``packages.domain.h2h.RivalStateConfidence``'s own docstring). Modeling
+  this properly belongs in Layer 2 (a genuine chip-USE prediction, with its
+  own honestly-earned confidence), not as an invented heuristic here.
 
 Randomness: every entry point here takes an injected ``random.Random``
 instance and never touches the global ``random``/``numpy.random`` module
