@@ -20,6 +20,7 @@ class JobType(str, Enum):
     DATA_INGESTION = "data_ingestion"
     HISTORICAL_DATA_INGESTION = "historical_data_ingestion"
     MANAGER_SYNC = "manager_sync"
+    LEAGUE_SYNC = "league_sync"
     FEATURE_GENERATION = "feature_generation"
     MODEL_TRAINING = "model_training"
     PROJECTION_GENERATION = "projection_generation"

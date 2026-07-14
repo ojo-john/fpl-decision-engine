@@ -18,3 +18,11 @@ MANAGER_ENTRY_URL_TEMPLATE = BASE_URL + "/entry/{manager_id}/"
 MANAGER_HISTORY_URL_TEMPLATE = BASE_URL + "/entry/{manager_id}/history/"
 MANAGER_PICKS_URL_TEMPLATE = BASE_URL + "/entry/{manager_id}/event/{event}/picks/"
 MANAGER_TRANSFERS_URL_TEMPLATE = BASE_URL + "/entry/{manager_id}/transfers/"
+
+# H2H league endpoints (Milestone 5 Layer 1) — fully public, no authentication
+# needed, verified live against the user's real league (759345, "Pro Clubs
+# 26") during planning. ``{league_id}`` is filled in by the caller; both are
+# paginated (``page_standings=N`` / ``page=N``) with a ``has_next`` flag in
+# the response body, same shape as every other paginated FPL list endpoint.
+LEAGUE_H2H_STANDINGS_URL_TEMPLATE = BASE_URL + "/leagues-h2h/{league_id}/standings/"
+LEAGUE_H2H_MATCHES_URL_TEMPLATE = BASE_URL + "/leagues-h2h-matches/league/{league_id}/"

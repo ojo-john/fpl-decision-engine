@@ -19,6 +19,8 @@ from packages.fpl_client.endpoints import (
     BOOTSTRAP_STATIC_URL,
     EVENT_STATUS_URL,
     FIXTURES_URL,
+    LEAGUE_H2H_MATCHES_URL_TEMPLATE,
+    LEAGUE_H2H_STANDINGS_URL_TEMPLATE,
     MANAGER_ENTRY_URL_TEMPLATE,
     MANAGER_HISTORY_URL_TEMPLATE,
     MANAGER_PICKS_URL_TEMPLATE,
@@ -100,6 +102,21 @@ class FPLClient:
     def fetch_manager_transfers(self, manager_id: int) -> FetchResult:
         url = MANAGER_TRANSFERS_URL_TEMPLATE.format(manager_id=manager_id)
         return self._get("manager_transfers", url, params=None)
+
+    def fetch_h2h_league_standings(self, league_id: int, page: int = 1) -> FetchResult:
+        url = LEAGUE_H2H_STANDINGS_URL_TEMPLATE.format(league_id=league_id)
+        return self._get("h2h_league_standings", url, params={"page_standings": page})
+
+    def fetch_h2h_matches(
+        self, league_id: int, event: int | None = None, entry: int | None = None, page: int = 1
+    ) -> FetchResult:
+        url = LEAGUE_H2H_MATCHES_URL_TEMPLATE.format(league_id=league_id)
+        params: dict[str, Any] = {"page": page}
+        if event is not None:
+            params["event"] = event
+        if entry is not None:
+            params["entry"] = entry
+        return self._get("h2h_league_matches", url, params=params)
 
     def _get(self, endpoint_name: str, url: str, params: dict[str, Any] | None) -> FetchResult:
         attempt_count = 0

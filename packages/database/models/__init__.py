@@ -9,8 +9,12 @@ update this file, not also remember to touch ``env.py``.
 from packages.database.models.data_quality_issue import DataQualityIssue
 from packages.database.models.fixture import Fixture
 from packages.database.models.gameweek import Gameweek
+from packages.database.models.h2h_match import H2HMatch
 from packages.database.models.ingestion_run import IngestionRun
 from packages.database.models.job import Job
+from packages.database.models.league import League
+from packages.database.models.league_entry import LeagueEntry
+from packages.database.models.league_sync_run import LeagueSyncRun
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.model_metric import ModelMetric
 from packages.database.models.model_version import ModelVersion
@@ -21,6 +25,7 @@ from packages.database.models.player_features import PlayerFeatures
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.position import Position
 from packages.database.models.raw_api_snapshot import RawApiSnapshot
+from packages.database.models.rival_gameweek_snapshot import RivalGameweekSnapshot
 from packages.database.models.rules_config import RulesConfig
 from packages.database.models.rules_config_field import RulesConfigField
 from packages.database.models.season import Season
@@ -33,8 +38,12 @@ __all__ = [
     "DataQualityIssue",
     "Fixture",
     "Gameweek",
+    "H2HMatch",
     "IngestionRun",
     "Job",
+    "League",
+    "LeagueEntry",
+    "LeagueSyncRun",
     "ManagerSquadSnapshot",
     "ModelMetric",
     "ModelVersion",
@@ -45,6 +54,7 @@ __all__ = [
     "PlayerGameweekStats",
     "Position",
     "RawApiSnapshot",
+    "RivalGameweekSnapshot",
     "RulesConfig",
     "RulesConfigField",
     "Season",
