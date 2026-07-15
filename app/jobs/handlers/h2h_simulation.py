@@ -71,15 +71,17 @@ the final XI) exactly once — matching FPL's own single-level captain-to-
 vice-captain fallback (no further fallback if the vice is unavailable too).
 An autosubbed-IN bench player can never inherit the armband either way.
 
-Residual sourcing: ``_ResidualCache`` prefers a player's own current-season
-``player_gameweek_stats`` history; when that's empty (the realistic
-early-season/fresh-database state — no gameweeks of the CURRENT season have
-been played/ingested yet), it falls back to a same-position pool drawn
-across EVERY ingested season (matched by ``Position.short_name``, since
-``Position``/``Player`` rows are season-scoped and a position's own id
-differs season to season) rather than a current-season-only pool that would
-otherwise be silently empty and force every projection down to zero-variance
-noise until the current season's own history accumulates.
+Residual sourcing: ``_ResidualCache`` (Milestone 6 Layer 1: extracted
+verbatim into ``app.optimization.residual_cache``, imported from there) prefers
+a player's own current-season ``player_gameweek_stats`` history; when that's
+empty (the realistic early-season/fresh-database state — no gameweeks of the
+CURRENT season have been played/ingested yet), it falls back to a
+same-position pool drawn across EVERY ingested season (matched by
+``Position.short_name``, since ``Position``/``Player`` rows are
+season-scoped and a position's own id differs season to season) rather than
+a current-season-only pool that would otherwise be silently empty and force
+every projection down to zero-variance noise until the current season's own
+history accumulates.
 """
 
 import random
@@ -124,12 +126,12 @@ from app.optimization.gameweek_resolution import (
 )
 from app.optimization.gate import check_optimization_gate
 from app.optimization.projection import PlayerProjection, project_player_with_champion
+from app.optimization.residual_cache import _ResidualCache
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.h2h_simulation_run import H2HSimulationRun
 from packages.database.models.h2h_strategy_candidate import H2HStrategyCandidate
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
-from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.position import Position
 from packages.database.models.rival_gameweek_snapshot import RivalGameweekSnapshot
 from packages.database.models.rival_profile import RivalProfile
@@ -206,87 +208,6 @@ def _position_short_name(positions_by_id: dict[uuid.UUID, str], player: Player) 
     if player.position_id is None:
         return None
     return positions_by_id.get(player.position_id)
-
-
-class _ResidualCache:
-    """Per-job-run cache of empirical (actual - xP) residuals: one query per player, one per position.
-
-    Scoped to a single job run (never persisted/shared across runs) --
-    residual pools are cheap to recompute and the whole point is to reflect
-    the latest data at simulation time.
-
-    ``for_position`` prefers a CURRENT-season, same-position pool, but falls
-    back to an ALL-seasons, same-position pool (matched by
-    ``Position.short_name``, since ``Position``/``Player`` rows -- and
-    therefore ``position_id`` -- are season-scoped) when the current
-    season's own pool is empty. This matters concretely at the start of a
-    fresh season (the realistic state for a brand-new current season with no
-    gameweeks played/ingested yet): without this fallback, EVERY player's
-    residual sampling would silently degrade to zero noise (see
-    ``app.h2h.simulate._sample_residual``'s final fallback) simply because
-    the current season hasn't accumulated its own history yet, not because
-    no relevant empirical data exists anywhere in the system.
-    """
-
-    def __init__(self, session: Session, season_id: uuid.UUID):
-        self._session = session
-        self._season_id = season_id
-        self._by_player: dict[uuid.UUID, tuple[float, ...]] = {}
-        self._by_position_current_season: dict[uuid.UUID, tuple[float, ...]] = {}
-        self._by_position_all_seasons: dict[str, tuple[float, ...]] = {}
-
-    def for_player(self, player_id: uuid.UUID) -> tuple[float, ...]:
-        if player_id not in self._by_player:
-            rows = self._session.execute(
-                select(PlayerGameweekStats.total_points, PlayerGameweekStats.xp_estimate).where(
-                    PlayerGameweekStats.player_id == player_id,
-                    PlayerGameweekStats.xp_estimate.is_not(None),
-                )
-            ).all()
-            self._by_player[player_id] = tuple(float(total) - float(xp) for total, xp in rows)
-        return self._by_player[player_id]
-
-    def for_position(
-        self, position_id: uuid.UUID | None, position_short_name: str | None
-    ) -> tuple[float, ...]:
-        current_season_pool = self._current_season_pool(position_id) if position_id is not None else ()
-        if current_season_pool:
-            return current_season_pool
-        if position_short_name is not None:
-            return self._all_seasons_pool(position_short_name)
-        return ()
-
-    def _current_season_pool(self, position_id: uuid.UUID) -> tuple[float, ...]:
-        if position_id not in self._by_position_current_season:
-            rows = self._session.execute(
-                select(PlayerGameweekStats.total_points, PlayerGameweekStats.xp_estimate)
-                .join(Player, Player.id == PlayerGameweekStats.player_id)
-                .where(
-                    Player.season_id == self._season_id,
-                    Player.position_id == position_id,
-                    PlayerGameweekStats.xp_estimate.is_not(None),
-                )
-            ).all()
-            self._by_position_current_season[position_id] = tuple(
-                float(total) - float(xp) for total, xp in rows
-            )
-        return self._by_position_current_season[position_id]
-
-    def _all_seasons_pool(self, position_short_name: str) -> tuple[float, ...]:
-        if position_short_name not in self._by_position_all_seasons:
-            rows = self._session.execute(
-                select(PlayerGameweekStats.total_points, PlayerGameweekStats.xp_estimate)
-                .join(Player, Player.id == PlayerGameweekStats.player_id)
-                .join(Position, Position.id == Player.position_id)
-                .where(
-                    Position.short_name == position_short_name,
-                    PlayerGameweekStats.xp_estimate.is_not(None),
-                )
-            ).all()
-            self._by_position_all_seasons[position_short_name] = tuple(
-                float(total) - float(xp) for total, xp in rows
-            )
-        return self._by_position_all_seasons[position_short_name]
 
 
 @dataclass(frozen=True)
