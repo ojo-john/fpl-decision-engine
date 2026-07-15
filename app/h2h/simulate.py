@@ -368,6 +368,77 @@ def _resolve_confidence(rival_state_confidence: RivalStateConfidence) -> RivalSt
     return rival_state_confidence
 
 
+def sample_rival_scores(inputs: SimulationInputs, rng: random.Random) -> tuple[int, ...]:
+    """Draw ``inputs.sample_count`` independent rival-side total scores.
+
+    Milestone 5 Layer 4 (``app.jobs.handlers.h2h_simulation``'s multi-candidate
+    strategy comparison) calls this exactly ONCE per H2H_SIMULATION run and
+    reuses the resulting tuple across every one of the 7 candidate
+    simulations — the rival's own predicted state (``RivalProfile``) never
+    changes within one run regardless of which of the user's OWN squad
+    variants is being compared, so re-sampling it per candidate would only
+    add noise, never fairness. This is what guarantees an apples-to-apples
+    comparison: every candidate's ``win_probability`` differs ONLY because of
+    that candidate's own user-side score distribution, never because it drew
+    a luckier/unluckier rival sample.
+    """
+    return tuple(
+        _simulate_rival_draw(
+            rng,
+            inputs.rival_held_players,
+            inputs.rival_transfer_targets,
+            inputs.rival_no_transfer_probability,
+            inputs.rival_one_transfer_probability,
+            inputs.rival_multi_transfer_probability,
+            inputs.rival_captain_probabilities,
+        )
+        for _ in range(inputs.sample_count)
+    )
+
+
+def sample_user_scores(
+    user_players: tuple[UserPlayerInput, ...], rng: random.Random, sample_count: int
+) -> tuple[int, ...]:
+    """Draw ``sample_count`` independent user-side total scores for one candidate squad/XI/captain."""
+    return tuple(_simulate_user_draw(rng, user_players) for _ in range(sample_count))
+
+
+def summarize_matchup(
+    user_scores: tuple[int, ...], rival_scores: tuple[int, ...], confidence: RivalStateConfidence
+) -> SimulationResult:
+    """Turn one (user_scores, rival_scores) paired-draw pair into a full ``SimulationResult``.
+
+    Extracted from ``simulate_matchup``'s own tail so Layer 4 can summarize
+    several different user-side candidates against one shared, precomputed
+    ``rival_scores`` sequence (see ``sample_rival_scores``) without
+    duplicating this statistics logic.
+    """
+    n = len(user_scores)
+    wins = sum(1 for u, r in zip(user_scores, rival_scores, strict=True) if u > r)
+    draws = sum(1 for u, r in zip(user_scores, rival_scores, strict=True) if u == r)
+    losses = n - wins - draws
+    margins = [u - r for u, r in zip(user_scores, rival_scores, strict=True)]
+
+    sorted_user = sorted(user_scores)
+    sorted_rival = sorted(rival_scores)
+
+    return SimulationResult(
+        sample_count=n,
+        user_score_mean=statistics.fmean(user_scores),
+        user_score_floor=_percentile(sorted_user, _FLOOR_PERCENTILE),
+        user_score_ceiling=_percentile(sorted_user, _CEILING_PERCENTILE),
+        rival_score_mean=statistics.fmean(rival_scores),
+        rival_score_floor=_percentile(sorted_rival, _FLOOR_PERCENTILE),
+        rival_score_ceiling=_percentile(sorted_rival, _CEILING_PERCENTILE),
+        win_probability=wins / n,
+        draw_probability=draws / n,
+        loss_probability=losses / n,
+        expected_margin=statistics.fmean(margins),
+        margin_std_dev=statistics.pstdev(margins) if len(margins) > 1 else 0.0,
+        confidence=_resolve_confidence(confidence),
+    )
+
+
 def simulate_matchup(inputs: SimulationInputs, rng: random.Random) -> SimulationResult:
     """Run the full paired Monte Carlo simulation and summarize it. Never raises for empty-but-valid inputs.
 
