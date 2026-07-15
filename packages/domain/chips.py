@@ -51,3 +51,29 @@ class UserChipWindowStatus(str, Enum):
     USED = "used"
     EXPIRED_UNUSED = "expired_unused"
     ACTIVE_THIS_GAMEWEEK = "active_this_gameweek"
+
+
+class ChipVerdict(str, Enum):
+    """One chip's final scenario-ranking recommendation (Milestone 6 Layer 2: Chip Scenario Ranking).
+
+    See ``app.chips.scenario.rank_candidates_for_chip`` for the exact
+    tie-break/materiality-threshold logic that assigns this. Deliberately
+    distinct from ``UserChipWindowStatus`` (which classifies a WINDOW against
+    play history) -- this classifies the RECOMMENDATION for a chip that is
+    still genuinely usable (``AVAILABLE``/``ACTIVE_THIS_GAMEWEEK`` in
+    ``UserChipWindowStatus`` terms). ``ALREADY_USED``/``EXPIRED_UNUSED``/
+    ``UNAVAILABLE`` exist here too so a caller has a single verdict field to
+    report regardless of WHY a chip isn't a live "use now vs hold" decision,
+    without needing to cross-reference ``UserChipWindowStatus`` separately.
+
+    ``ChipOptimizationRunStatus`` (persistence lifecycle: running/succeeded/
+    failed) is Milestone 6 Layer 3's concern, not this one -- deliberately not
+    added yet.
+    """
+
+    USE_NOW = "use_now"
+    HOLD = "hold"
+    NO_VIABLE_WINDOW = "no_viable_window"
+    ALREADY_USED = "already_used"
+    EXPIRED_UNUSED = "expired_unused"
+    UNAVAILABLE = "unavailable"

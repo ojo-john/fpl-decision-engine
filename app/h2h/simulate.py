@@ -403,6 +403,37 @@ def sample_user_scores(
     return tuple(_simulate_user_draw(rng, user_players) for _ in range(sample_count))
 
 
+def sample_player_draws(rng: random.Random, players: tuple[UserPlayerInput, ...]) -> tuple[int, ...]:
+    """One drawn ``total_points`` value per player, for a SINGLE Monte Carlo sample -- not summed,
+    and multiplier NOT applied (unlike ``_simulate_user_draw``/``sample_user_scores``, which return one
+    already-summed, already-multiplied squad total per sample).
+
+    Added for Milestone 6 Layer 2 (``app.chips.scenario``), which needs the PER-PLAYER draws
+    themselves, not a pre-summed total: Bench Boost's gain is the sum of only the bench subset of a
+    squad's draws (never counted at all without the chip), and Triple Captain's incremental gain is
+    exactly one specific player's own drawn score (the +1x extra multiplier unit over the normal 2x).
+    Neither can be recovered from ``sample_user_scores``' pre-summed, pre-multiplied output -- a chip
+    evaluator needs to select/re-combine individual players' draws AFTER sampling, not before.
+
+    Multiplier is deliberately left for the CALLER to apply: this function has no notion of which
+    chip (if any) is being evaluated, so it always returns each player's plain, unmultiplied projection
+    + residual draw, rounded (identical to what ``_drawn_score`` already computes for every existing
+    caller) -- a chip evaluator applies its own multiplier logic (e.g. Triple Captain's captain_multiplier
+    + 1) to exactly the player(s) it cares about.
+
+    Calling this ONCE per Monte Carlo iteration and deriving BOTH the with-chip and without-chip totals
+    for that iteration from this SAME returned tuple is what makes a chip comparison a genuine PAIRED
+    comparison (mirrors ``sample_rival_scores``' own "same sampled distribution for fair comparison"
+    principle) -- never call this twice per iteration for two independently-resampled tuples.
+
+    Purely additive: reuses ``_drawn_score`` verbatim (the same per-player draw every existing caller
+    already relies on) and changes no existing function's behavior.
+    """
+    return tuple(
+        _drawn_score(rng, p.projected_points, p.own_residuals, p.position_residuals) for p in players
+    )
+
+
 def summarize_matchup(
     user_scores: tuple[int, ...], rival_scores: tuple[int, ...], confidence: RivalStateConfidence
 ) -> SimulationResult:

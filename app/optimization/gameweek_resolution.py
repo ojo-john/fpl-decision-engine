@@ -17,6 +17,13 @@ deliberate mirror image of that query: LEAGUE_SYNC needs the most recent
 *unfinished* one — the two queries share nothing but the same table, so it
 is not built by reusing ``_unfinished_gameweek_ids_ordered`` with inverted
 filters.
+
+``resolve_gameweeks_within_window`` (Milestone 6 Layer 2: Chip Scenario
+Ranking) is a trivial extra filter on the SAME unfinished-gameweek ordering
+query — a chip's scheduling window (``app.chips.windows.ChipWindow``) bounds
+how far into the future that specific chip can still be evaluated, so Chip
+Scenario Ranking needs "unfinished AND still within this window" rather than
+either existing query's own unbounded/fixed-count slice.
 """
 
 import uuid
@@ -29,14 +36,16 @@ from packages.domain.optimization import TargetGameweekStatus
 
 
 def _unfinished_gameweek_ids_ordered(
-    session: Session, season_id: uuid.UUID, limit: int | None = None
+    session: Session,
+    season_id: uuid.UUID,
+    limit: int | None = None,
+    max_fpl_event_id: int | None = None,
 ) -> list[uuid.UUID]:
-    """Unfinished gameweek ids for a season, ascending by ``deadline_time``, optionally capped."""
-    stmt = (
-        select(Gameweek.id)
-        .where(Gameweek.season_id == season_id, Gameweek.finished.is_(False))
-        .order_by(Gameweek.deadline_time.asc())
-    )
+    """Unfinished gameweek ids for a season, ascending by ``deadline_time``, optionally capped/bounded."""
+    stmt = select(Gameweek.id).where(Gameweek.season_id == season_id, Gameweek.finished.is_(False))
+    if max_fpl_event_id is not None:
+        stmt = stmt.where(Gameweek.fpl_event_id <= max_fpl_event_id)
+    stmt = stmt.order_by(Gameweek.deadline_time.asc())
     if limit is not None:
         stmt = stmt.limit(limit)
     return list(session.execute(stmt).scalars().all())
@@ -100,3 +109,21 @@ def resolve_most_recent_finished_gameweek_event(session: Session, season_id: uui
         .order_by(Gameweek.deadline_time.desc())
         .limit(1)
     ).scalar_one_or_none()
+
+
+def resolve_gameweeks_within_window(
+    session: Session, season_id: uuid.UUID, stop_event: int
+) -> list[uuid.UUID]:
+    """Unfinished gameweeks for a season whose ``fpl_event_id <= stop_event``, ascending by deadline.
+
+    Same unfinished-only, ascending-deadline ordering as
+    ``resolve_target_gameweek``/``resolve_horizon_gameweeks`` — just bounded by
+    a chip window's own ``stop_event`` (see ``app.chips.windows.ChipWindow``)
+    instead of a fixed count, so a chip's currently-open window can be scanned
+    EXHAUSTIVELY (every gameweek still eligible for that chip, no cap) rather
+    than an arbitrary caller-supplied horizon length. Returns an empty list
+    when there is nothing unfinished left in the window (already-closed
+    window, or the real off-season state) — callers must treat this as "no
+    candidate gameweek to evaluate", not an error.
+    """
+    return _unfinished_gameweek_ids_ordered(session, season_id, max_fpl_event_id=stop_event)
