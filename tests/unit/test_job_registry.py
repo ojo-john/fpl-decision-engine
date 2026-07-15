@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.jobs.handlers.chip_simulation import ChipSimulationJobRunner
 from app.jobs.handlers.data_ingestion import DataIngestionJobRunner
 from app.jobs.handlers.feature_generation import FeatureGenerationJobRunner
 from app.jobs.handlers.h2h_simulation import H2HSimulationJobRunner
@@ -30,6 +31,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.LEAGUE_SYNC,
     JobType.TRANSFER_OPTIMIZATION,
     JobType.H2H_SIMULATION,
+    JobType.CHIP_SIMULATION,
 }
 
 
@@ -79,6 +81,10 @@ def test_league_sync_resolves_to_its_runner():
 
 def test_h2h_simulation_resolves_to_its_runner():
     assert get_handler(JobType.H2H_SIMULATION) is H2HSimulationJobRunner
+
+
+def test_chip_simulation_resolves_to_its_runner():
+    assert get_handler(JobType.CHIP_SIMULATION) is ChipSimulationJobRunner
 
 
 @pytest.mark.parametrize(

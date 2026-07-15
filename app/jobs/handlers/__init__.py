@@ -1,6 +1,7 @@
 """Concrete JobRunner implementations, one module per job type."""
 
 from app.jobs.handlers import (
+    chip_simulation,  # noqa: F401  (import registers the handler)
     data_ingestion,  # noqa: F401  (import registers the handler)
     feature_generation,  # noqa: F401  (import registers the handler)
     h2h_simulation,  # noqa: F401  (import registers the handler)
@@ -16,6 +17,7 @@ from app.jobs.handlers import (
 )
 
 __all__ = [
+    "chip_simulation",
     "data_ingestion",
     "feature_generation",
     "h2h_simulation",
