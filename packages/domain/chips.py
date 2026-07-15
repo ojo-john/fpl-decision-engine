@@ -77,3 +77,18 @@ class ChipVerdict(str, Enum):
     ALREADY_USED = "already_used"
     EXPIRED_UNUSED = "expired_unused"
     UNAVAILABLE = "unavailable"
+
+
+class ChipOptimizationRunStatus(str, Enum):
+    """Lifecycle status of a ``chip_optimization_runs`` row (Milestone 6 Layer 3: job/persistence/REST).
+
+    Structurally identical to ``OptimizationRunStatus``/``TransferOptimizationRunStatus``/
+    ``H2HSimulationRunStatus`` (every run-header table in this codebase uses this same
+    running/succeeded/failed three-state lifecycle) -- a distinct enum, not a reused one, because
+    each is scoped to its own run table by SQLAlchemy convention here (see e.g.
+    ``TransferOptimizationRun.run_status``'s own dedicated ``TransferOptimizationRunStatus``).
+    """
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
