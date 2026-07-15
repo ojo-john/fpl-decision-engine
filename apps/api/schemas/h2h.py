@@ -20,6 +20,26 @@ class H2HSimulationRequest(BaseModel):
     requested_by: str | None = None
 
 
+class H2HStrategyCandidateOut(BaseModel):
+    """One named strategy candidate's simulated outcome (Milestone 5 Layer 4).
+
+    See ``packages.database.models.h2h_strategy_candidate.H2HStrategyCandidate``
+    for the full field rationale — ``transfer_optimization_run_scenario_id``/
+    ``captain_player_id`` are ``None`` whenever that candidate reused
+    EP_OPTIMAL's own squad/captain unchanged.
+    """
+
+    strategy_label: str
+    win_probability: Decimal
+    draw_probability: Decimal
+    loss_probability: Decimal
+    expected_margin: Decimal
+    is_recommended: bool
+    rationale: str | None
+    transfer_optimization_run_scenario_id: uuid.UUID | None
+    captain_player_id: uuid.UUID | None
+
+
 class H2HSimulationRunOut(BaseModel):
     h2h_simulation_run_id: uuid.UUID
     run_status: str
@@ -38,6 +58,12 @@ class H2HSimulationRunOut(BaseModel):
     expected_margin: Decimal | None
     margin_std_dev: Decimal | None
     confidence: str | None
+    # Milestone 5 Layer 4: risk-adjusted strategy comparison. recommended_strategy/
+    # h2h_adjustment_materially_changed are None only for a run that predates Layer 4
+    # (never for a freshly-SUCCEEDED run, which always populates both).
+    recommended_strategy: str | None
+    h2h_adjustment_materially_changed: bool | None
+    strategy_candidates: list[H2HStrategyCandidateOut]
     started_at: datetime
     completed_at: datetime | None
 
