@@ -138,6 +138,16 @@ class ChipWindowCandidateResult:
     gain_mean: float
     gain_floor: float
     gain_ceiling: float
+    # Milestone 6 Layer 4 (league-context refinement): the winning MIP squad solution behind THIS
+    # candidate's gain, populated ONLY by Wildcard/Free Hit (``evaluate_wildcard_candidate``/
+    # ``evaluate_free_hit_candidate``) -- always ``None`` for Bench Boost/Triple Captain, which have
+    # no squad rebuild of their own (see module docstring's cost-asymmetry section). A purely
+    # additive field (default ``None``): every existing positional/keyword construction of this
+    # dataclass elsewhere in this module and its tests is unaffected. ``app.jobs.handlers.
+    # chip_simulation`` reads this to build the user's WITH-CHIP squad for a real H2H matchup
+    # comparison against the immediate candidate gameweek's real, scheduled opponent -- it is never
+    # persisted itself (a ``JointSquadSolution`` is not a DB row shape).
+    solution: JointSquadSolution | None = None
 
 
 @dataclass(frozen=True)
@@ -750,7 +760,7 @@ def evaluate_wildcard_candidate(
         champion,
     )
     gain = rebuilt_points - current_points
-    return ChipWindowCandidateResult(fpl_event_id, target_gameweek_id, gain, gain, gain)
+    return ChipWindowCandidateResult(fpl_event_id, target_gameweek_id, gain, gain, gain, solution=solution)
 
 
 def evaluate_wildcard(
@@ -840,7 +850,7 @@ def evaluate_free_hit_candidate(
         champion,
     )
     gain = solution.xi_projected_points - current_points
-    return ChipWindowCandidateResult(fpl_event_id, target_gameweek_id, gain, gain, gain)
+    return ChipWindowCandidateResult(fpl_event_id, target_gameweek_id, gain, gain, gain, solution=solution)
 
 
 def evaluate_free_hit(

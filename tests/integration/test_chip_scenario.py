@@ -286,3 +286,56 @@ def test_wildcard_sums_horizon_points_while_free_hit_uses_only_the_single_target
     # A second gameweek's worth of (rebuilt - current) delta is added on top -- a real, structural
     # difference from the single-gameweek case, not just floating point noise.
     assert wildcard_two_gw_result.gain_mean != pytest.approx(wildcard_single_gw_result.gain_mean)
+
+
+def test_evaluate_wildcard_and_free_hit_candidates_expose_their_winning_solution(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """Milestone 6 Layer 4 (league-context refinement) needs the actual rebuilt squad/XI behind an
+    OPTIMAL Wildcard/Free Hit candidate, not just its gain -- ``ChipWindowCandidateResult.solution``
+    (a purely additive field) must carry a real, legal ``JointSquadSolution`` for both evaluators.
+    """
+    season_id, stop_event = _seed_season_with_several_unfinished_gameweeks(
+        db_session, patched_fpl_client_optimization_with_active_gameweek
+    )
+    window_gameweek_ids = resolve_gameweeks_within_window(db_session, season_id, stop_event)
+    gw1 = window_gameweek_ids[0]
+    fpl_event_1 = db_session.execute(select(Gameweek.fpl_event_id).where(Gameweek.id == gw1)).scalar_one()
+
+    constraints = load_optimization_constraints(db_session, season_id)
+    captain_multiplier = get_captain_multiplier(db_session, constraints.rules_config_id)
+    starting_player_ids, captain_player_id, selling_prices = _current_squad(db_session, season_id)
+
+    wildcard_result = evaluate_wildcard_candidate(
+        db_session,
+        season_id,
+        gw1,
+        fpl_event_1,
+        [gw1],
+        starting_player_ids,
+        captain_player_id,
+        _BANK,
+        selling_prices,
+        constraints,
+        captain_multiplier,
+        champion=None,
+    )
+    free_hit_result = evaluate_free_hit_candidate(
+        db_session,
+        season_id,
+        gw1,
+        fpl_event_1,
+        starting_player_ids,
+        captain_player_id,
+        _BANK,
+        selling_prices,
+        constraints,
+        captain_multiplier,
+        champion=None,
+    )
+
+    for result in (wildcard_result, free_hit_result):
+        assert result is not None
+        assert result.solution is not None
+        assert len(result.solution.starting_player_ids) == 11
+        assert result.solution.captain_player_id in result.solution.starting_player_ids
