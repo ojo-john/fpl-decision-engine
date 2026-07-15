@@ -28,6 +28,12 @@ class ChipWindowCandidateOut(BaseModel):
     is_blank_gameweek: bool | None
     is_double_gameweek: bool | None
     rank_within_chip_type: int
+    # Milestone 6 Layer 4 (league-context refinement): populated ONLY on the immediate candidate
+    # of a run whose snapshot has a real, resolvable FPL manager id AND a real scheduled H2H
+    # opponent for that exact gameweek -- None otherwise (every other candidate, or no real
+    # opponent could be resolved at all). See app.jobs.handlers.chip_simulation's own docstring.
+    h2h_win_probability_with_chip: Decimal | None = None
+    h2h_win_probability_without_chip: Decimal | None = None
 
 
 class ChipRecommendationOut(BaseModel):

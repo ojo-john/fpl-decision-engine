@@ -54,6 +54,8 @@ def _candidate_out(row: ChipWindowCandidate) -> ChipWindowCandidateOut:
         is_blank_gameweek=row.is_blank_gameweek,
         is_double_gameweek=row.is_double_gameweek,
         rank_within_chip_type=row.rank_within_chip_type,
+        h2h_win_probability_with_chip=row.h2h_win_probability_with_chip,
+        h2h_win_probability_without_chip=row.h2h_win_probability_without_chip,
     )
 
 
