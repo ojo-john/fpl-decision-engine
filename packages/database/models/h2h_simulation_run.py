@@ -29,6 +29,16 @@ plausibility check.
 simulation-specific enum) — see ``app.h2h.simulate``'s own docstring for why
 this is always hard-floored at the input ``RivalProfile.overall_confidence``
 rather than computed independently.
+
+``recommended_candidate_id``/``h2h_adjustment_materially_changed`` (Milestone
+5 Layer 4, added by migration 0016 as an ``ALTER TABLE`` after
+``h2h_strategy_candidates`` exists, since the former is a FK to that table)
+directly answer the master spec's section 20 requirement to state whether the
+H2H-aware recommendation actually changed anything versus the plain
+overall-points-optimal plan: ``h2h_adjustment_materially_changed`` is
+``True`` exactly when ``recommended_candidate_id``'s own
+``strategy_label != EP_OPTIMAL`` — see ``app.h2h.strategy`` for the
+recommendation tie-break producing both fields together.
 """
 
 import uuid
@@ -103,6 +113,14 @@ class H2HSimulationRun(Base):
     )
     optimization_permitted_snapshot: Mapped[bool] = mapped_column(SABoolean, nullable=False)
     data_quality_score_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    # Milestone 5 Layer 4 -- nullable, populated only after the strategy-candidate
+    # comparison completes (a run can succeed with only the EP_OPTIMAL-equivalent
+    # simulation persisted if candidate generation itself were ever skipped, though
+    # in practice H2HSimulationJobRunner always runs both stages together).
+    recommended_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("h2h_strategy_candidates.id")
+    )
+    h2h_adjustment_materially_changed: Mapped[bool | None] = mapped_column(SABoolean)
     parameters_json: Mapped[dict | None] = mapped_column(JSONB)
     error_code: Mapped[str | None] = mapped_column(String(100))
     error_message: Mapped[str | None] = mapped_column(Text)

@@ -83,3 +83,22 @@ class H2HSimulationRunStatus(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+
+
+class H2HStrategyLabel(str, Enum):
+    """The 7 named risk-adjusted strategy candidates compared for one H2H matchup (Milestone 5 Layer 4).
+
+    Declaration order below is also this system's own "least changed from
+    EP_OPTIMAL" ordering, reused as the final, fully-deterministic tie-break
+    step when two candidates land on an identical win probability (see
+    ``app.h2h.strategy.select_recommended_candidate``'s own docstring for the
+    full tie-break rule).
+    """
+
+    EP_OPTIMAL = "ep_optimal"
+    LOW_VARIANCE = "low_variance"
+    HIGH_UPSIDE = "high_upside"
+    CAPTAIN_COVER = "captain_cover"
+    DIFFERENTIAL_CAPTAIN = "differential_captain"
+    NO_HIT = "no_hit"
+    CALCULATED_HIT = "calculated_hit"
