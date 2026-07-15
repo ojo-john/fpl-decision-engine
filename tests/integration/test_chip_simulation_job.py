@@ -19,18 +19,26 @@ one and only unfinished gameweek) while still exercising a real, live
 """
 
 import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.jobs.service import execute_job
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.chip_recommendation import ChipRecommendation
 from packages.database.models.chip_window_candidate import ChipWindowCandidate
+from packages.database.models.gameweek import Gameweek
+from packages.database.models.h2h_match import H2HMatch
 from packages.database.models.ingestion_run import IngestionRun
+from packages.database.models.league import League
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
+from packages.database.models.rival_gameweek_snapshot import RivalGameweekSnapshot
+from packages.database.models.rival_profile import RivalProfile
 from packages.database.models.season import Season
 from packages.domain.chips import ChipOptimizationRunStatus, ChipType, ChipVerdict
+from packages.domain.h2h import LeagueType, PicksAvailability, RivalStateConfidence
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.transfers import ManagerSquadSnapshotSource
 
@@ -108,7 +116,15 @@ def _create_manual_snapshot(
     raw_picks_json: dict | None,
     chips_used_json: list[dict] | None = None,
     active_chip: str | None = None,
+    fpl_manager_id: int | None = None,
+    source: ManagerSquadSnapshotSource = ManagerSquadSnapshotSource.MANUAL_ENTRY,
 ) -> ManagerSquadSnapshot:
+    """A hand-built squad snapshot. ``fpl_manager_id``/``source`` default to the plain
+    ``MANUAL_ENTRY``/``fpl_manager_id=None`` shape every other test in this module uses -- passing a
+    real ``fpl_manager_id`` (with ``source=MANAGER_SYNC``) is what Milestone 6 Layer 4's
+    league-context refinement tests need to exercise the "which real manager is this" resolution
+    (see ``app.jobs.handlers.chip_simulation``'s own docstring).
+    """
     player_by_element = {
         eid: db_session.execute(
             select(Player).where(Player.season_id == season_id, Player.fpl_element_id == eid)
@@ -122,8 +138,8 @@ def _create_manual_snapshot(
 
     snapshot = ManagerSquadSnapshot(
         season_id=season_id,
-        source=ManagerSquadSnapshotSource.MANUAL_ENTRY,
-        fpl_manager_id=None,
+        source=source,
+        fpl_manager_id=fpl_manager_id,
         job_id=None,
         as_of_gameweek_id=None,
         bank=_BANK,
@@ -217,6 +233,10 @@ def test_chip_simulation_happy_path_all_four_chips_get_exactly_one_recommendatio
         assert candidates[0].candidate_fpl_event_id == 38
         assert candidates[0].window_number == 2
         assert candidates[0].rank_within_chip_type == 1
+        # Milestone 6 Layer 4: this snapshot is MANUAL_ENTRY (fpl_manager_id=None) -- no real
+        # manager identity to resolve a real opponent from, so both new columns stay NULL.
+        assert candidates[0].h2h_win_probability_with_chip is None
+        assert candidates[0].h2h_win_probability_without_chip is None
         if recommendation.verdict == ChipVerdict.USE_NOW:
             assert recommendation.recommended_candidate_id == candidates[0].id
         else:
@@ -379,3 +399,271 @@ def test_chip_simulation_snapshot_missing_picks_data(
 
     assert job.status == JobStatus.FAILED
     assert job.error_code == "SNAPSHOT_MISSING_PICKS_DATA"
+
+
+# --- Milestone 6 Layer 4: league-context refinement ---------------------------------------------
+#
+# A real opponent needs a real, resolvable fpl_manager_id on the user's OWN snapshot (see
+# _create_manual_snapshot's fpl_manager_id/source overrides) plus a real, scheduled h2h_matches row
+# + a synced rival_profiles/rival_gameweek_snapshots pair for the opponent -- see
+# app.jobs.handlers.chip_simulation's own module docstring for the full resolution chain.
+
+# Disjoint from _SQUAD_ELEMENT_IDS (the user's own squad) so the two sides are visibly distinct
+# squads, drawn from the same ~60-player synthetic pool (element ids 30000-30059).
+_RIVAL_SQUAD_ELEMENT_IDS = [
+    30003,
+    30004,
+    30012,
+    30015,
+    30018,
+    30020,
+    30021,
+    30033,
+    30035,
+    30036,
+    30037,
+    30038,
+    30053,
+    30054,
+    30055,
+]
+_RIVAL_STARTING_ELEMENT_IDS = [30003, 30012, 30015, 30018, 30020, 30033, 30035, 30036, 30037, 30053, 30054]
+_RIVAL_BENCH_ELEMENT_IDS = [30004, 30021, 30038, 30055]
+_RIVAL_CAPTAIN_ELEMENT_ID = 30053
+_RIVAL_VICE_CAPTAIN_ELEMENT_ID = 30054
+
+_USER_REAL_FPL_MANAGER_ID = 910001
+_RIVAL_REAL_FPL_MANAGER_ID = 910002
+_REAL_LEAGUE_FPL_ID = 910100
+_REAL_H2H_MATCH_FPL_ID = 920001
+
+# > _WILDCARD_MAX_CANDIDATE_GAMEWEEKS (4) would exercise the cap; deliberately small here instead
+# (well within the cap) so every one of the 4 chip types genuinely evaluates the SAME 3 candidate
+# gameweeks, letting one shared assertion block check "immediate populated, a later one NULL"
+# uniformly across all 4 -- not just the 2 exhaustively-evaluated ones.
+_TRAILING_UNFINISHED_GAMEWEEKS = 3
+
+
+def _rival_raw_picks_json() -> dict:
+    picks = []
+    for position, element in enumerate(_RIVAL_STARTING_ELEMENT_IDS, start=1):
+        picks.append(
+            {
+                "element": element,
+                "position": position,
+                "multiplier": 2 if element == _RIVAL_CAPTAIN_ELEMENT_ID else 1,
+                "is_captain": element == _RIVAL_CAPTAIN_ELEMENT_ID,
+                "is_vice_captain": element == _RIVAL_VICE_CAPTAIN_ELEMENT_ID,
+            }
+        )
+    for offset, element in enumerate(_RIVAL_BENCH_ELEMENT_IDS):
+        picks.append(
+            {
+                "element": element,
+                "position": 12 + offset,
+                "multiplier": 0,
+                "is_captain": False,
+                "is_vice_captain": False,
+            }
+        )
+    return {
+        "active_chip": None,
+        "automatic_subs": [],
+        "entry_history": {"event": 1, "bank": 5},
+        "picks": picks,
+    }
+
+
+def _mark_trailing_gameweeks_unfinished(db_session, season_id, count: int) -> list[int]:
+    """Mark the trailing ``count`` gameweeks (by ``fpl_event_id``) unfinished, returning their
+    ``fpl_event_id``s ascending -- mirrors ``test_chip_scenario.py``'s own
+    ``_seed_season_with_several_unfinished_gameweeks`` trick, so a chip's window genuinely contains
+    several candidate gameweeks instead of the fixture's usual single trailing one (needed here to
+    exercise "the immediate candidate gets populated, a LATER one stays NULL").
+    """
+    trailing = db_session.execute(
+        select(Gameweek.id, Gameweek.fpl_event_id)
+        .where(Gameweek.season_id == season_id)
+        .order_by(Gameweek.fpl_event_id.desc())
+        .limit(count)
+    ).all()
+    assert len(trailing) == count
+    for gameweek_id, _fpl_event_id in trailing:
+        db_session.execute(update(Gameweek).where(Gameweek.id == gameweek_id).values(finished=False))
+    db_session.commit()
+    return sorted(fpl_event_id for _gameweek_id, fpl_event_id in trailing)
+
+
+def _seed_real_opponent(
+    db_session, season_id, target_fpl_event_id: int, user_fpl_manager_id: int, rival_fpl_manager_id: int
+) -> None:
+    """Seed the minimal real-data shape Milestone 6 Layer 4 resolves against: a real, scheduled
+    ``h2h_matches`` row naming both managers at ``target_fpl_event_id``, plus a synced
+    ``rival_profiles`` row for the opponent pointing at a usable ``rival_gameweek_snapshots`` row.
+    """
+    now = datetime.now(UTC)
+    league = League(
+        fpl_league_id=_REAL_LEAGUE_FPL_ID,
+        name="Test H2H League",
+        league_type=LeagueType.H2H,
+        scoring="h",
+        admin_entry=user_fpl_manager_id,
+        start_event=1,
+        ko_rounds=None,
+        closed=False,
+        has_cup=False,
+        raw_league_json=None,
+        last_synced_at=now,
+    )
+    db_session.add(league)
+    db_session.flush()
+
+    db_session.add(
+        H2HMatch(
+            fpl_match_id=_REAL_H2H_MATCH_FPL_ID,
+            league_id=league.id,
+            event=target_fpl_event_id,
+            entry_1_id=user_fpl_manager_id,
+            entry_2_id=rival_fpl_manager_id,
+            entry_1_points=None,
+            entry_2_points=None,
+            entry_1_win=None,
+            entry_1_draw=None,
+            entry_1_loss=None,
+            entry_2_win=None,
+            entry_2_draw=None,
+            entry_2_loss=None,
+            winner=None,
+            is_knockout=False,
+            knockout_name=None,
+            is_bye=False,
+            seed_value=None,
+            raw_match_json=None,
+            last_synced_at=now,
+        )
+    )
+
+    rival_snapshot = RivalGameweekSnapshot(
+        fpl_manager_id=rival_fpl_manager_id,
+        fpl_event_id=target_fpl_event_id,
+        as_of=now,
+        picks_availability=PicksAvailability.AVAILABLE,
+        http_status=200,
+        active_chip=None,
+        captain_element_id=_RIVAL_CAPTAIN_ELEMENT_ID,
+        vice_captain_element_id=_RIVAL_VICE_CAPTAIN_ELEMENT_ID,
+        squad_player_ids=None,
+        unresolved_fpl_element_ids_json=None,
+        event_points=None,
+        event_transfers=None,
+        event_transfers_cost=None,
+        overall_rank=None,
+        raw_picks_json=_rival_raw_picks_json(),
+    )
+    db_session.add(rival_snapshot)
+    db_session.flush()
+
+    db_session.add(
+        RivalProfile(
+            season_id=season_id,
+            fpl_manager_id=rival_fpl_manager_id,
+            league_id=league.id,
+            last_known_snapshot_id=rival_snapshot.id,
+            derived_free_transfers_min=None,
+            derived_free_transfers_max=None,
+            derived_free_transfers_confidence=None,
+            derived_likely_remaining_chips_json=None,
+            predicted_no_transfer_probability=Decimal("1.0000"),
+            predicted_one_transfer_probability=Decimal("0.0000"),
+            predicted_multi_transfer_probability=Decimal("0.0000"),
+            predicted_hit_probability=Decimal("0.0000"),
+            predicted_captain_probabilities_json={str(_RIVAL_CAPTAIN_ELEMENT_ID): 1.0},
+            predicted_likely_transfer_targets_json=[],
+            tendency_features_json=None,
+            unknowns_json=None,
+            evidence_json=None,
+            overall_confidence=RivalStateConfidence.LOW,
+            computed_at=now,
+        )
+    )
+    db_session.commit()
+
+
+def test_chip_simulation_immediate_candidate_gets_h2h_win_probabilities_when_real_opponent_resolves(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    season_id = _seed_players_with_active_gameweek(db_session)
+    trailing_events = _mark_trailing_gameweeks_unfinished(
+        db_session, season_id, _TRAILING_UNFINISHED_GAMEWEEKS
+    )
+    immediate_event = trailing_events[0]
+    later_event = trailing_events[-1]
+    assert later_event != immediate_event
+
+    snapshot = _create_manual_snapshot(
+        db_session,
+        season_id,
+        _raw_picks_json(),
+        fpl_manager_id=_USER_REAL_FPL_MANAGER_ID,
+        source=ManagerSquadSnapshotSource.MANAGER_SYNC,
+    )
+    _seed_real_opponent(
+        db_session, season_id, immediate_event, _USER_REAL_FPL_MANAGER_ID, _RIVAL_REAL_FPL_MANAGER_ID
+    )
+
+    job = _run_chip_simulation(db_session, snapshot.id)
+
+    assert job.status == JobStatus.SUCCEEDED
+    run_id = uuid.UUID(job.output_json["chip_optimization_run_id"])
+    assert job.output_json["target_fpl_event_id"] == immediate_event
+
+    for chip_type in _ALL_CHIP_TYPE_VALUES:
+        candidates_by_event = {
+            c.candidate_fpl_event_id: c for c in _candidates_for_chip_type(db_session, run_id, chip_type)
+        }
+        assert immediate_event in candidates_by_event, chip_type
+
+        immediate_candidate = candidates_by_event[immediate_event]
+        assert immediate_candidate.h2h_win_probability_with_chip is not None, chip_type
+        assert immediate_candidate.h2h_win_probability_without_chip is not None, chip_type
+        assert Decimal("0") <= immediate_candidate.h2h_win_probability_with_chip <= Decimal("1")
+        assert Decimal("0") <= immediate_candidate.h2h_win_probability_without_chip <= Decimal("1")
+
+        # A LATER candidate (a real opponent for a future gameweek is never knowable in advance)
+        # always stays NULL -- only ever populated for the immediate candidate.
+        if later_event in candidates_by_event:
+            later_candidate = candidates_by_event[later_event]
+            assert later_candidate.h2h_win_probability_with_chip is None, chip_type
+            assert later_candidate.h2h_win_probability_without_chip is None, chip_type
+
+
+def test_chip_simulation_h2h_win_probabilities_stay_null_when_no_real_opponent_resolves(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """A real, resolvable ``fpl_manager_id`` alone is not enough -- with no scheduled ``h2h_matches``
+    row for this gameweek at all (off-season/bye-week/never-synced-league), the refinement is
+    skipped entirely and the run still succeeds normally, unaffected.
+    """
+    season_id = _seed_players_with_active_gameweek(db_session)
+    snapshot = _create_manual_snapshot(
+        db_session,
+        season_id,
+        _raw_picks_json(),
+        fpl_manager_id=_USER_REAL_FPL_MANAGER_ID,
+        source=ManagerSquadSnapshotSource.MANAGER_SYNC,
+    )
+
+    job = _run_chip_simulation(db_session, snapshot.id)
+
+    assert job.status == JobStatus.SUCCEEDED
+    run_id = uuid.UUID(job.output_json["chip_optimization_run_id"])
+    recommendations = _recommendations_by_chip_type(db_session, run_id)
+    assert set(recommendations.keys()) == _ALL_CHIP_TYPE_VALUES
+
+    for chip_type, recommendation in recommendations.items():
+        assert recommendation.verdict in (ChipVerdict.USE_NOW, ChipVerdict.HOLD)
+        candidates = _candidates_for_chip_type(db_session, run_id, chip_type)
+        assert len(candidates) == 1
+        assert candidates[0].candidate_fpl_event_id == 38
+        assert candidates[0].h2h_win_probability_with_chip is None
+        assert candidates[0].h2h_win_probability_without_chip is None

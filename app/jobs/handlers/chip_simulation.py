@@ -74,15 +74,79 @@ with, but not imported from, ``app.chips.scenario``'s own (private)
 default, so the persisted value is always exactly what was actually used.
 Wildcard/Free Hit candidates are deterministic single MIP solves (see that
 module's own docstring) — ``sample_count`` is always ``NULL`` for those.
+
+League-context refinement (Milestone 6 Layer 4 -- the final piece of this
+milestone): for the IMMEDIATE candidate only (the very first entry in a
+chip's evaluated ``results`` list -- the next unfinished gameweek), if the
+user has a REAL, resolvable FPL manager identity and a real, scheduled H2H
+opponent for that exact gameweek, ``_compute_league_context_h2h_probabilities``
+runs a paired Monte Carlo win-probability comparison (with vs. without this
+one chip) against that opponent's own predicted state, reusing Milestone 5's
+own ``app.h2h.simulate`` primitives (``sample_rival_scores``/
+``sample_user_scores``/``summarize_matchup``) exactly like ``H2HSimulationJobRunner``
+does. The two resulting probabilities are persisted on that ONE
+``chip_window_candidates`` row only (``h2h_win_probability_with_chip``/
+``h2h_win_probability_without_chip``) — every other candidate stays ``NULL``
+(a future gameweek's real opponent is never knowable in advance).
+
+Resolution chain, every step of which degrades gracefully to "skip this
+refinement, leave both columns NULL" rather than ever failing the run:
+
+1. ``ManagerSquadSnapshot.fpl_manager_id`` must be non-NULL -- a
+   ``MANUAL_ENTRY`` snapshot (this codebase's own hand-built/hypothetical
+   squads, ``fpl_manager_id=NULL`` by construction) has no real FPL manager
+   behind it, so there is no opponent to look up at all. This is exactly the
+   same field ``MANAGER_SYNC`` (``app/jobs/handlers/manager_sync.py``) already
+   stamps onto every real synced snapshot -- no new job parameter is needed
+   to answer "which real manager is this".
+2. An ``h2h_matches`` row where ``event == target_fpl_event_id`` and either
+   ``entry_1_id``/``entry_2_id`` equals that ``fpl_manager_id`` -- the OTHER
+   entry is the real opponent's raw FPL manager id. No league filter is
+   applied (a manager's real FPL manager id is globally unique across every
+   league FPL itself tracks, so this is unambiguous without also matching a
+   specific internal ``league_id``).
+3. A ``rival_profiles`` row for that opponent (``season_id`` + their
+   ``fpl_manager_id``) with a non-NULL ``last_known_snapshot_id`` whose
+   ``rival_gameweek_snapshots`` row has usable ``raw_picks_json`` -- the same
+   "most recent AVAILABLE snapshot" resolution ``H2HSimulationJobRunner``
+   already performs, reused verbatim in shape (not imported -- that job's own
+   helpers are private to its module, same duplication precedent as
+   ``_split_starting_and_bench`` below).
+4. (Wildcard/Free Hit only) a real, ``OPTIMAL`` rebuilt-squad
+   ``JointSquadSolution`` for the immediate candidate (see
+   ``app.chips.scenario.ChipWindowCandidateResult.solution``, added
+   additively in this same layer) -- an INFEASIBLE/ERROR rebuild has no
+   with-chip squad to compare.
+
+Rival-side construction deliberately does NOT run ``H2HSimulationJobRunner``'s
+own ``_resolve_effective_starting_xi`` real-FPL autosub (that function is
+private to that module, and this handler already deliberately skips autosub
+for the user's OWN side too across its general multi-week chip evaluation --
+see this docstring's "Starting-XI/bench/captain resolution" section above).
+Extending that same simplification to the rival side here, for this one
+narrowly-scoped single-gameweek refinement, keeps this addition genuinely
+small; a rival starter who happens to be flagged unavailable this one
+gameweek is projected at whatever ``project_player_with_champion`` already
+returns for them (which itself down-weights an unavailable player), rather
+than being swapped for a bench replacement. A documented Layer 4
+simplification, not a silent gap.
+
+Scope boundary -- this signal is SUPPLEMENTARY, transparency-only context,
+never a new input to the recommendation algorithm itself:
+``rank_candidates_for_chip`` (Layer 2) is entirely unchanged and still ranks
+USE_NOW/HOLD purely on ``gain_mean`` -- a real opponent's win probability is
+surfaced alongside the recommendation for situational awareness, never folded
+into which chip-timing decision gets recommended.
 """
 
+import logging
 import random
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.chips.inventory import UserChipWindow, derive_user_chip_windows
@@ -100,7 +164,15 @@ from app.chips.scenario import (
     top_captain_candidates,
 )
 from app.chips.windows import ChipWindow, resolve_chip_windows
-from app.h2h.simulate import UserPlayerInput
+from app.h2h.simulate import (
+    RivalHeldPlayerInput,
+    RivalTransferTargetInput,
+    SimulationInputs,
+    UserPlayerInput,
+    sample_rival_scores,
+    sample_user_scores,
+    summarize_matchup,
+)
 from app.jobs.registry import register_handler
 from app.jobs.runner import JobContext, JobResult, JobRunner
 from app.optimization.champion_loader import LoadedChampion, load_current_champion
@@ -122,14 +194,19 @@ from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.chip_recommendation import ChipRecommendation
 from packages.database.models.chip_window_candidate import ChipWindowCandidate
 from packages.database.models.gameweek import Gameweek
+from packages.database.models.h2h_match import H2HMatch
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
 from packages.database.models.position import Position
+from packages.database.models.rival_gameweek_snapshot import RivalGameweekSnapshot
+from packages.database.models.rival_profile import RivalProfile
 from packages.database.models.rules_config import RulesConfig
 from packages.database.session import SessionLocal
 from packages.domain.chips import ChipOptimizationRunStatus, ChipType, ChipVerdict, UserChipWindowStatus
 from packages.domain.jobs import JobStatus, JobType
 from packages.domain.optimization import TargetGameweekStatus
+
+logger = logging.getLogger(__name__)
 
 _STARTING_XI_MAX_POSITION = 11
 
@@ -406,6 +483,10 @@ class _ChipEvaluationContext:
     bank: int
     selling_prices: dict[uuid.UUID, int]
     rng: random.Random
+    # Milestone 6 Layer 4 (league-context refinement): the real FPL manager id behind this
+    # snapshot, straight off ManagerSquadSnapshot.fpl_manager_id -- None for a MANUAL_ENTRY
+    # snapshot (no real manager behind it, see module docstring's resolution-chain step 1).
+    fpl_manager_id: int | None
 
 
 def _evaluate_chip_candidates(
@@ -479,6 +560,343 @@ def _evaluate_chip_candidates(
     )  # ChipType is closed
 
 
+# --- League-context refinement (Milestone 6 Layer 4) -- see module docstring for the full ------
+# --- resolution chain, every graceful-degradation point, and the "never feeds into ranking" ----
+# --- scope boundary. -----------------------------------------------------------------------------
+
+
+def _find_real_opponent_match(
+    session: Session, fpl_manager_id: int, target_fpl_event_id: int
+) -> H2HMatch | None:
+    """The real, scheduled ``h2h_matches`` row for this exact gameweek naming ``fpl_manager_id`` as
+    either entry -- ``None`` if no such match exists (off-season, a bye week, a league never synced).
+    """
+    return (
+        session.execute(
+            select(H2HMatch).where(
+                H2HMatch.event == target_fpl_event_id,
+                or_(H2HMatch.entry_1_id == fpl_manager_id, H2HMatch.entry_2_id == fpl_manager_id),
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _opponent_fpl_manager_id(match: H2HMatch, fpl_manager_id: int) -> int:
+    return match.entry_2_id if match.entry_1_id == fpl_manager_id else match.entry_1_id
+
+
+def _resolve_real_rival_state(
+    session: Session, season_id: uuid.UUID, opponent_fpl_manager_id: int
+) -> tuple[RivalProfile, RivalGameweekSnapshot] | None:
+    """The opponent's synced ``RivalProfile`` + its most recent AVAILABLE ``RivalGameweekSnapshot``
+    -- the same "last_known_snapshot_id" resolution ``H2HSimulationJobRunner`` already performs.
+    ``None`` if the opponent was never synced, or has no usable last-known squad.
+    """
+    rival_profile = session.execute(
+        select(RivalProfile).where(
+            RivalProfile.season_id == season_id, RivalProfile.fpl_manager_id == opponent_fpl_manager_id
+        )
+    ).scalar_one_or_none()
+    if rival_profile is None or rival_profile.last_known_snapshot_id is None:
+        return None
+    rival_snapshot = session.get(RivalGameweekSnapshot, rival_profile.last_known_snapshot_id)
+    if (
+        rival_snapshot is None
+        or not rival_snapshot.raw_picks_json
+        or not rival_snapshot.raw_picks_json.get("picks")
+    ):
+        return None
+    return rival_profile, rival_snapshot
+
+
+def _build_rival_held_players_no_autosub(
+    session: Session,
+    season_id: uuid.UUID,
+    rival_snapshot: RivalGameweekSnapshot,
+    target_gameweek_id: uuid.UUID,
+    champion: LoadedChampion | None,
+    residuals: _ResidualCache,
+    positions_by_id: dict[uuid.UUID, str],
+) -> list[RivalHeldPlayerInput] | None:
+    """Rival starting XI -> ``RivalHeldPlayerInput``, deliberately WITHOUT real-FPL autosub -- see
+    module docstring's "Rival-side construction" section for why this simplification is scoped to
+    this one narrow refinement. ``None`` if nothing resolves (degrades gracefully).
+    """
+    rival_starters, _rival_bench = _split_starting_and_bench(rival_snapshot.raw_picks_json)
+    if not rival_starters:
+        return None
+    player_by_element = _resolve_players_by_element(
+        session, season_id, {p["element"] for p in rival_starters}
+    )
+
+    held: list[RivalHeldPlayerInput] = []
+    for pick in rival_starters:
+        player = player_by_element.get(pick["element"])
+        if player is None:
+            continue
+        projection = project_player_with_champion(session, player, target_gameweek_id, champion)
+        position_short_name = _position_short_name(positions_by_id, player)
+        held.append(
+            RivalHeldPlayerInput(
+                player_id=str(player.id),
+                fpl_element_id=player.fpl_element_id,
+                position=position_short_name,
+                projected_points=projection.projected_points,
+                own_residuals=residuals.for_player(player.id),
+                position_residuals=residuals.for_position(player.position_id, position_short_name),
+            )
+        )
+    return held or None
+
+
+def _build_rival_transfer_targets(
+    session: Session,
+    season_id: uuid.UUID,
+    candidates_json: list | None,
+    target_gameweek_id: uuid.UUID,
+    champion: LoadedChampion | None,
+    residuals: _ResidualCache,
+) -> list[RivalTransferTargetInput]:
+    """Mirrors ``app.jobs.handlers.h2h_simulation``'s own private helper of the same name verbatim
+    (duplicated, not imported -- that function is private to its own module, same precedent as
+    ``_split_starting_and_bench`` above).
+    """
+    if not candidates_json:
+        return []
+    targets: list[RivalTransferTargetInput] = []
+    for candidate in candidates_json:
+        try:
+            player_id = uuid.UUID(str(candidate["player_id"]))
+        except (KeyError, ValueError, TypeError):
+            continue
+        player = session.get(Player, player_id)
+        if player is None or player.season_id != season_id:
+            continue
+        projection = project_player_with_champion(session, player, target_gameweek_id, champion)
+        targets.append(
+            RivalTransferTargetInput(
+                player_id=str(player.id),
+                position=candidate.get("position"),
+                projected_points=projection.projected_points,
+                own_residuals=residuals.for_player(player.id),
+                position_residuals=residuals.for_position(player.position_id, candidate.get("position")),
+            )
+        )
+    return targets
+
+
+def _user_players_for_ids(
+    session: Session,
+    player_ids: list[uuid.UUID],
+    captain_player_id: uuid.UUID,
+    captain_multiplier: int,
+    target_gameweek_id: uuid.UUID,
+    champion: LoadedChampion | None,
+    residuals: _ResidualCache,
+    positions_by_id: dict[uuid.UUID, str],
+) -> list[UserPlayerInput]:
+    """Resolve a starting-XI player-id list + captain into ``UserPlayerInput``s for ONE gameweek --
+    shared by both the current-squad baseline and a Wildcard/Free Hit rebuilt-squad candidate.
+    """
+    result: list[UserPlayerInput] = []
+    for player_id in player_ids:
+        player = session.get(Player, player_id)
+        if player is None:
+            continue  # degrades gracefully -- same convention as every other player-id resolution here
+        projection = project_player_with_champion(session, player, target_gameweek_id, champion)
+        position_short_name = _position_short_name(positions_by_id, player)
+        result.append(
+            UserPlayerInput(
+                player_id=str(player.id),
+                projected_points=projection.projected_points,
+                multiplier=captain_multiplier if player_id == captain_player_id else 1,
+                own_residuals=residuals.for_player(player.id),
+                position_residuals=residuals.for_position(player.position_id, position_short_name),
+            )
+        )
+    return result
+
+
+def _immediate_without_chip_user_players(
+    session: Session, ctx: _ChipEvaluationContext, target_gameweek_id: uuid.UUID
+) -> list[UserPlayerInput]:
+    """The user's ACTUAL current starting XI/captain for the immediate gameweek, no chip applied --
+    the one constant "without chip" baseline shared by every chip type's league-context comparison.
+    """
+    return _user_players_for_ids(
+        session,
+        ctx.current_squad_starting_player_ids,
+        ctx.current_squad_captain_player_id,
+        ctx.captain_multiplier,
+        target_gameweek_id,
+        ctx.champion,
+        ctx.residuals,
+        ctx.positions_by_id,
+    )
+
+
+def _immediate_with_chip_user_players(
+    session: Session,
+    chip_type: ChipType,
+    target_gameweek_id: uuid.UUID,
+    immediate_result: ChipWindowCandidateResult,
+    without_chip_players: list[UserPlayerInput],
+    ctx: _ChipEvaluationContext,
+) -> list[UserPlayerInput] | None:
+    """The user's squad/XI WITH this one chip's effect applied, for the SAME immediate gameweek.
+
+    Bench Boost: the current XI plus all 4 bench players (multiplier 1 each) -- all 15 count.
+    Triple Captain: the current XI unchanged, except the current captain's multiplier is bumped
+    from ``captain_multiplier`` to ``captain_multiplier + 1``.
+    Wildcard/Free Hit: an entirely different squad -- the winning rebuilt-squad solution this exact
+    candidate's own MIP solve already produced (``immediate_result.solution``, see
+    ``app.chips.scenario.ChipWindowCandidateResult`` docstring). Returns ``None`` when that solution
+    is unavailable (an INFEASIBLE/ERROR rebuild never attaches one) -- the caller skips this
+    refinement entirely in that case, same as every other graceful-degradation path here.
+    """
+    if chip_type == ChipType.BBOOST:
+        bench_players: list[UserPlayerInput] = []
+        for pick in ctx.bench:
+            player = ctx.player_by_element.get(pick["element"])
+            if player is None:
+                continue
+            projection = project_player_with_champion(session, player, target_gameweek_id, ctx.champion)
+            position_short_name = _position_short_name(ctx.positions_by_id, player)
+            bench_players.append(
+                UserPlayerInput(
+                    player_id=str(player.id),
+                    projected_points=projection.projected_points,
+                    multiplier=1,
+                    own_residuals=ctx.residuals.for_player(player.id),
+                    position_residuals=ctx.residuals.for_position(player.position_id, position_short_name),
+                )
+            )
+        return without_chip_players + bench_players
+
+    if chip_type == ChipType.TRIPLE_CAPTAIN:
+        boosted_multiplier = ctx.captain_multiplier + 1
+        captain_player_id_str = str(ctx.current_squad_captain_player_id)
+        return [
+            replace(p, multiplier=boosted_multiplier) if p.player_id == captain_player_id_str else p
+            for p in without_chip_players
+        ]
+
+    if chip_type in (ChipType.WILDCARD, ChipType.FREEHIT):
+        solution = immediate_result.solution
+        if solution is None or solution.captain_player_id is None:
+            return None
+        return _user_players_for_ids(
+            session,
+            solution.starting_player_ids,
+            solution.captain_player_id,
+            ctx.captain_multiplier,
+            target_gameweek_id,
+            ctx.champion,
+            ctx.residuals,
+            ctx.positions_by_id,
+        )
+
+    raise AssertionError(
+        f"unhandled chip_type in _immediate_with_chip_user_players: {chip_type}"
+    )  # ChipType is closed
+
+
+def _compute_league_context_h2h_probabilities(
+    session: Session,
+    chip_type: ChipType,
+    target_fpl_event_id: int,
+    target_gameweek_id: uuid.UUID,
+    immediate_result: ChipWindowCandidateResult,
+    ctx: _ChipEvaluationContext,
+) -> tuple[Decimal, Decimal] | None:
+    """The league-context refinement itself: ``(win_probability_with_chip, win_probability_without_chip)``
+    for the IMMEDIATE candidate against the user's real, scheduled H2H opponent -- or ``None`` if any
+    step of the resolution chain (module docstring) comes up empty. NEVER raises: any unexpected
+    failure here is caught and logged, never allowed to fail the chip recommendation itself -- this
+    is a supplementary, transparency-only signal, not a required input.
+    """
+    if ctx.fpl_manager_id is None:
+        return None
+    try:
+        match = _find_real_opponent_match(session, ctx.fpl_manager_id, target_fpl_event_id)
+        if match is None:
+            return None
+        opponent_fpl_manager_id = _opponent_fpl_manager_id(match, ctx.fpl_manager_id)
+        rival_state = _resolve_real_rival_state(session, ctx.season_id, opponent_fpl_manager_id)
+        if rival_state is None:
+            return None
+        rival_profile, rival_snapshot = rival_state
+
+        rival_held_players = _build_rival_held_players_no_autosub(
+            session,
+            ctx.season_id,
+            rival_snapshot,
+            target_gameweek_id,
+            ctx.champion,
+            ctx.residuals,
+            ctx.positions_by_id,
+        )
+        if rival_held_players is None:
+            return None
+        rival_transfer_targets = _build_rival_transfer_targets(
+            session,
+            ctx.season_id,
+            rival_profile.predicted_likely_transfer_targets_json,
+            target_gameweek_id,
+            ctx.champion,
+            ctx.residuals,
+        )
+
+        without_chip_players = _immediate_without_chip_user_players(session, ctx, target_gameweek_id)
+        with_chip_players = _immediate_with_chip_user_players(
+            session, chip_type, target_gameweek_id, immediate_result, without_chip_players, ctx
+        )
+        if not without_chip_players or not with_chip_players:
+            return None
+
+        base_inputs = SimulationInputs(
+            user_players=(),  # unused by sample_rival_scores -- each side's own players are sampled below
+            rival_held_players=tuple(rival_held_players),
+            rival_transfer_targets=tuple(rival_transfer_targets),
+            rival_no_transfer_probability=float(rival_profile.predicted_no_transfer_probability or 0),
+            rival_one_transfer_probability=float(rival_profile.predicted_one_transfer_probability or 0),
+            rival_multi_transfer_probability=float(rival_profile.predicted_multi_transfer_probability or 0),
+            rival_captain_probabilities=dict(rival_profile.predicted_captain_probabilities_json or {}),
+            rival_state_confidence=rival_profile.overall_confidence,
+        )
+
+        # Same "one shared, precomputed rival distribution reused for a fair, paired comparison"
+        # principle as sample_rival_scores' own docstring -- both the with-chip and without-chip
+        # user-side samples are compared against the exact SAME rival_scores tuple.
+        rng = random.Random()
+        rival_scores = sample_rival_scores(base_inputs, rng)
+        without_chip_scores = sample_user_scores(tuple(without_chip_players), rng, base_inputs.sample_count)
+        with_chip_scores = sample_user_scores(tuple(with_chip_players), rng, base_inputs.sample_count)
+
+        without_chip_summary = summarize_matchup(
+            without_chip_scores, rival_scores, rival_profile.overall_confidence
+        )
+        with_chip_summary = summarize_matchup(
+            with_chip_scores, rival_scores, rival_profile.overall_confidence
+        )
+
+        return (
+            Decimal(str(round(with_chip_summary.win_probability, 4))),
+            Decimal(str(round(without_chip_summary.win_probability, 4))),
+        )
+    except Exception:  # noqa: BLE001 -- supplementary signal only, must never block the recommendation
+        logger.warning(
+            "chip_simulation: league-context H2H refinement failed for chip_type=%s "
+            "target_fpl_event_id=%s; leaving h2h_win_probability_* NULL for this candidate.",
+            chip_type.value,
+            target_fpl_event_id,
+            exc_info=True,
+        )
+        return None
+
+
 # --- Sample count persisted per candidate (see module docstring) -------------------------------
 
 _SAMPLE_COUNT_BY_CHIP_TYPE: dict[ChipType, int | None] = {
@@ -497,17 +915,28 @@ def _persist_candidates_and_recommendation(
     season_id: uuid.UUID,
     results: list[ChipWindowCandidateResult],
     recommendation: RecommendationResult,
+    immediate_h2h_win_probabilities: tuple[Decimal, Decimal] | None = None,
 ) -> None:
+    """``immediate_h2h_win_probabilities``, if not ``None``, is ``(with_chip, without_chip)`` and is
+    applied ONLY to ``results[0]``'s own persisted row (the immediate candidate) -- see module
+    docstring's "League-context refinement" section. Every other candidate row always persists both
+    new columns as ``NULL``.
+    """
     gameweek_ids = [r.gameweek_id for r in results]
     counts_by_gameweek = resolve_team_fixture_counts_for_gameweeks(session, season_id, gameweek_ids)
     rank_by_event = {r.fpl_event_id: i + 1 for i, r in enumerate(sorted(results, key=lambda r: -r.gain_mean))}
     sample_count = _SAMPLE_COUNT_BY_CHIP_TYPE[chip_type]
+    immediate_result = results[0]
 
     candidate_id_by_event: dict[int, uuid.UUID] = {}
     for result in results:
         counts = counts_by_gameweek.get(result.gameweek_id, {})
         is_blank = any(c.fixture_count == 0 for c in counts.values()) if counts else None
         is_double = any(c.fixture_count >= 2 for c in counts.values()) if counts else None
+        if immediate_h2h_win_probabilities is not None and result is immediate_result:
+            with_chip_probability, without_chip_probability = immediate_h2h_win_probabilities
+        else:
+            with_chip_probability, without_chip_probability = None, None
         row = ChipWindowCandidate(
             chip_optimization_run_id=run_id,
             chip_type=chip_type,
@@ -520,6 +949,8 @@ def _persist_candidates_and_recommendation(
             gain_ceiling=Decimal(str(round(result.gain_ceiling, 2))),
             sample_count=sample_count,
             rank_within_chip_type=rank_by_event[result.fpl_event_id],
+            h2h_win_probability_with_chip=with_chip_probability,
+            h2h_win_probability_without_chip=without_chip_probability,
         )
         session.add(row)
         session.flush()  # populate row.id for the recommendation's own FK, below
@@ -615,9 +1046,30 @@ def _process_chip(
         )
         return
 
+    # Milestone 6 Layer 4: the league-context refinement only ever considers results[0], the
+    # IMMEDIATE candidate -- defensively re-checked against target_fpl_event_id since every
+    # evaluator's own contract (see resolve_gameweeks_within_window/rank_candidates_for_chip
+    # docstrings) already guarantees this equality for a genuinely AVAILABLE current window, but a
+    # Wildcard/Free Hit rebuild that happened to be INFEASIBLE for the immediate week (excluded,
+    # see evaluate_wildcard_candidate's own None-on-non-OPTIMAL convention) could otherwise leave
+    # results[0] as a LATER candidate -- in which case this refinement is correctly skipped
+    # entirely (never misapplied to the wrong candidate row).
+    immediate_h2h_win_probabilities = None
+    if results[0].fpl_event_id == target_fpl_event_id:
+        immediate_h2h_win_probabilities = _compute_league_context_h2h_probabilities(
+            session, chip_type, target_fpl_event_id, results[0].gameweek_id, results[0], ctx
+        )
+
     recommendation = rank_candidates_for_chip(results)
     _persist_candidates_and_recommendation(
-        session, run_id, chip_type, current.window.window_number, ctx.season_id, results, recommendation
+        session,
+        run_id,
+        chip_type,
+        current.window.window_number,
+        ctx.season_id,
+        results,
+        recommendation,
+        immediate_h2h_win_probabilities,
     )
 
 
@@ -737,6 +1189,7 @@ class ChipSimulationJobRunner(JobRunner):
                     bank=bank,
                     selling_prices=selling_prices,
                     rng=random.Random(),
+                    fpl_manager_id=snapshot.fpl_manager_id,
                 )
 
                 for chip_type in requested_chip_types:
