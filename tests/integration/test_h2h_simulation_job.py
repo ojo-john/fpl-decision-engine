@@ -43,6 +43,7 @@ from sqlalchemy import select
 from app.jobs.service import execute_job
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.h2h_simulation_run import H2HSimulationRun
+from packages.database.models.h2h_strategy_candidate import H2HStrategyCandidate
 from packages.database.models.ingestion_run import IngestionRun
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
@@ -51,7 +52,8 @@ from packages.database.models.position import Position
 from packages.database.models.rival_profile import RivalProfile
 from packages.database.models.rules_config import RulesConfig
 from packages.database.models.season import Season
-from packages.domain.h2h import H2HSimulationRunStatus, RivalStateConfidence
+from packages.database.models.transfer_optimization_run_scenario import TransferOptimizationRunScenario
+from packages.domain.h2h import H2HSimulationRunStatus, H2HStrategyLabel, RivalStateConfidence
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.rules import RulesStatus
 from packages.domain.transfers import ManagerSquadSnapshotSource
@@ -60,6 +62,53 @@ from tests.integration.conftest import (
     LEAGUE_RIVAL_C_FPL_MANAGER_ID,
     LEAGUE_SELF_FPL_MANAGER_ID,
 )
+
+# --- Milestone 5 Layer 4 (H2H Strategy): a hand-verified 15-player squad, IDENTICAL to
+# test_transfer_optimization_job.py's own hand-verified squad (same element ids/bank/free
+# transfers), reused here so its already-proven 1-/2-transfer gain numbers
+# (1-transfer: OUT 30011 -> IN 30021, gain=5.5; 2-transfer: OUT {30001, 30011} -> IN {30009,
+# 30021}, gain=10.0, hit_cost=0 given free_transfers_available=2) hold without re-deriving
+# them by hand a second time -- but ALSO given a real raw_picks_json (11 starters + 4 bench,
+# captain/vice-captain) since, unlike TRANSFER_OPTIMIZATION, H2H_SIMULATION needs a resolved
+# starting XI. Captain = 30010 (DEF, ep_next=8.5) -- the single highest-projected STARTER,
+# with no residual variance/appearance-risk data recorded for it (status "a", no
+# player-specific or DEF-position player_gameweek_stats seeded anywhere in this suite) -- so
+# LOW_VARIANCE and CAPTAIN_COVER are BOTH guaranteed to re-pick this exact same player
+# regardless of any MID-position residual contamination this same persistent Postgres may
+# have accumulated from test_h2h_simulation_residual_bootstrap_uses_cross_season_position_pool_
+# when_current_season_is_cold's own seeded data elsewhere in this file (that seed only ever
+# touches the MID pool, and 30010 is DEF and the outright highest raw projection among
+# starters, so it can never be beaten by a variance-boosted MID competitor for either of those
+# two functions -- see this module's own reasoning in the PR description / commit message).
+_STRATEGY_SQUAD_ELEMENT_IDS = [
+    30001,
+    30002,
+    30010,
+    30011,
+    30019,
+    30014,
+    30016,
+    30028,
+    30029,
+    30030,
+    30031,
+    30032,
+    30048,
+    30049,
+    30050,
+]
+_STRATEGY_STARTING_ELEMENTS = [30001, 30010, 30011, 30019, 30014, 30028, 30029, 30030, 30031, 30048, 30049]
+_STRATEGY_BENCH_ELEMENTS = [30002, 30016, 30032, 30050]
+_STRATEGY_CAPTAIN_ELEMENT = 30010
+_STRATEGY_VICE_CAPTAIN_ELEMENT = 30031
+_STRATEGY_BANK = 20
+_STRATEGY_FREE_TRANSFERS_AVAILABLE = 2
+
+_ALL_STRATEGY_LABELS = frozenset(H2HStrategyLabel)
+_NO_TRANSFER_STRATEGY_LABEL_VALUES = _ALL_STRATEGY_LABELS - {
+    H2HStrategyLabel.NO_HIT,
+    H2HStrategyLabel.CALCULATED_HIT,
+}
 
 FPL_LEAGUE_ID = 88891  # distinct from test_league_sync_job.py's 88888/test_rival_profile.py's 88889
 
@@ -207,7 +256,12 @@ def _rival_profile(db_session, season_id, fpl_manager_id: int) -> RivalProfile:
 
 
 def _create_manual_user_snapshot(
-    db_session, season_id, raw_picks_json: dict | None, squad_elements: list[int] | None = None
+    db_session,
+    season_id,
+    raw_picks_json: dict | None,
+    squad_elements: list[int] | None = None,
+    bank: int = 5,
+    free_transfers_available: int = 1,
 ) -> ManagerSquadSnapshot:
     all_elements = (
         squad_elements if squad_elements is not None else _USER_STARTING_ELEMENTS + _USER_BENCH_ELEMENTS
@@ -227,8 +281,8 @@ def _create_manual_user_snapshot(
         fpl_manager_id=None,
         job_id=None,
         as_of_gameweek_id=None,
-        bank=5,
-        free_transfers_available=1,
+        bank=bank,
+        free_transfers_available=free_transfers_available,
         active_chip=None,
         chips_used_json=None,
         overall_rank=None,
@@ -264,6 +318,179 @@ def _run_h2h_simulation(db_session, snapshot_id, rival_profile_id, **extra_param
         parameters=parameters,
         requested_by="integration-test",
         trigger_type=TriggerType.LOCAL,
+    )
+
+
+def _run_transfer_optimization(db_session, snapshot_id, horizon_gameweeks: int = 6):
+    return execute_job(
+        db_session,
+        job_type=JobType.TRANSFER_OPTIMIZATION,
+        parameters={"manager_squad_snapshot_id": str(snapshot_id), "horizon_gameweeks": horizon_gameweeks},
+        requested_by="integration-test",
+        trigger_type=TriggerType.LOCAL,
+    )
+
+
+def _strategy_candidates_by_label(
+    db_session, h2h_simulation_run_id
+) -> dict[H2HStrategyLabel, H2HStrategyCandidate]:
+    rows = (
+        db_session.execute(
+            select(H2HStrategyCandidate).where(
+                H2HStrategyCandidate.h2h_simulation_run_id == h2h_simulation_run_id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.strategy_label: row for row in rows}
+
+
+def test_h2h_simulation_full_strategy_comparison_persists_all_seven_candidates_with_prior_transfer_run(
+    db_session, patched_fpl_client_optimization_with_active_gameweek, patched_fpl_client_league
+):
+    """Milestone 5 Layer 4 (H2H Strategy) end-to-end: a real, prior SUCCEEDED
+    ``TransferOptimizationRun`` exists for this exact snapshot (run first, below), so all 7 named
+    candidates should be built, simulated, and persisted -- including ``NO_HIT``/``CALCULATED_HIT``,
+    which cite that run's own 0-transfer/2-transfer scenarios as provenance.
+
+    Also proves the scores-cache/determinism fix (``h2h_simulation.py``'s
+    ``user_scores_by_squad`` dict): ``CAPTAIN_COVER`` and ``LOW_VARIANCE`` are both guaranteed (see
+    this module's own squad-construction docstring above) to re-pick the SAME captain (30010) as
+    ``EP_OPTIMAL`` already has -- an IDENTICAL resulting squad, not merely a similar one -- so their
+    persisted win/draw/loss/margin must be EXACTLY equal to ``EP_OPTIMAL``'s, not independently
+    re-sampled near-duplicates that Monte Carlo noise could have pulled apart.
+    """
+    season_id = _seed_players_with_active_gameweek(db_session)
+    league_job = _run_league_sync(db_session)
+    assert league_job.status == JobStatus.SUCCEEDED
+    rival_profile = _rival_profile(db_session, season_id, LEAGUE_RIVAL_B_FPL_MANAGER_ID)
+
+    picks_json = _user_raw_picks_json(
+        starting_elements=_STRATEGY_STARTING_ELEMENTS,
+        bench_elements=_STRATEGY_BENCH_ELEMENTS,
+        captain_element=_STRATEGY_CAPTAIN_ELEMENT,
+        vice_captain_element=_STRATEGY_VICE_CAPTAIN_ELEMENT,
+    )
+    snapshot = _create_manual_user_snapshot(
+        db_session,
+        season_id,
+        picks_json,
+        squad_elements=_STRATEGY_SQUAD_ELEMENT_IDS,
+        bank=_STRATEGY_BANK,
+        free_transfers_available=_STRATEGY_FREE_TRANSFERS_AVAILABLE,
+    )
+
+    transfer_job = _run_transfer_optimization(db_session, snapshot.id)
+    assert transfer_job.status == JobStatus.SUCCEEDED
+    # Hand-verified (identical squad/bank/free-transfers to test_transfer_optimization_job.py's
+    # own proven case): the 2-transfer scenario (gain=10.0, hit_cost=0) strictly beats both the
+    # 0- and 1-transfer scenarios, so CALCULATED_HIT is generated (not skipped as a roll).
+    assert transfer_job.output_json["recommended_transfers_count"] == 2
+    assert transfer_job.output_json["recommended_hit_cost"] == 0
+    transfer_run_id = uuid.UUID(transfer_job.output_json["transfer_optimization_run_id"])
+    scenario_0 = db_session.execute(
+        select(TransferOptimizationRunScenario).where(
+            TransferOptimizationRunScenario.transfer_optimization_run_id == transfer_run_id,
+            TransferOptimizationRunScenario.transfers_count == 0,
+        )
+    ).scalar_one()
+    scenario_2 = db_session.execute(
+        select(TransferOptimizationRunScenario).where(
+            TransferOptimizationRunScenario.transfer_optimization_run_id == transfer_run_id,
+            TransferOptimizationRunScenario.transfers_count == 2,
+        )
+    ).scalar_one()
+
+    job = _run_h2h_simulation(db_session, snapshot.id, rival_profile.id)
+
+    assert job.status == JobStatus.SUCCEEDED
+    run_id = uuid.UUID(job.output_json["h2h_simulation_run_id"])
+    run_row = db_session.get(H2HSimulationRun, run_id)
+    assert run_row is not None
+
+    candidates = _strategy_candidates_by_label(db_session, run_id)
+    assert set(candidates.keys()) == _ALL_STRATEGY_LABELS  # all 7, none skipped
+
+    # Exactly one row is_recommended, and the run's own recommended_candidate_id points at it.
+    recommended_rows = [row for row in candidates.values() if row.is_recommended]
+    assert len(recommended_rows) == 1
+    recommended_row = recommended_rows[0]
+    assert run_row.recommended_candidate_id == recommended_row.id
+
+    # The master spec's own required disclosure: materially_changed is True exactly when the
+    # recommendation isn't simply "do nothing different" -- a genuine end-to-end wiring check
+    # (app.h2h.strategy.h2h_adjustment_materially_changed is already unit-tested in isolation;
+    # this re-derives the same fact from real persisted rows).
+    assert run_row.h2h_adjustment_materially_changed == (
+        recommended_row.strategy_label != H2HStrategyLabel.EP_OPTIMAL
+    )
+
+    # NO_HIT/CALCULATED_HIT cite the real Milestone 4 scenario rows as provenance; every other
+    # candidate never fabricates one.
+    assert candidates[H2HStrategyLabel.NO_HIT].transfer_optimization_run_scenario_id == scenario_0.id
+    assert candidates[H2HStrategyLabel.CALCULATED_HIT].transfer_optimization_run_scenario_id == scenario_2.id
+    for label in _NO_TRANSFER_STRATEGY_LABEL_VALUES:
+        assert candidates[label].transfer_optimization_run_scenario_id is None
+
+    # EP_OPTIMAL's own row never carries a captain_player_id (nothing to compare itself against).
+    assert candidates[H2HStrategyLabel.EP_OPTIMAL].captain_player_id is None
+
+    # CALCULATED_HIT's own squad is genuinely, deterministically better (a real +10.0 projected-
+    # points swing from 2 clean, non-MID transfers shared by no other candidate) -- this holds
+    # regardless of any residual noise/contamination, since both EP_OPTIMAL and CALCULATED_HIT
+    # share every OTHER player at the exact same multiplier, so only the swapped pair's own
+    # (noise-free, since neither GKP nor DEF residuals are ever seeded in this suite) projection
+    # difference can move the needle.
+    ep_optimal_row = candidates[H2HStrategyLabel.EP_OPTIMAL]
+    calculated_hit_row = candidates[H2HStrategyLabel.CALCULATED_HIT]
+    assert calculated_hit_row.win_probability >= ep_optimal_row.win_probability
+
+    # Scores-cache/determinism proof: CAPTAIN_COVER and LOW_VARIANCE both independently re-derive
+    # the SAME captain (30010) EP_OPTIMAL already has -- see this module's squad-construction
+    # docstring for why this holds regardless of any cross-test residual contamination -- so their
+    # resulting squads are value-identical to EP_OPTIMAL's, and must therefore produce EXACTLY
+    # equal persisted results, not independently re-sampled near-duplicates.
+    for label in (H2HStrategyLabel.CAPTAIN_COVER, H2HStrategyLabel.LOW_VARIANCE):
+        candidate_row = candidates[label]
+        assert candidate_row.captain_player_id is None  # same final captain as EP_OPTIMAL
+        assert candidate_row.win_probability == ep_optimal_row.win_probability
+        assert candidate_row.draw_probability == ep_optimal_row.draw_probability
+        assert candidate_row.loss_probability == ep_optimal_row.loss_probability
+        assert candidate_row.expected_margin == ep_optimal_row.expected_margin
+
+
+def test_h2h_simulation_strategy_comparison_skips_no_hit_and_calculated_hit_without_a_prior_transfer_run(
+    db_session, patched_fpl_client_optimization_with_active_gameweek, patched_fpl_client_league
+):
+    """No prior ``TransferOptimizationRun`` exists for this snapshot -- exactly 5 candidates
+    (``NO_HIT``/``CALCULATED_HIT`` both absent, never fabricated without a real Milestone 4
+    scenario row to cite) should be built, simulated, and persisted, with no crash and exactly one
+    ``is_recommended``.
+    """
+    season_id = _seed_players_with_active_gameweek(db_session)
+    _run_league_sync(db_session)
+    rival_profile = _rival_profile(db_session, season_id, LEAGUE_RIVAL_B_FPL_MANAGER_ID)
+    snapshot = _create_manual_user_snapshot(db_session, season_id, _user_raw_picks_json())
+
+    job = _run_h2h_simulation(db_session, snapshot.id, rival_profile.id)
+
+    assert job.status == JobStatus.SUCCEEDED
+    run_id = uuid.UUID(job.output_json["h2h_simulation_run_id"])
+    run_row = db_session.get(H2HSimulationRun, run_id)
+    assert run_row is not None
+
+    candidates = _strategy_candidates_by_label(db_session, run_id)
+    assert set(candidates.keys()) == _NO_TRANSFER_STRATEGY_LABEL_VALUES
+    assert H2HStrategyLabel.NO_HIT not in candidates
+    assert H2HStrategyLabel.CALCULATED_HIT not in candidates
+
+    recommended_rows = [row for row in candidates.values() if row.is_recommended]
+    assert len(recommended_rows) == 1
+    recommended_row = recommended_rows[0]
+    assert run_row.recommended_candidate_id == recommended_row.id
+    assert run_row.h2h_adjustment_materially_changed == (
+        recommended_row.strategy_label != H2HStrategyLabel.EP_OPTIMAL
     )
 
 
