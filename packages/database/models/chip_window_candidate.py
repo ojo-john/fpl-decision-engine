@@ -23,6 +23,21 @@ one candidate gameweek (at least one team in a Blank/Double Gameweek — see
 regardless of chip type; nullable only in case fixture data for that gameweek
 could not be resolved at all (should not happen for any gameweek Layer 2 could
 otherwise evaluate, but never crashes over it).
+
+``h2h_win_probability_with_chip``/``h2h_win_probability_without_chip``
+(Milestone 6 Layer 4: league-context refinement) are populated ONLY on the
+IMMEDIATE candidate row (the very next unfinished gameweek) of a run whose
+snapshot has a real, resolvable ``fpl_manager_id`` AND a real scheduled H2H
+opponent for that exact gameweek (a matching ``h2h_matches`` row, a synced
+``rival_profiles`` row for the opponent, and that opponent's most recent
+AVAILABLE ``rival_gameweek_snapshots`` row) — see
+``app.jobs.handlers.chip_simulation`` for the full resolution chain and every
+graceful-degradation point. NULL on every OTHER candidate row (a future
+gameweek's real opponent is never knowable in advance) and NULL on the
+immediate row too whenever no real opponent/profile/snapshot can be resolved
+(a ``MANUAL_ENTRY`` snapshot, off-season, a bye week, a never-synced rival,
+etc.) — this is a supplementary, transparency-only signal, never required for
+a chip recommendation to be produced.
 """
 
 import uuid
@@ -59,6 +74,9 @@ class ChipWindowCandidate(Base):
     gain_ceiling: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False)
     sample_count: Mapped[int | None] = mapped_column(Integer)
     rank_within_chip_type: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Milestone 6 Layer 4 (league-context refinement) -- see module docstring.
+    h2h_win_probability_with_chip: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    h2h_win_probability_without_chip: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
