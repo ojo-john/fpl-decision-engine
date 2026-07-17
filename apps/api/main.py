@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from apps.api.routers import chips, h2h, health, managers, optimization, players
+from apps.api.routers import chips, h2h, health, managers, optimization, players, recommendations
 from packages.shared.logging import configure_logging
 
 configure_logging()
@@ -17,6 +17,7 @@ def create_app() -> FastAPI:
     app.include_router(managers.router_squads)
     app.include_router(h2h.router)
     app.include_router(chips.router)
+    app.include_router(recommendations.router)
     return app
 
 
