@@ -26,3 +26,11 @@ MANAGER_TRANSFERS_URL_TEMPLATE = BASE_URL + "/entry/{manager_id}/transfers/"
 # the response body, same shape as every other paginated FPL list endpoint.
 LEAGUE_H2H_STANDINGS_URL_TEMPLATE = BASE_URL + "/leagues-h2h/{league_id}/standings/"
 LEAGUE_H2H_MATCHES_URL_TEMPLATE = BASE_URL + "/leagues-h2h-matches/league/{league_id}/"
+
+# Per-gameweek "live" stats (Milestone 7 Layer 0) — fully public, no
+# authentication needed, verified live against the real 2025-26 season's
+# already-finished gameweeks (event 38 was the last) during planning.
+# Returns real per-player actual stats for one gameweek:
+# ``{"elements": [{"id": <element_id>, "stats": {...}, "explain": [...]}]}``.
+# ``{event_id}`` is filled in by the caller.
+EVENT_LIVE_URL_TEMPLATE = BASE_URL + "/event/{event_id}/live/"

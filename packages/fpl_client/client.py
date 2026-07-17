@@ -17,6 +17,7 @@ import httpx
 from packages.domain.ingestion import EndpointHealth
 from packages.fpl_client.endpoints import (
     BOOTSTRAP_STATIC_URL,
+    EVENT_LIVE_URL_TEMPLATE,
     EVENT_STATUS_URL,
     FIXTURES_URL,
     LEAGUE_H2H_MATCHES_URL_TEMPLATE,
@@ -117,6 +118,19 @@ class FPLClient:
         if entry is not None:
             params["entry"] = entry
         return self._get("h2h_league_matches", url, params=params)
+
+    def fetch_gameweek_live_stats(self, event_id: int) -> FetchResult:
+        """Fetch real per-player actual stats for one gameweek (Milestone 7 Layer 0).
+
+        ``endpoint_name`` is deliberately the fixed string ``"gameweek_live"``
+        (not e.g. ``f"gameweek_live_{event_id}"``) so schema-drift detection
+        (``app.ingestion.service.persist_raw_snapshot``, keyed by
+        ``endpoint``) compares this event's response shape against *any*
+        prior gameweek's, not just the same event id repeated — the shape is
+        identical across every gameweek.
+        """
+        url = EVENT_LIVE_URL_TEMPLATE.format(event_id=event_id)
+        return self._get("gameweek_live", url, params=None)
 
     def _get(self, endpoint_name: str, url: str, params: dict[str, Any] | None) -> FetchResult:
         attempt_count = 0
