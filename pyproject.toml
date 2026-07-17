@@ -49,6 +49,7 @@ select = ["E", "F", "I", "UP"]
 "packages/domain/transfers.py" = ["UP042"]
 "packages/domain/h2h.py" = ["UP042"]
 "packages/domain/chips.py" = ["UP042"]
+"packages/domain/learning.py" = ["UP042"]
 
 [tool.mypy]
 python_version = "3.12"
