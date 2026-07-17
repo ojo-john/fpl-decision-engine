@@ -10,6 +10,7 @@ from app.jobs.handlers import (
     lineup_optimization,  # noqa: F401  (import registers the handler)
     manager_sync,  # noqa: F401  (import registers the handler)
     model_training,  # noqa: F401  (import registers the handler)
+    recommendation_generation,  # noqa: F401  (import registers the handler)
     rules_sync,  # noqa: F401  (import registers the handler)
     squad_optimization,  # noqa: F401  (import registers the handler)
     system_health,  # noqa: F401  (import registers the handler)
@@ -26,6 +27,7 @@ __all__ = [
     "lineup_optimization",
     "manager_sync",
     "model_training",
+    "recommendation_generation",
     "rules_sync",
     "squad_optimization",
     "system_health",

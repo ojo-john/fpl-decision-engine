@@ -11,6 +11,7 @@ from app.jobs.handlers.league_sync import LeagueSyncJobRunner
 from app.jobs.handlers.lineup_optimization import LineupOptimizationJobRunner
 from app.jobs.handlers.manager_sync import ManagerSyncJobRunner
 from app.jobs.handlers.model_training import ModelTrainingJobRunner
+from app.jobs.handlers.recommendation_generation import RecommendationGenerationJobRunner
 from app.jobs.handlers.rules_sync import RulesSyncJobRunner
 from app.jobs.handlers.squad_optimization import SquadOptimizationJobRunner
 from app.jobs.handlers.system_health import SystemHealthJobRunner
@@ -32,6 +33,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.TRANSFER_OPTIMIZATION,
     JobType.H2H_SIMULATION,
     JobType.CHIP_SIMULATION,
+    JobType.RECOMMENDATION_GENERATION,
 }
 
 
@@ -85,6 +87,10 @@ def test_h2h_simulation_resolves_to_its_runner():
 
 def test_chip_simulation_resolves_to_its_runner():
     assert get_handler(JobType.CHIP_SIMULATION) is ChipSimulationJobRunner
+
+
+def test_recommendation_generation_resolves_to_its_runner():
+    assert get_handler(JobType.RECOMMENDATION_GENERATION) is RecommendationGenerationJobRunner
 
 
 @pytest.mark.parametrize(
