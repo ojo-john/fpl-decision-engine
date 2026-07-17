@@ -1,8 +1,10 @@
 """Orchestrates a full DATA_INGESTION run: fetch, normalize, quality-check, report.
 
 Enforced ordering: ``seasons`` -> ``positions``, ``teams`` -> ``players`` ->
-``gameweeks`` -> ``fixtures``. Players need resolved team/position foreign
-keys; fixtures need resolved team/gameweek foreign keys.
+``gameweeks`` -> ``fixtures`` -> live per-gameweek stats backfill. Players
+need resolved team/position foreign keys; fixtures need resolved team/
+gameweek foreign keys; live stats backfill (Milestone 7 Layer 0) needs
+resolved player/fixture foreign keys, so it runs last, after fixtures.
 """
 
 import uuid
@@ -15,7 +17,13 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.data_quality import checks
+from app.data_quality.models import DataQualityIssue
 from app.data_quality.scoring import compute_optimization_permitted, compute_score
+from app.ingestion.live_stats_normalization import (
+    LIVE_EVENT_DATA_SOURCE,
+    resolve_live_stats_lookups,
+    upsert_live_gameweek_stats,
+)
 from app.ingestion.normalization import (
     NormalizationCounts,
     upsert_fixtures,
@@ -29,11 +37,12 @@ from app.rules.service import sync_rules
 from packages.database.models.data_quality_issue import DataQualityIssue as DataQualityIssueRow
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.ingestion_run import IngestionRun
+from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.position import Position
 from packages.database.models.raw_api_snapshot import RawApiSnapshot
 from packages.database.models.season import Season
 from packages.database.models.team import Team
-from packages.domain.ingestion import EndpointHealth, IngestionRunStatus
+from packages.domain.ingestion import DataQualitySeverity, EndpointHealth, IngestionRunStatus
 from packages.domain.rules import RulesStatus
 from packages.fpl_client import FetchResult, FPLClient
 
@@ -134,6 +143,118 @@ def _last_successful_completed_at(session: Session, exclude_run_id: uuid.UUID) -
     ).scalar_one_or_none()
 
 
+def _gameweeks_needing_live_stats_backfill(
+    session: Session, season_id: uuid.UUID
+) -> list[tuple[uuid.UUID, int]]:
+    """Return ``(gameweek_id, fpl_event_id)`` for every finished gameweek with no live-event rows yet.
+
+    Never considers an unfinished/future gameweek (``Gameweek.finished`` is
+    ``False``) — ingesting partial live data for a gameweek still in
+    progress would be fabricated, not real, data. Can return multiple
+    gameweeks (e.g. if DATA_INGESTION hasn't run in a while) — callers must
+    loop over all of them, not just the most recent.
+    """
+    finished_gameweeks = session.execute(
+        select(Gameweek.id, Gameweek.fpl_event_id)
+        .where(Gameweek.season_id == season_id, Gameweek.finished.is_(True))
+        .order_by(Gameweek.fpl_event_id)
+    ).all()
+
+    already_backfilled = set(
+        session.execute(
+            select(PlayerGameweekStats.gameweek_id.distinct()).where(
+                PlayerGameweekStats.season_id == season_id,
+                PlayerGameweekStats.data_source == LIVE_EVENT_DATA_SOURCE,
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    return [
+        (gw_id, fpl_event_id) for gw_id, fpl_event_id in finished_gameweeks if gw_id not in already_backfilled
+    ]
+
+
+def _backfill_live_gameweek_stats(
+    session: Session,
+    ingestion_run_id: uuid.UUID,
+    season_id: uuid.UUID,
+    fpl_client: FPLClient,
+) -> tuple[NormalizationCounts, list[DataQualityIssue], list[int]]:
+    """Backfill live per-gameweek actual stats for every newly-finished gameweek (Milestone 7 Layer 0).
+
+    One gameweek's fetch/normalization failure (network error, unexpected
+    exception, anything) must never fail the whole DATA_INGESTION run — each
+    gameweek's attempt runs inside its own SAVEPOINT
+    (``session.begin_nested()``), so a failure rolls back only that
+    gameweek's own uncommitted work (never the rest of this run's
+    already-staged positions/teams/players/gameweeks/fixtures, nor any
+    earlier gameweek in this same loop that already succeeded) and is
+    recorded as a WARNING ``DataQualityIssue`` instead of raising.
+    """
+    total_counts = NormalizationCounts(inserted=0, updated=0, quarantined=0)
+    issues: list[DataQualityIssue] = []
+    backfilled_event_ids: list[int] = []
+
+    gameweeks_to_backfill = _gameweeks_needing_live_stats_backfill(session, season_id)
+    if not gameweeks_to_backfill:
+        return total_counts, issues, backfilled_event_ids
+
+    lookups = resolve_live_stats_lookups(session, season_id)
+
+    for gameweek_id, fpl_event_id in gameweeks_to_backfill:
+        savepoint = session.begin_nested()
+        try:
+            live_result = fpl_client.fetch_gameweek_live_stats(fpl_event_id)
+            persist_raw_snapshot(session, ingestion_run_id, live_result)
+
+            if live_result.raw_body is None:
+                issues.append(
+                    DataQualityIssue(
+                        entity_type="endpoint",
+                        entity_fpl_id=fpl_event_id,
+                        severity=DataQualitySeverity.WARNING,
+                        check_name="live_stats_fetch_failed",
+                        message=(
+                            f"gameweek {fpl_event_id}: live stats fetch failed — "
+                            f"{live_result.error_message or 'no usable body'}"
+                        ),
+                    )
+                )
+                savepoint.commit()
+                continue
+
+            live_body = live_result.raw_body
+            assert isinstance(live_body, dict)  # /live/ always returns a JSON object, never a bare array
+            live_elements = live_body.get("elements", [])
+            assert isinstance(live_elements, list)  # ...with an "elements" array
+            gw_counts, gw_issues = upsert_live_gameweek_stats(
+                session, season_id, gameweek_id, live_elements, lookups
+            )
+            savepoint.commit()
+
+            total_counts.inserted += gw_counts.inserted
+            total_counts.updated += gw_counts.updated
+            issues.extend(gw_issues)
+            backfilled_event_ids.append(fpl_event_id)
+        except Exception as exc:  # noqa: BLE001 - one gameweek's live-stats hiccup must never fail the whole run
+            savepoint.rollback()
+            issues.append(
+                DataQualityIssue(
+                    entity_type="endpoint",
+                    entity_fpl_id=fpl_event_id,
+                    severity=DataQualitySeverity.WARNING,
+                    check_name="live_stats_backfill_failed",
+                    message=(
+                        f"gameweek {fpl_event_id}: live stats backfill failed — {type(exc).__name__}: {exc}"
+                    ),
+                )
+            )
+
+    return total_counts, issues, backfilled_event_ids
+
+
 def run_ingestion(
     session: Session, ingestion_run_id: uuid.UUID, fpl_client: FPLClient, started_at: datetime
 ) -> dict[str, Any]:
@@ -220,23 +341,47 @@ def run_ingestion(
         last_synced_at=fixtures_result.retrieved_at,
     )
 
+    # --- Step 3.5: live per-gameweek actual stats backfill (Milestone 7 Layer 0) ---
+    # Runs for every finished gameweek that has no `live_event` rows yet
+    # (handles multiple newly-finished gameweeks needing backfill in one
+    # run, e.g. after DATA_INGESTION hasn't run in a while) — never for an
+    # in-progress/future gameweek. A single gameweek's failure degrades
+    # gracefully (WARNING issue, loop continues) and never fails this run.
+    live_stats_counts, live_stats_issues, live_stats_backfilled_event_ids = _backfill_live_gameweek_stats(
+        session, ingestion_run_id, season.id, fpl_client
+    )
+
     # --- Step 4: event-status, raw snapshot only ---
     event_status_result = fpl_client.fetch_event_status()
     persist_raw_snapshot(session, ingestion_run_id, event_status_result)
 
     # --- Step 5: run-level data quality checks + scoring ---
-    all_issues = list(player_issues) + list(fixture_issues)
-    all_issues.extend(checks.check_team_count(bootstrap_json["teams"]))
-    all_issues.extend(
+    # `core_issues` is what drives the data quality score/optimization gate —
+    # deliberately EXCLUDES `live_stats_issues`. Backfilling potentially many
+    # (e.g. 38) historical-but-not-yet-live-ingested gameweeks in one run can
+    # legitimately raise dozens of WARNING-level issues that are completely
+    # expected over a real season (e.g. "unresolved_opponent_team" for every
+    # player who had a genuine mid-season transfer) — this is normal
+    # historical noise, not a signal that *today's* current-gameweek data is
+    # untrustworthy. Feeding it into the same flat per-issue penalty model
+    # that gates whether the optimizer is allowed to run today would let a
+    # one-time historical backfill accidentally block real, current-gameweek
+    # optimization — exactly the opposite of what this system exists to do.
+    # `live_stats_issues` is still fully persisted/reported below (and still
+    # counts toward `has_notable_issues`/``SUCCEEDED_WITH_WARNINGS``) for
+    # audit visibility — just never toward the numeric score or gate.
+    core_issues = list(player_issues) + list(fixture_issues)
+    core_issues.extend(checks.check_team_count(bootstrap_json["teams"]))
+    core_issues.extend(
         checks.check_squad_composition_math(
             bootstrap_json["element_types"],
             expected_squad_size=bootstrap_json["game_config"]["rules"]["squad_squadsize"],
         )
     )
-    all_issues.extend(checks.check_at_most_one_current_gameweek(bootstrap_json["events"]))
+    core_issues.extend(checks.check_at_most_one_current_gameweek(bootstrap_json["events"]))
 
     last_successful_at = _last_successful_completed_at(session, exclude_run_id=ingestion_run_id)
-    all_issues.extend(checks.check_stale_ingestion(last_successful_at, now=started_at))
+    core_issues.extend(checks.check_stale_ingestion(last_successful_at, now=started_at))
 
     run_snapshots = (
         session.execute(select(RawApiSnapshot).where(RawApiSnapshot.ingestion_run_id == ingestion_run_id))
@@ -244,9 +389,11 @@ def run_ingestion(
         .all()
     )
     for snapshot_row in run_snapshots:
-        all_issues.extend(
+        core_issues.extend(
             checks.check_schema_drift(snapshot_row.endpoint, snapshot_row.schema_drift_detected)
         )
+
+    all_issues = core_issues + list(live_stats_issues)
 
     session.bulk_save_objects(
         [
@@ -263,12 +410,12 @@ def run_ingestion(
     )
     session.flush()
 
-    score = compute_score(all_issues)
+    score = compute_score(core_issues)
     overall_health = _combine_health(
         [bootstrap_result.health_status, fixtures_result.health_status, event_status_result.health_status]
     )
     rules_status = RulesStatus(rules_result["rules_status"])
-    optimization_permitted = compute_optimization_permitted(score, all_issues, rules_status, overall_health)
+    optimization_permitted = compute_optimization_permitted(score, core_issues, rules_status, overall_health)
 
     # --- Step 6: render report, finalize the ingestion_runs row ---
     normalization_summary: dict[str, NormalizationCounts] = {
@@ -277,6 +424,7 @@ def run_ingestion(
         "players": players_counts,
         "gameweeks": gameweeks_counts,
         "fixtures": fixtures_counts,
+        "live_gameweek_stats": live_stats_counts,
     }
     endpoint_rows = [
         {
@@ -328,6 +476,7 @@ def run_ingestion(
         "rules": rules_result,
         "normalization": {k: asdict(v) for k, v in normalization_summary.items()},
         "issue_count": len(all_issues),
+        "live_stats_backfilled_event_ids": live_stats_backfilled_event_ids,
     }
     session.flush()
 
@@ -341,4 +490,5 @@ def run_ingestion(
         "normalization": {k: asdict(v) for k, v in normalization_summary.items()},
         "issue_count": len(all_issues),
         "status": status.value,
+        "live_stats_backfilled_event_ids": live_stats_backfilled_event_ids,
     }

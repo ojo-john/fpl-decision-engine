@@ -2,8 +2,12 @@
 
 Orchestrated via ``app.ingestion.service.run_ingestion``, which internally
 reuses ``app.rules.service.sync_rules`` as one step (no second bootstrap-static
-fetch). ``player_fixture_stats`` is explicitly deferred — it needs the
-``/live/`` endpoint, out of scope for this milestone.
+fetch), and also backfills live per-gameweek actual stats
+(``player_gameweek_stats``, ``data_source="live_event"``) for every
+newly-finished gameweek — see ``app.ingestion.live_stats_normalization``
+(Milestone 7 Layer 0). That table was previously populated only by
+historical CSV ingestion; this closes the gap for the current, in-progress
+season.
 """
 
 import uuid

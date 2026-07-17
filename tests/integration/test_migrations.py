@@ -405,6 +405,22 @@ def _clear_ingestion_runs(engine) -> None:
         conn.execute(text("DELETE FROM ingestion_runs"))
 
 
+def _clear_player_gameweek_stats(engine) -> None:
+    """Delete all ``player_gameweek_stats`` rows.
+
+    Migration 0008's downgrade re-narrows the table's uniqueness constraint
+    back to ``(player_id, gameweek_id)`` only (dropping ``fixture_id`` from
+    it) — if any other integration test already persisted a genuine Double
+    Gameweek (two rows sharing a ``(player_id, gameweek_id)`` pair, differing
+    only by ``fixture_id`` — the whole point of migration 0008) on this
+    shared, non-ephemeral test database, re-creating that narrower constraint
+    fails outright (Postgres raises ``UniqueViolation``). Same rationale as
+    ``_clear_optimization_runs``/``_clear_ingestion_runs`` above.
+    """
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM player_gameweek_stats"))
+
+
 def test_upgrade_creates_milestone_3_layer2_tables_with_expected_columns(require_database):
     """Covers ``player_features`` (Milestone 3 Layer 2)."""
     from packages.database.session import engine
@@ -447,6 +463,7 @@ def test_upgrade_creates_milestone_3_layer1_tables_with_expected_columns(require
             )
 
         _clear_ingestion_runs(engine)
+        _clear_player_gameweek_stats(engine)
         _run_alembic("downgrade", "0005")
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
@@ -475,6 +492,7 @@ def test_upgrade_creates_milestone_2_tables_with_expected_columns(require_databa
 
         _clear_optimization_runs(engine)
         _clear_ingestion_runs(engine)
+        _clear_player_gameweek_stats(engine)
         _run_alembic("downgrade", "0003")
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
@@ -503,6 +521,7 @@ def test_upgrade_creates_jobs_table_with_expected_columns(require_database):
 
         _clear_optimization_runs(engine)
         _clear_ingestion_runs(engine)
+        _clear_player_gameweek_stats(engine)
         _run_alembic("downgrade", "base")
         inspector = inspect(engine)
         assert "jobs" not in inspector.get_table_names()
@@ -527,6 +546,7 @@ def test_upgrade_creates_milestone_1_tables_with_expected_columns(require_databa
 
         _clear_optimization_runs(engine)
         _clear_ingestion_runs(engine)
+        _clear_player_gameweek_stats(engine)
         _run_alembic("downgrade", "base")
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())

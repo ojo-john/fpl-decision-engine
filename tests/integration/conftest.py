@@ -201,18 +201,40 @@ def make_fetch_result(endpoint: str, body, retrieved_at: datetime | None = None)
     )
 
 
+def _fetch_gameweek_live_stats_from_state(state):
+    """Shared ``fetch_gameweek_live_stats`` mock body for the bootstrap-family fixtures below.
+
+    Defaults to an empty ``elements`` payload for any event not explicitly
+    seeded in ``state["live_stats_by_event"]`` — harmless (zero rows
+    normalized, zero issues) so every existing DATA_INGESTION test keeps
+    working unchanged even though every gameweek in
+    ``bootstrap_static_sample.json`` is ``finished=True`` (a realistic
+    close-season snapshot) and would otherwise all need live-stats backfill
+    on the first run. A test exercising real live-stats backfill sets
+    ``state["live_stats_by_event"][event_id] = {...}`` before calling the job.
+    """
+
+    def fetch_gameweek_live_stats(self, event_id):
+        body = state.setdefault("live_stats_by_event", {}).get(event_id, {"elements": []})
+        return make_fetch_result("gameweek_live", body)
+
+    return fetch_gameweek_live_stats
+
+
 @pytest.fixture
 def patched_fpl_client(monkeypatch):
     """Monkeypatch FPLClient so job handlers never hit the real network in tests.
 
-    Returns a mutable ``state`` dict (``bootstrap``/``fixtures``/``event_status``)
-    that a test can edit *before* calling the job handler again, to simulate a
-    rules change or a player transfer between two ingestion runs.
+    Returns a mutable ``state`` dict (``bootstrap``/``fixtures``/``event_status``/
+    ``live_stats_by_event``) that a test can edit *before* calling the job
+    handler again, to simulate a rules change, a player transfer, or seed a
+    specific gameweek's live stats between two ingestion runs.
     """
     state = {
         "bootstrap": unique_bootstrap_json(),
         "fixtures": load_fixtures_json(),
         "event_status": {"leagues": "updated"},
+        "live_stats_by_event": {},
     }
 
     def fetch_bootstrap_static(self):
@@ -228,6 +250,7 @@ def patched_fpl_client(monkeypatch):
     monkeypatch.setattr(FPLClient, "fetch_bootstrap_static", fetch_bootstrap_static)
     monkeypatch.setattr(FPLClient, "fetch_fixtures", fetch_fixtures)
     monkeypatch.setattr(FPLClient, "fetch_event_status", fetch_event_status)
+    monkeypatch.setattr(FPLClient, "fetch_gameweek_live_stats", _fetch_gameweek_live_stats_from_state(state))
 
     return state
 
@@ -283,6 +306,7 @@ def patched_fpl_client_optimization(monkeypatch):
         "bootstrap": build_optimization_bootstrap_json(),
         "fixtures": load_fixtures_json(),
         "event_status": {"leagues": "updated"},
+        "live_stats_by_event": {},
     }
 
     def fetch_bootstrap_static(self):
@@ -298,6 +322,7 @@ def patched_fpl_client_optimization(monkeypatch):
     monkeypatch.setattr(FPLClient, "fetch_bootstrap_static", fetch_bootstrap_static)
     monkeypatch.setattr(FPLClient, "fetch_fixtures", fetch_fixtures)
     monkeypatch.setattr(FPLClient, "fetch_event_status", fetch_event_status)
+    monkeypatch.setattr(FPLClient, "fetch_gameweek_live_stats", _fetch_gameweek_live_stats_from_state(state))
 
     return state
 
@@ -499,6 +524,7 @@ def patched_fpl_client_optimization_with_active_gameweek(monkeypatch):
         "bootstrap": bootstrap,
         "fixtures": load_fixtures_json(),
         "event_status": {"leagues": "updated"},
+        "live_stats_by_event": {},
     }
 
     def fetch_bootstrap_static(self):
@@ -514,5 +540,6 @@ def patched_fpl_client_optimization_with_active_gameweek(monkeypatch):
     monkeypatch.setattr(FPLClient, "fetch_bootstrap_static", fetch_bootstrap_static)
     monkeypatch.setattr(FPLClient, "fetch_fixtures", fetch_fixtures)
     monkeypatch.setattr(FPLClient, "fetch_event_status", fetch_event_status)
+    monkeypatch.setattr(FPLClient, "fetch_gameweek_live_stats", _fetch_gameweek_live_stats_from_state(state))
 
     return state
