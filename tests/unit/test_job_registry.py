@@ -5,6 +5,7 @@ import pytest
 from app.jobs.handlers.chip_simulation import ChipSimulationJobRunner
 from app.jobs.handlers.data_ingestion import DataIngestionJobRunner
 from app.jobs.handlers.feature_generation import FeatureGenerationJobRunner
+from app.jobs.handlers.gameweek_review import GameweekReviewJobRunner
 from app.jobs.handlers.h2h_simulation import H2HSimulationJobRunner
 from app.jobs.handlers.historical_data_ingestion import HistoricalDataIngestionJobRunner
 from app.jobs.handlers.league_sync import LeagueSyncJobRunner
@@ -34,6 +35,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.H2H_SIMULATION,
     JobType.CHIP_SIMULATION,
     JobType.RECOMMENDATION_GENERATION,
+    JobType.GAMEWEEK_REVIEW,
 }
 
 
@@ -91,6 +93,10 @@ def test_chip_simulation_resolves_to_its_runner():
 
 def test_recommendation_generation_resolves_to_its_runner():
     assert get_handler(JobType.RECOMMENDATION_GENERATION) is RecommendationGenerationJobRunner
+
+
+def test_gameweek_review_resolves_to_its_runner():
+    assert get_handler(JobType.GAMEWEEK_REVIEW) is GameweekReviewJobRunner
 
 
 @pytest.mark.parametrize(
