@@ -21,6 +21,15 @@ Learning Signals) adds ``FailureCategory``/``FailureReasonCode``/
 ``LearningSignalType`` below -- see each enum's own docstring for the exact
 detection rule behind every member and why it is genuinely, mechanically
 checkable from data this codebase already persists.
+
+Milestone 7 Layer 4 (Recursive Learning Loop: GAMEWEEK_REVIEW orchestration)
+adds ``GameweekReviewRunStatus`` below -- unlike
+``RecommendationGenerationRunStatus`` (whose ``RUNNING``/``FAILED`` members
+are never actually persisted, see that enum's own docstring), GAMEWEEK_REVIEW
+genuinely IS a multi-step orchestrator (it sequences Layers 2/3's own
+directly-callable functions) and follows the multi-step optimizer jobs'
+create-early-RUNNING-row discipline instead -- so all 3 members here are real,
+persisted ``learning_reports.run_status`` values.
 """
 
 from enum import Enum
@@ -199,3 +208,16 @@ class LearningSignalType(str, Enum):
     ROLLING_H2H_WIN_PROBABILITY_CALIBRATION = "rolling_h2h_win_probability_calibration"
     ROLLING_CHIP_RECOMMENDATION_VALUE = "rolling_chip_recommendation_value"
     FAILURE_REASON_CONCENTRATION = "failure_reason_concentration"
+
+
+class GameweekReviewRunStatus(str, Enum):
+    """Lifecycle status of a GAMEWEEK_REVIEW job run (Milestone 7 Layer 4).
+
+    See ``app.jobs.handlers.gameweek_review`` for the full orchestration this
+    tracks -- mirrors every other multi-step job's own 3-state run-status
+    shape (e.g. ``ChipOptimizationRunStatus``).
+    """
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"

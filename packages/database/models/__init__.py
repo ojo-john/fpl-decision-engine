@@ -22,6 +22,7 @@ from packages.database.models.job import Job
 from packages.database.models.league import League
 from packages.database.models.league_entry import LeagueEntry
 from packages.database.models.league_sync_run import LeagueSyncRun
+from packages.database.models.learning_report import LearningReport
 from packages.database.models.learning_signal import LearningSignal
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.model_metric import ModelMetric
@@ -62,6 +63,7 @@ __all__ = [
     "League",
     "LeagueEntry",
     "LeagueSyncRun",
+    "LearningReport",
     "LearningSignal",
     "ManagerSquadSnapshot",
     "ModelMetric",
