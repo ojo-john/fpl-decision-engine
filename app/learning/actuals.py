@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 
-__all__ = ["sum_actual_points"]
+__all__ = ["sum_actual_points", "actual_minutes_played"]
 
 
 def sum_actual_points(session: Session, player_ids: list[uuid.UUID], gameweek_id: uuid.UUID) -> float:
@@ -45,3 +45,23 @@ def sum_actual_points(session: Session, player_ids: list[uuid.UUID], gameweek_id
         )
     ).scalar_one()
     return float(total)
+
+
+def actual_minutes_played(session: Session, player_id: uuid.UUID, gameweek_id: uuid.UUID) -> int:
+    """Sum of ``player_gameweek_stats.minutes`` for one player in this gameweek.
+
+    Same "no row = 0" convention as ``sum_actual_points`` (a player with no
+    row for this gameweek genuinely didn't feature). A Double Gameweek's two
+    rows are summed, giving the real total minutes played across both
+    fixtures -- used by ``app.learning.attribution`` to distinguish a genuine
+    projection-accuracy miss (the player played but scored differently than
+    projected) from a rotation/late-injury miss (the player didn't play at
+    all, so the projection was never testable against real performance).
+    """
+    total = session.execute(
+        select(func.coalesce(func.sum(PlayerGameweekStats.minutes), 0)).where(
+            PlayerGameweekStats.player_id == player_id,
+            PlayerGameweekStats.gameweek_id == gameweek_id,
+        )
+    ).scalar_one()
+    return int(total)
