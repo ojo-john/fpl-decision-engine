@@ -11,6 +11,7 @@ from packages.database.models.chip_recommendation import ChipRecommendation
 from packages.database.models.chip_window_candidate import ChipWindowCandidate
 from packages.database.models.counterfactual_result import CounterfactualResult
 from packages.database.models.data_quality_issue import DataQualityIssue
+from packages.database.models.failure_attribution import FailureAttribution
 from packages.database.models.fixture import Fixture
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.h2h_match import H2HMatch
@@ -21,6 +22,7 @@ from packages.database.models.job import Job
 from packages.database.models.league import League
 from packages.database.models.league_entry import LeagueEntry
 from packages.database.models.league_sync_run import LeagueSyncRun
+from packages.database.models.learning_signal import LearningSignal
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.model_metric import ModelMetric
 from packages.database.models.model_version import ModelVersion
@@ -49,6 +51,7 @@ __all__ = [
     "ChipWindowCandidate",
     "CounterfactualResult",
     "DataQualityIssue",
+    "FailureAttribution",
     "Fixture",
     "Gameweek",
     "H2HMatch",
@@ -59,6 +62,7 @@ __all__ = [
     "League",
     "LeagueEntry",
     "LeagueSyncRun",
+    "LearningSignal",
     "ManagerSquadSnapshot",
     "ModelMetric",
     "ModelVersion",
