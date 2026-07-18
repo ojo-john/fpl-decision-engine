@@ -1,0 +1,517 @@
+"""Integration tests for app.jobs.handlers.gameweek_review.GameweekReviewJobRunner against a real DB.
+
+Mirrors ``tests/integration/test_learning_signals.py``'s own approach: real
+``Player``/``Season``/``Gameweek``/``RulesConfig`` rows are seeded via a real
+``DATA_INGESTION`` run (``patched_fpl_client_optimization``), and every other
+row this job's own building blocks (Layer 2's ``ingest_outcome_for_audit``,
+Layer 3's ``attribute_failures_for_outcome``/``compute_rolling_*``) read is
+hand-built directly via the ORM -- those functions are already independently,
+thoroughly covered by their own test modules
+(``test_outcome_ingestion.py``/``test_failure_attribution.py``/
+``test_learning_signals.py``); this module's own job is to prove they are
+correctly SEQUENCED and their outputs correctly COMPOSED into one
+``learning_reports`` row, not to re-prove their own internal correctness.
+
+The happy-path scenario is deliberately built to exercise a REAL, material
+finding, not just an all-sound review: the reviewed gameweek's own
+recommended captain is given a wildly overestimated projection (15.0
+projected vs. 2.0 real raw points, well past
+``app.learning.attribution._MATERIAL_PROJECTION_ERROR_POINTS``), which
+mechanically produces one ``PROJECTION_OVERESTIMATED`` failure attribution.
+Two earlier gameweeks are seeded with the same degraded pattern (a fixed
+champion baseline MAE of 2.0, so 3 consecutive abs-errors of 13.0 sustain a
+breach) so ``ROLLING_PROJECTION_MAE`` breaches too, and those same two
+earlier gameweeks' outcomes are seeded with the SAME
+``PROJECTION_OVERESTIMATED`` reason code (directly, via
+``persist_failure_attributions`` -- bypassing a full ``ingest_outcome_for_audit``
+call for gameweeks this job itself never reviews) so
+``FAILURE_REASON_CONCENTRATION`` breaches too. This gives the happy-path test
+a real, hand-verified ``notable_findings_json`` to assert against, not an
+empty list.
+"""
+
+import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from sqlalchemy import select
+
+from app.jobs.service import execute_job
+from app.learning.attribution import FailureAttributionData, persist_failure_attributions
+from packages.database.models.chip_optimization_run import ChipOptimizationRun  # noqa: F401 (registers model)
+from packages.database.models.failure_attribution import FailureAttribution
+from packages.database.models.gameweek import Gameweek
+from packages.database.models.learning_report import LearningReport
+from packages.database.models.learning_signal import LearningSignal
+from packages.database.models.model_metric import ModelMetric
+from packages.database.models.model_version import ModelVersion
+from packages.database.models.optimization_run import OptimizationRun
+from packages.database.models.optimization_run_player import OptimizationRunPlayer
+from packages.database.models.player import Player
+from packages.database.models.player_gameweek_stats import PlayerGameweekStats
+from packages.database.models.recommendation_audit import RecommendationAudit
+from packages.database.models.recommendation_outcome import RecommendationOutcome
+from packages.database.models.rules_config import RulesConfig
+from packages.database.models.season import Season
+from packages.domain.jobs import JobStatus, JobType, TriggerType
+from packages.domain.learning import (
+    FailureCategory,
+    FailureReasonCode,
+    GameweekReviewRunStatus,
+    LearningSignalType,
+    RecommendationConfidence,
+)
+from packages.domain.modeling import ModelFamily
+from packages.domain.optimization import (
+    OptimizationRunStatus,
+    RecommendationType,
+    SolverStatus,
+    TargetGameweekStatus,
+)
+from packages.domain.rules import RulesStatus
+
+_CAPTAIN_ELEMENT_ID = 30000
+_REVIEWED_FPL_EVENT_ID = 20
+_PRIOR_FPL_EVENT_IDS = (18, 19)
+_BASELINE_MAE = 2.0
+# projected=15.0, actual raw=2.0 -> abs_error=13.0, well past both the projection-MAE degradation
+# bar (2.0*1.25=2.5) and the captain projection-accuracy materiality bar (4.0).
+_PROJECTED_POINTS = 15.0
+_ACTUAL_RAW_POINTS = 2
+
+
+def _now():
+    return datetime.now(UTC)
+
+
+def _seed_players(db_session) -> uuid.UUID:
+    ingestion_job = execute_job(db_session, job_type=JobType.DATA_INGESTION, trigger_type=TriggerType.LOCAL)
+    assert ingestion_job.status == JobStatus.SUCCEEDED
+    return db_session.execute(
+        select(Season.id).where(Season.label == ingestion_job.output_json["season_label"])
+    ).scalar_one()
+
+
+def _gameweek(db_session, season_id, fpl_event_id: int) -> Gameweek:
+    return db_session.execute(
+        select(Gameweek).where(Gameweek.season_id == season_id, Gameweek.fpl_event_id == fpl_event_id)
+    ).scalar_one()
+
+
+def _player_id(db_session, season_id, element_id: int) -> uuid.UUID:
+    return db_session.execute(
+        select(Player.id).where(Player.season_id == season_id, Player.fpl_element_id == element_id)
+    ).scalar_one()
+
+
+def _seed_rules_config_id(db_session, season_id) -> uuid.UUID:
+    return db_session.execute(
+        select(RulesConfig.id).where(RulesConfig.season_id == season_id, RulesConfig.is_current.is_(True))
+    ).scalar_one()
+
+
+def _create_champion_model_version(db_session, season_label: str, baseline_mae: float) -> uuid.UUID:
+    # Deliberately does NOT set is_champion=True -- see test_learning_signals.py's own
+    # _create_champion_model_version docstring for why that would be actively harmful on this
+    # shared, non-truncated-between-tests Postgres (a stray is_champion=True row breaks every OTHER
+    # test's own app.optimization.champion_loader.load_current_champion query).
+    model_version = ModelVersion(
+        model_name="gw-review-test-champion",
+        model_family=ModelFamily.BASELINE_SEASON_AVERAGE,
+        feature_version=1,
+        target_variable="total_points",
+        training_seasons_json=[season_label],
+        trained_at=_now(),
+    )
+    db_session.add(model_version)
+    db_session.commit()
+    db_session.refresh(model_version)
+    db_session.add(
+        ModelMetric(
+            model_version_id=model_version.id,
+            fold_index=None,
+            mae=Decimal(str(baseline_mae)),
+            rmse=Decimal(str(baseline_mae)),
+            mean_bias=Decimal("0.0000"),
+            n_observations=100,
+        )
+    )
+    db_session.commit()
+    return model_version.id
+
+
+def _create_optimization_run_with_captain_projection(
+    db_session, season_id, rules_config_id, gameweek, captain_player_id, projected_points: float
+) -> OptimizationRun:
+    run = OptimizationRun(
+        season_id=season_id,
+        rules_config_id=rules_config_id,
+        recommendation_type=RecommendationType.JOINT_SQUAD_AND_XI,
+        run_status=OptimizationRunStatus.SUCCEEDED,
+        solver_status=SolverStatus.OPTIMAL,
+        target_gameweek_id=gameweek.id,
+        target_gameweek_status=TargetGameweekStatus.RESOLVED,
+        captain_player_id=captain_player_id,
+        squad_total_cost=800,
+        squad_projected_points=Decimal("70.00"),
+        xi_projected_points=Decimal("65.00"),
+        optimization_permitted_snapshot=True,
+        data_quality_score_snapshot=Decimal("100.00"),
+        rules_status_snapshot=RulesStatus.OK,
+        projection_formula_version=1,
+        started_at=_now(),
+        completed_at=_now(),
+    )
+    db_session.add(run)
+    db_session.commit()
+    db_session.refresh(run)
+    db_session.add(
+        OptimizationRunPlayer(
+            optimization_run_id=run.id,
+            player_id=captain_player_id,
+            is_starting=True,
+            is_captain=True,
+            is_vice_captain=False,
+            projected_points=Decimal(str(projected_points)),
+            projection_source="test",
+            now_cost_snapshot=80,
+        )
+    )
+    db_session.commit()
+    return run
+
+
+def _seed_actual_points(db_session, player_id, season_id, gameweek_id, total_points: int, minutes: int = 90):
+    db_session.add(
+        PlayerGameweekStats(
+            player_id=player_id,
+            season_id=season_id,
+            gameweek_id=gameweek_id,
+            minutes=minutes,
+            total_points=total_points,
+            data_source="test",
+        )
+    )
+    db_session.commit()
+
+
+def _create_audit(db_session, season_id, gameweek, **overrides) -> RecommendationAudit:
+    defaults: dict = dict(
+        season_id=season_id,
+        target_gameweek_id=gameweek.id,
+        target_fpl_event_id=gameweek.fpl_event_id,
+        is_authoritative=True,
+        confidence=RecommendationConfidence.HIGH,
+        confidence_drivers_json=[],
+        assumptions_json=[],
+        known_risks_json=[],
+        generated_at=_now(),
+    )
+    defaults.update(overrides)
+    audit = RecommendationAudit(**defaults)
+    db_session.add(audit)
+    db_session.commit()
+    db_session.refresh(audit)
+    return audit
+
+
+def _create_outcome(db_session, audit_id, **overrides) -> RecommendationOutcome:
+    defaults: dict = dict(recommendation_audit_id=audit_id, finalized_at=_now())
+    defaults.update(overrides)
+    outcome = RecommendationOutcome(**defaults)
+    db_session.add(outcome)
+    db_session.commit()
+    db_session.refresh(outcome)
+    return outcome
+
+
+def _seed_prior_degraded_gameweek(db_session, season_id, rules_config_id, fpl_event_id, model_version_id):
+    """A prior gameweek's own audit/outcome, hand-built with the SAME degraded captain-projection
+    pattern as the reviewed gameweek (see module docstring) -- feeds both
+    ``ROLLING_PROJECTION_MAE`` (via ``OptimizationRunPlayer``/``player_gameweek_stats``) and
+    ``FAILURE_REASON_CONCENTRATION`` (via a directly-persisted ``PROJECTION_OVERESTIMATED`` row --
+    this job never itself reviews these earlier gameweeks, so their own attributions must be seeded
+    directly, mirroring how a real earlier GAMEWEEK_REVIEW run would have produced them).
+    """
+    gameweek = _gameweek(db_session, season_id, fpl_event_id)
+    captain_id = _player_id(db_session, season_id, _CAPTAIN_ELEMENT_ID)
+    opt_run = _create_optimization_run_with_captain_projection(
+        db_session, season_id, rules_config_id, gameweek, captain_id, _PROJECTED_POINTS
+    )
+    _seed_actual_points(db_session, captain_id, season_id, gameweek.id, _ACTUAL_RAW_POINTS)
+    audit = _create_audit(
+        db_session,
+        season_id,
+        gameweek,
+        optimization_run_id=opt_run.id,
+        champion_model_version_id=model_version_id,
+    )
+    outcome = _create_outcome(db_session, audit.id)
+    persist_failure_attributions(
+        db_session,
+        outcome.id,
+        [
+            FailureAttributionData(
+                reason_code=FailureReasonCode.PROJECTION_OVERESTIMATED,
+                category=FailureCategory.PERFORMANCE_MODEL,
+                severity=Decimal("13.00"),
+                evidence={"player_id": str(captain_id)},
+            )
+        ],
+    )
+
+
+def _seed_reviewed_gameweek(db_session, season_id, rules_config_id, model_version_id) -> RecommendationAudit:
+    """The gameweek GAMEWEEK_REVIEW itself will process -- an authoritative
+    ``recommendation_audits`` row with ONLY ``optimization_run_id`` resolved (no transfer/H2H/chip
+    component), so ``ingest_outcome_for_audit`` computes a real (if minimal) outcome with zero
+    counterfactual_results, and the captain-projection check is the ONE thing that fires.
+    """
+    gameweek = _gameweek(db_session, season_id, _REVIEWED_FPL_EVENT_ID)
+    captain_id = _player_id(db_session, season_id, _CAPTAIN_ELEMENT_ID)
+    opt_run = _create_optimization_run_with_captain_projection(
+        db_session, season_id, rules_config_id, gameweek, captain_id, _PROJECTED_POINTS
+    )
+    _seed_actual_points(db_session, captain_id, season_id, gameweek.id, _ACTUAL_RAW_POINTS)
+    return _create_audit(
+        db_session,
+        season_id,
+        gameweek,
+        optimization_run_id=opt_run.id,
+        champion_model_version_id=model_version_id,
+    )
+
+
+def _build_full_review_scenario(db_session) -> tuple[uuid.UUID, RecommendationAudit]:
+    season_id = _seed_players(db_session)
+    season = db_session.get(Season, season_id)
+    rules_config_id = _seed_rules_config_id(db_session, season_id)
+    model_version_id = _create_champion_model_version(db_session, season.label, _BASELINE_MAE)
+
+    for fpl_event_id in _PRIOR_FPL_EVENT_IDS:
+        _seed_prior_degraded_gameweek(db_session, season_id, rules_config_id, fpl_event_id, model_version_id)
+
+    audit = _seed_reviewed_gameweek(db_session, season_id, rules_config_id, model_version_id)
+    return season_id, audit
+
+
+# --- Happy path -----------------------------------------------------------------------------------
+
+
+def test_gameweek_review_happy_path_produces_succeeded_report_with_real_findings(
+    db_session, patched_fpl_client_optimization
+):
+    season_id, audit = _build_full_review_scenario(db_session)
+
+    job = execute_job(
+        db_session,
+        job_type=JobType.GAMEWEEK_REVIEW,
+        parameters={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID, "season_id": str(season_id)},
+        trigger_type=TriggerType.LOCAL,
+    )
+
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    learning_report_id = uuid.UUID(job.output_json["learning_report_id"])
+    report = db_session.get(LearningReport, learning_report_id)
+    assert report is not None
+    assert report.run_status == GameweekReviewRunStatus.SUCCEEDED
+    assert report.season_id == season_id
+    assert report.completed_at is not None
+
+    # --- recommendation_outcome_id set, pointing at a real, upserted-in-place outcome row ---
+    assert report.recommendation_outcome_id is not None
+    outcome = db_session.get(RecommendationOutcome, report.recommendation_outcome_id)
+    assert outcome is not None
+    assert outcome.recommendation_audit_id == audit.id
+
+    # --- failure_attribution_count correct: exactly one PROJECTION_OVERESTIMATED for this gameweek ---
+    assert report.failure_attribution_count == 1
+    attributions = (
+        db_session.execute(
+            select(FailureAttribution).where(FailureAttribution.recommendation_outcome_id == outcome.id)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(attributions) == 1
+    assert attributions[0].reason_code == FailureReasonCode.PROJECTION_OVERESTIMATED
+
+    # --- all 4 signal types computed and persisted as real learning_signals rows ---
+    persisted_signals = (
+        db_session.execute(
+            select(LearningSignal).where(
+                LearningSignal.season_id == season_id,
+                LearningSignal.as_of_gameweek_id == audit.target_gameweek_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    signal_types_persisted = {s.signal_type for s in persisted_signals}
+    assert signal_types_persisted == {
+        LearningSignalType.ROLLING_PROJECTION_MAE,
+        LearningSignalType.ROLLING_H2H_WIN_PROBABILITY_CALIBRATION,
+        LearningSignalType.ROLLING_CHIP_RECOMMENDATION_VALUE,
+        LearningSignalType.FAILURE_REASON_CONCENTRATION,
+    }
+    mae_signal = next(
+        s for s in persisted_signals if s.signal_type == LearningSignalType.ROLLING_PROJECTION_MAE
+    )
+    assert mae_signal.threshold_breached is True
+    concentration_signal = next(
+        s for s in persisted_signals if s.signal_type == LearningSignalType.FAILURE_REASON_CONCENTRATION
+    )
+    assert concentration_signal.threshold_breached is True
+    h2h_signal = next(
+        s
+        for s in persisted_signals
+        if s.signal_type == LearningSignalType.ROLLING_H2H_WIN_PROBABILITY_CALIBRATION
+    )
+    assert h2h_signal.sample_count == 0  # no H2H context seeded -- computed, just empty
+
+    # --- report_markdown non-empty and contains expected real values ---
+    assert report.report_markdown
+    assert f"GW{_REVIEWED_FPL_EVENT_ID}" in report.report_markdown
+    assert "projection_overestimated" in report.report_markdown
+    assert "rolling_projection_mae" in report.report_markdown
+
+    # --- learning_signals_computed_json: compact summary keyed by signal type ---
+    assert report.learning_signals_computed_json is not None
+    assert set(report.learning_signals_computed_json.keys()) == {s.value for s in LearningSignalType}
+    assert report.learning_signals_computed_json["rolling_projection_mae"]["threshold_breached"] is True
+
+    # --- notable_findings_json: 1 material failure + 2 breached signals, mechanically derived ---
+    assert report.notable_findings_json is not None
+    findings_by_type = [f["type"] for f in report.notable_findings_json]
+    assert findings_by_type.count("material_failure") == 1
+    assert findings_by_type.count("signal_breached") == 2
+    material_finding = next(f for f in report.notable_findings_json if f["type"] == "material_failure")
+    assert material_finding["reason_code"] == "projection_overestimated"
+    breached_signal_types = {
+        f["signal_type"] for f in report.notable_findings_json if f["type"] == "signal_breached"
+    }
+    assert breached_signal_types == {"rolling_projection_mae", "failure_reason_concentration"}
+
+    # --- summary_json ---
+    assert report.summary_json["target_fpl_event_id"] == _REVIEWED_FPL_EVENT_ID
+    assert report.summary_json["failure_attribution_count"] == 1
+    assert report.summary_json["notable_finding_count"] == 3
+
+
+# --- Refusal paths --------------------------------------------------------------------------------
+
+
+def test_gameweek_review_unfinished_gameweek_refuses_cleanly_no_row(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    season_id = _seed_players(db_session)
+    unfinished_gameweek = db_session.execute(
+        select(Gameweek).where(Gameweek.season_id == season_id, Gameweek.is_current.is_(True))
+    ).scalar_one()
+    assert unfinished_gameweek.finished is False
+
+    job = execute_job(
+        db_session,
+        job_type=JobType.GAMEWEEK_REVIEW,
+        parameters={"target_fpl_event_id": unfinished_gameweek.fpl_event_id, "season_id": str(season_id)},
+        trigger_type=TriggerType.LOCAL,
+    )
+
+    assert job.status == JobStatus.FAILED
+    assert job.error_code == "GAMEWEEK_NOT_FINISHED"
+    count = (
+        db_session.execute(select(LearningReport).where(LearningReport.gameweek_id == unfinished_gameweek.id))
+        .scalars()
+        .all()
+    )
+    assert count == []
+
+
+def test_gameweek_review_no_authoritative_recommendation_refuses_cleanly_no_row(
+    db_session, patched_fpl_client_optimization
+):
+    season_id = _seed_players(db_session)
+    gameweek = _gameweek(db_session, season_id, _REVIEWED_FPL_EVENT_ID)
+
+    job = execute_job(
+        db_session,
+        job_type=JobType.GAMEWEEK_REVIEW,
+        parameters={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID, "season_id": str(season_id)},
+        trigger_type=TriggerType.LOCAL,
+    )
+
+    assert job.status == JobStatus.FAILED
+    assert job.error_code == "NO_AUTHORITATIVE_RECOMMENDATION"
+    rows = (
+        db_session.execute(select(LearningReport).where(LearningReport.gameweek_id == gameweek.id))
+        .scalars()
+        .all()
+    )
+    assert rows == []
+
+
+# --- Rerun behavior --------------------------------------------------------------------------------
+
+
+def test_gameweek_review_rerun_creates_a_second_insert_only_report_row(
+    db_session, patched_fpl_client_optimization
+):
+    """learning_reports is insert-only per run (see that model's own docstring) -- a rerun for the
+    SAME gameweek creates a FRESH row, never updates the prior one, while Layer 2/3's own
+    already-established idempotency (upsert-in-place for the outcome, delete-then-reinsert for its
+    failure attributions) is respected, not fought against.
+    """
+    season_id, audit = _build_full_review_scenario(db_session)
+    parameters = {"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID, "season_id": str(season_id)}
+
+    first_job = execute_job(
+        db_session, job_type=JobType.GAMEWEEK_REVIEW, parameters=parameters, trigger_type=TriggerType.LOCAL
+    )
+    assert first_job.status == JobStatus.SUCCEEDED
+    second_job = execute_job(
+        db_session, job_type=JobType.GAMEWEEK_REVIEW, parameters=parameters, trigger_type=TriggerType.LOCAL
+    )
+    assert second_job.status == JobStatus.SUCCEEDED
+
+    first_report_id = uuid.UUID(first_job.output_json["learning_report_id"])
+    second_report_id = uuid.UUID(second_job.output_json["learning_report_id"])
+    assert first_report_id != second_report_id
+
+    reports = (
+        db_session.execute(
+            select(LearningReport).where(LearningReport.gameweek_id == audit.target_gameweek_id)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(reports) == 2
+    assert {r.run_status for r in reports} == {GameweekReviewRunStatus.SUCCEEDED}
+
+    # Both reports point at the SAME (upserted-in-place) recommendation_outcomes row.
+    assert reports[0].recommendation_outcome_id == reports[1].recommendation_outcome_id
+
+    # The outcome's own failure_attributions were deleted-and-reinserted, not accumulated.
+    attributions = (
+        db_session.execute(
+            select(FailureAttribution).where(
+                FailureAttribution.recommendation_outcome_id == reports[0].recommendation_outcome_id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(attributions) == 1
+
+    # Learning signals, in contrast, are NEVER upserted -- each computation is a fresh row, so a
+    # rerun leaves 2x as many learning_signals rows for this exact (season, as_of_gameweek).
+    signals = (
+        db_session.execute(
+            select(LearningSignal).where(
+                LearningSignal.season_id == season_id,
+                LearningSignal.as_of_gameweek_id == audit.target_gameweek_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(signals) == 8  # 4 signal types x 2 runs
