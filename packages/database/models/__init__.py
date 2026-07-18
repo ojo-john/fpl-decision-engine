@@ -9,6 +9,7 @@ update this file, not also remember to touch ``env.py``.
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.chip_recommendation import ChipRecommendation
 from packages.database.models.chip_window_candidate import ChipWindowCandidate
+from packages.database.models.counterfactual_result import CounterfactualResult
 from packages.database.models.data_quality_issue import DataQualityIssue
 from packages.database.models.fixture import Fixture
 from packages.database.models.gameweek import Gameweek
@@ -31,6 +32,7 @@ from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.position import Position
 from packages.database.models.raw_api_snapshot import RawApiSnapshot
 from packages.database.models.recommendation_audit import RecommendationAudit
+from packages.database.models.recommendation_outcome import RecommendationOutcome
 from packages.database.models.rival_gameweek_snapshot import RivalGameweekSnapshot
 from packages.database.models.rival_profile import RivalProfile
 from packages.database.models.rules_config import RulesConfig
@@ -45,6 +47,7 @@ __all__ = [
     "ChipOptimizationRun",
     "ChipRecommendation",
     "ChipWindowCandidate",
+    "CounterfactualResult",
     "DataQualityIssue",
     "Fixture",
     "Gameweek",
@@ -67,6 +70,7 @@ __all__ = [
     "Position",
     "RawApiSnapshot",
     "RecommendationAudit",
+    "RecommendationOutcome",
     "RivalGameweekSnapshot",
     "RivalProfile",
     "RulesConfig",
