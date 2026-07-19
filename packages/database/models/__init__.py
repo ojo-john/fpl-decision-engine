@@ -25,7 +25,9 @@ from packages.database.models.league_sync_run import LeagueSyncRun
 from packages.database.models.learning_report import LearningReport
 from packages.database.models.learning_signal import LearningSignal
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
+from packages.database.models.model_challenger_evaluation import ModelChallengerEvaluation
 from packages.database.models.model_metric import ModelMetric
+from packages.database.models.model_promotion import ModelPromotion
 from packages.database.models.model_version import ModelVersion
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
@@ -66,7 +68,9 @@ __all__ = [
     "LearningReport",
     "LearningSignal",
     "ManagerSquadSnapshot",
+    "ModelChallengerEvaluation",
     "ModelMetric",
+    "ModelPromotion",
     "ModelVersion",
     "OptimizationRun",
     "OptimizationRunPlayer",

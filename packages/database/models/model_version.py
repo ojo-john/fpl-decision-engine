@@ -20,6 +20,20 @@ non-determinism across runs.
 lookups/formulas over already-materialized ``player_features`` columns (or,
 for ``BASELINE_RULES_EP_NEXT``, one extra ``player_gameweek_stats`` lookup),
 never a fitted scikit-learn object, so there is nothing to serialize.
+
+``lifecycle_state`` (Milestone 7 Layer 5: Challenger Training/Shadow-Mode
+Evaluation/Promotion Gates/Rollback) tracks where this row sits in the
+challenger/promotion lifecycle — see ``packages.domain.learning
+.ModelLifecycleState`` for the full state set. Kept IN SYNC with
+``is_champion`` as an ENFORCED invariant (``is_champion == (lifecycle_state ==
+CHAMPION)``), but deliberately NOT via a DB-level CHECK constraint — see that
+enum's own docstring for exactly why (some pre-existing tests seed
+``is_champion`` directly, bypassing invariant-enforcing code on purpose).
+Every real code path that flips ``is_champion``
+(``app.jobs.handlers.model_training``, ``app.modeling.promotion``) also sets
+``lifecycle_state`` consistently. Defaults to ``CANDIDATE`` — every freshly
+inserted row starts there regardless of whether it goes on to become a
+champion/shadow challenger.
 """
 
 import uuid
@@ -33,6 +47,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from packages.database.base import Base
+from packages.domain.learning import ModelLifecycleState
 from packages.domain.modeling import ModelFamily
 
 
@@ -56,6 +71,16 @@ class ModelVersion(Base):
     artifact_uri: Mapped[str | None] = mapped_column(String)
     artifact_checksum_sha256: Mapped[str | None] = mapped_column(String(64))
     is_champion: Mapped[bool] = mapped_column(SABoolean, nullable=False, default=False)
+    lifecycle_state: Mapped[ModelLifecycleState] = mapped_column(
+        SAEnum(
+            ModelLifecycleState,
+            name="model_version_lifecycle_state",
+            native_enum=False,
+            validate_strings=True,
+        ),
+        nullable=False,
+        default=ModelLifecycleState.CANDIDATE,
+    )
     trained_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     training_job_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("jobs.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -66,4 +91,5 @@ class ModelVersion(Base):
     __table_args__ = (
         Index("ix_model_versions_feature_version", "feature_version"),
         Index("ix_model_versions_is_champion", "is_champion"),
+        Index("ix_model_versions_lifecycle_state", "lifecycle_state"),
     )

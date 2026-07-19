@@ -30,6 +30,11 @@ genuinely IS a multi-step orchestrator (it sequences Layers 2/3's own
 directly-callable functions) and follows the multi-step optimizer jobs'
 create-early-RUNNING-row discipline instead -- so all 3 members here are real,
 persisted ``learning_reports.run_status`` values.
+
+Milestone 7 Layer 5 (Recursive Learning Loop: Challenger Training/Shadow-Mode
+Evaluation/Promotion Gates/Rollback) adds ``ModelLifecycleState``/
+``PromotionVerdict`` below -- see ``app.modeling.promotion`` and
+``app.jobs.handlers.model_training`` for the full lifecycle this drives.
 """
 
 from enum import Enum
@@ -221,3 +226,38 @@ class GameweekReviewRunStatus(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+
+
+class ModelLifecycleState(str, Enum):
+    """Where one ``model_versions`` row sits in the challenger/promotion lifecycle (Milestone 7
+    Layer 5: Challenger Training/Shadow-Mode Evaluation/Promotion Gates/Rollback).
+
+    Kept IN SYNC with ``ModelVersion.is_champion`` as an enforced invariant
+    (``is_champion == (lifecycle_state == CHAMPION)``) by every real code path
+    that flips either column (``app.jobs.handlers.model_training``,
+    ``app.modeling.promotion``) -- never a DB-level CHECK constraint, since
+    several pre-existing integration tests (see ``tests/integration
+    /test_champion_loader.py``'s own module docstring) deliberately seed
+    ``ModelVersion`` rows directly with ``is_champion=True`` and no
+    ``lifecycle_state`` at all, bypassing invariant-enforcing code on
+    purpose -- a hard constraint would break those tests for no benefit to
+    what they're actually testing (live-champion-loading substitution logic,
+    unrelated to the promotion lifecycle).
+    """
+
+    CANDIDATE = "candidate"  # every freshly-trained ModelVersion starts here
+    SHADOW_CHALLENGER = (
+        "shadow_challenger"  # best candidate from a training run, when a champion already exists
+    )
+    CHAMPION = "champion"  # currently serving live recommendations (is_champion == True)
+    RETIRED_CHAMPION = "retired_champion"  # a former champion, superseded by a promotion -- never deleted
+    REJECTED_CHALLENGER = "rejected_challenger"  # a shadow challenger that failed its promotion gate
+
+
+class PromotionVerdict(str, Enum):
+    """The outcome of one promotion-gate decision or rollback (``app.modeling.promotion``)."""
+
+    PROMOTED = "promoted"
+    REJECTED = "rejected"
+    RETAINED_INCONCLUSIVE = "retained_inconclusive"  # not enough evidence yet -- stays SHADOW_CHALLENGER
+    ROLLED_BACK = "rolled_back"
