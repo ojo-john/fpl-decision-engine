@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.jobs.handlers.backtest import BacktestJobRunner
 from app.jobs.handlers.chip_simulation import ChipSimulationJobRunner
 from app.jobs.handlers.data_ingestion import DataIngestionJobRunner
 from app.jobs.handlers.feature_generation import FeatureGenerationJobRunner
@@ -36,6 +37,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.CHIP_SIMULATION,
     JobType.RECOMMENDATION_GENERATION,
     JobType.GAMEWEEK_REVIEW,
+    JobType.BACKTEST,
 }
 
 
@@ -97,6 +99,10 @@ def test_recommendation_generation_resolves_to_its_runner():
 
 def test_gameweek_review_resolves_to_its_runner():
     assert get_handler(JobType.GAMEWEEK_REVIEW) is GameweekReviewJobRunner
+
+
+def test_backtest_resolves_to_its_runner():
+    assert get_handler(JobType.BACKTEST) is BacktestJobRunner
 
 
 @pytest.mark.parametrize(
