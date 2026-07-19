@@ -1,10 +1,12 @@
-"""``POST /jobs/review-gameweek`` and ``/learning`` endpoints: trigger GAMEWEEK_REVIEW and read its
-own persisted ``learning_reports``/``learning_signals``/``failure_attributions`` rows.
+"""``POST /jobs/review-gameweek``, ``POST /jobs/backtest``, and ``/learning`` endpoints: trigger
+GAMEWEEK_REVIEW/BACKTEST and read their own persisted
+``learning_reports``/``learning_signals``/``failure_attributions``/``backtest_runs`` rows.
 
-Milestone 7 Layer 4. ``POST /jobs/review-gameweek`` mirrors ``/recommendations/generate``'s (and,
-before that, ``/optimize/chips``'s) exact shape: ``execute_job`` -> 409-with-``error_code`` on
-non-success -> assembled response on success. The 4 GET endpoints are plain, paginated reads over
-already-persisted rows -- no job execution involved.
+Milestone 7 Layer 4 (``/jobs/review-gameweek``/``/learning``) and Layer 6 (``/jobs/backtest``).
+Both POST endpoints mirror ``/recommendations/generate``'s (and, before that, ``/optimize/chips``'s)
+exact shape: ``execute_job`` -> 409-with-``error_code`` on non-success -> assembled response on
+success. The GET endpoints are plain, paginated reads over already-persisted rows -- no job
+execution involved.
 """
 
 import uuid
@@ -18,15 +20,19 @@ from sqlalchemy.orm import Session
 from app.jobs.service import execute_job
 from apps.api.dependencies import get_db
 from apps.api.schemas.learning import (
+    BacktestRequest,
+    BacktestRunOut,
     FailureAttributionOut,
     GameweekReviewRequest,
     LearningReportOut,
     LearningSignalOut,
 )
+from packages.database.models.backtest_run import BacktestRun
 from packages.database.models.failure_attribution import FailureAttribution
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.learning_report import LearningReport
 from packages.database.models.learning_signal import LearningSignal
+from packages.database.models.model_version import ModelVersion
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.learning import FailureCategory, FailureReasonCode, LearningSignalType
@@ -77,6 +83,8 @@ def _assembled_report(db: Session, report: LearningReport) -> LearningReportOut:
         report_markdown=report.report_markdown,
         summary=report.summary_json,
         notable_findings=report.notable_findings_json,
+        retraining_triggered=report.retraining_triggered,
+        retraining_job_id=report.retraining_job_id,
         started_at=report.started_at,
         completed_at=report.completed_at,
     )
@@ -109,6 +117,30 @@ def _failure_out(row: FailureAttribution) -> FailureAttributionOut:
     )
 
 
+def _assembled_backtest_run(db: Session, row: BacktestRun) -> BacktestRunOut:
+    model_version = db.get(ModelVersion, row.model_version_id)
+    assert model_version is not None  # model_version_id is a NOT NULL FK to a real row
+    return BacktestRunOut(
+        backtest_run_id=row.id,
+        model_version_id=row.model_version_id,
+        model_family=model_version.model_family.value,
+        feature_version=row.feature_version,
+        run_status=row.run_status.value,
+        usable_seasons=row.usable_seasons_json,
+        fold_count=row.fold_count,
+        degenerate_single_season=row.degenerate_single_season,
+        fold_metrics=row.fold_metrics_json,
+        aggregate_mae=row.aggregate_mae,
+        aggregate_rmse=row.aggregate_rmse,
+        aggregate_mean_bias=row.aggregate_mean_bias,
+        aggregate_spearman=row.aggregate_spearman,
+        aggregate_top_20_capture_rate=row.aggregate_top_20_capture_rate,
+        n_observations=row.n_observations,
+        started_at=row.started_at,
+        completed_at=row.completed_at,
+    )
+
+
 @router_jobs.post("/review-gameweek", response_model=LearningReportOut)
 def review_gameweek(
     body: GameweekReviewRequest, db: Session = Depends(get_db)
@@ -132,6 +164,25 @@ def review_gameweek(
     report = db.get(LearningReport, learning_report_id)
     assert report is not None  # a SUCCEEDED job always leaves its learning_reports row behind
     return _assembled_report(db, report)
+
+
+@router_jobs.post("/backtest", response_model=BacktestRunOut)
+def run_backtest(body: BacktestRequest, db: Session = Depends(get_db)) -> BacktestRunOut | JSONResponse:
+    job = execute_job(
+        db,
+        job_type=JobType.BACKTEST,
+        parameters={"model_version_id": str(body.model_version_id)},
+        requested_by=body.requested_by,
+        trigger_type=TriggerType.API,
+    )
+    if job.status != JobStatus.SUCCEEDED:
+        return _error_response(job)
+
+    assert job.output_json is not None  # a SUCCEEDED job always has output_json
+    backtest_run_id = uuid.UUID(job.output_json["backtest_run_id"])
+    row = db.get(BacktestRun, backtest_run_id)
+    assert row is not None  # a SUCCEEDED job always leaves its backtest_runs row behind
+    return _assembled_backtest_run(db, row)
 
 
 @router_learning.get("/latest", response_model=LearningReportOut)

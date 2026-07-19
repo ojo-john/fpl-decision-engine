@@ -1,4 +1,6 @@
-"""Pydantic request/response schemas for the /jobs/review-gameweek and /learning endpoints."""
+"""Pydantic request/response schemas for the /jobs/review-gameweek, /jobs/backtest, and /learning
+endpoints.
+"""
 
 import uuid
 from datetime import datetime
@@ -28,6 +30,10 @@ class LearningReportOut(BaseModel):
     report_markdown: str | None
     summary: dict[str, Any] | None
     notable_findings: list[dict[str, Any]] | None
+    # Milestone 7 Layer 6 -- see packages/database/models/learning_report.py's own docstring for
+    # the exact "NULL until the retraining-trigger step actually runs" convention these follow.
+    retraining_triggered: bool | None
+    retraining_job_id: uuid.UUID | None
     started_at: datetime
     completed_at: datetime | None
 
@@ -59,3 +65,30 @@ class FailureAttributionOut(BaseModel):
     severity: Decimal | None
     evidence: dict[str, Any] | None
     created_at: datetime
+
+
+class BacktestRequest(BaseModel):
+    # model_version_id is REQUIRED -- see app.jobs.handlers.backtest's own docstring for why there
+    # is no sensible default (which model would "the" backtest even mean?).
+    model_version_id: uuid.UUID
+    requested_by: str | None = None
+
+
+class BacktestRunOut(BaseModel):
+    backtest_run_id: uuid.UUID
+    model_version_id: uuid.UUID
+    model_family: str
+    feature_version: int
+    run_status: str
+    usable_seasons: list[str]
+    fold_count: int
+    degenerate_single_season: bool
+    fold_metrics: list[dict[str, Any]]
+    aggregate_mae: Decimal | None
+    aggregate_rmse: Decimal | None
+    aggregate_mean_bias: Decimal | None
+    aggregate_spearman: Decimal | None
+    aggregate_top_20_capture_rate: Decimal | None
+    n_observations: int
+    started_at: datetime
+    completed_at: datetime
