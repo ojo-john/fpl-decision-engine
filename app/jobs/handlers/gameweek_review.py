@@ -60,6 +60,20 @@ each ``compute_rolling_*`` call always inserts a fresh, distinct
 recordable event", see that module's own docstring). Nothing here needs to
 special-case a rerun; each layer's own existing convention already produces
 the right outcome when simply called again.
+
+Milestone 7 Layer 5 (Recursive Learning Loop: Challenger Training/Shadow-Mode
+Evaluation/Promotion Gates/Rollback) adds one small, ADDITIVE step after the
+rolling learning signals above: ``app.modeling.shadow_evaluation
+.compute_shadow_challenger_evaluation`` scores the current shadow challenger
+(if any) against the current champion for this now-finished gameweek,
+persisting a ``model_challenger_evaluations`` row. This is a no-op (returns
+``None``, nothing added to the report) whenever no shadow challenger
+currently exists -- the common case, and the only state most environments
+will ever be in. See that function's own module docstring for why this is
+computed retroactively here rather than during live optimization. This job
+does NOT itself decide whether to promote/reject/roll back -- that is
+``app.modeling.promotion``'s job, invoked separately (Milestone 7 Layer 6's
+concern to wire into an automatic trigger; not done by this handler).
 """
 
 import uuid
@@ -89,6 +103,7 @@ from app.learning.signals import (
     compute_rolling_projection_mae,
     persist_learning_signal,
 )
+from app.modeling.shadow_evaluation import compute_shadow_challenger_evaluation
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.counterfactual_result import CounterfactualResult
 from packages.database.models.gameweek import Gameweek
@@ -275,6 +290,13 @@ class GameweekReviewJobRunner(JobRunner):
                     persist_learning_signal(session, season_id, gameweek.id, signal) for signal in signal_data
                 ]
 
+                # --- Layer 5: retroactive shadow-challenger scoring, additive -- see
+                # app.modeling.shadow_evaluation's own module docstring for why this is computed
+                # retroactively (against this now-finished gameweek's real player_features actuals)
+                # rather than piggybacked on a live projection loop. A no-op (returns None) whenever
+                # no shadow challenger currently exists -- the common case.
+                shadow_evaluation = compute_shadow_challenger_evaluation(session, season_id, gameweek.id)
+
                 counterfactual_results = (
                     session.execute(
                         select(CounterfactualResult).where(
@@ -360,6 +382,21 @@ class GameweekReviewJobRunner(JobRunner):
                     "counterfactual_comparison_count": len(counterfactual_summaries),
                     "failure_attribution_count": len(failure_summaries),
                     "notable_finding_count": len(notable_findings),
+                    "shadow_challenger_evaluation": (
+                        {
+                            "challenger_model_version_id": str(shadow_evaluation.challenger_model_version_id),
+                            "champion_model_version_id": str(shadow_evaluation.champion_model_version_id),
+                            "challenger_mae": float(shadow_evaluation.challenger_mae)
+                            if shadow_evaluation.challenger_mae is not None
+                            else None,
+                            "champion_mae": float(shadow_evaluation.champion_mae)
+                            if shadow_evaluation.champion_mae is not None
+                            else None,
+                            "n_observations": shadow_evaluation.n_observations,
+                        }
+                        if shadow_evaluation is not None
+                        else None
+                    ),
                 }
 
                 report_row.recommendation_outcome_id = outcome.id
@@ -380,6 +417,9 @@ class GameweekReviewJobRunner(JobRunner):
                         "recommendation_outcome_id": str(outcome.id),
                         "failure_attribution_count": len(attributions),
                         "notable_finding_count": len(notable_findings),
+                        "shadow_challenger_evaluation_id": (
+                            str(shadow_evaluation.id) if shadow_evaluation is not None else None
+                        ),
                     },
                     error_code=None,
                     error_message=None,

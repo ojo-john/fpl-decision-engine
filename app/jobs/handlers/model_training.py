@@ -22,9 +22,28 @@ Orchestrates, for one ``feature_version``:
    combined (not any single fold's train split — walk-forward validation's
    job was only to pick which family generalizes best; the deployed artifact
    should use the maximum available signal) and serialize it via joblib.
-6. Enforce the "exactly one ``model_versions`` row has ``is_champion=True``
-   across the whole table" invariant (``app.modeling.champion.set_exactly_one_champion``),
-   considering every row ever inserted, not just this run's 7.
+6. BOOTSTRAP CASE ONLY (no ``model_versions`` row currently has
+   ``is_champion=True`` anywhere in the table): enforce the "exactly one
+   ``model_versions`` row has ``is_champion=True`` across the whole table"
+   invariant (``app.modeling.champion.set_exactly_one_champion``), considering
+   every row ever inserted, not just this run's 7, and flag the winner
+   ``lifecycle_state = CHAMPION`` immediately. This step's behavior is
+   UNCHANGED from before Milestone 7 Layer 5.
+
+Milestone 7 Layer 5 (Recursive Learning Loop: Challenger Training/Shadow-Mode
+Evaluation/Promotion Gates/Rollback) changes step 6 above for the NON-bootstrap
+case: if a champion ALREADY exists when this run finishes, the winning
+candidate does NOT get promoted immediately -- ``set_exactly_one_champion`` is
+NOT called, ``is_champion`` stays ``False`` on every one of this run's 7 rows,
+and the winner instead gets ``lifecycle_state = SHADOW_CHALLENGER``. This
+run's winner becomes a CHALLENGER, not a champion: real promotion only
+happens later, once ``app.modeling.shadow_evaluation
+.compute_shadow_challenger_evaluation`` has scored it against the live
+champion over enough real, finished gameweeks, via
+``app.modeling.promotion.evaluate_promotion``/``decide_and_record_promotion``.
+This is a small, surgical change to this one decision point -- everything
+else in this handler (folds, scoring, persistence, artifact fitting) is
+unchanged.
 
 ``ctx.parameters`` accepts ``{"feature_version": 1}`` (defaults to
 ``app.features.service.FEATURE_VERSION`` if omitted).
@@ -69,6 +88,7 @@ from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.season import Season
 from packages.database.session import SessionLocal
 from packages.domain.jobs import JobStatus, JobType
+from packages.domain.learning import ModelLifecycleState
 from packages.domain.modeling import BASELINE_MODEL_FAMILIES, ModelFamily
 from packages.fpl_client.fingerprint import sha256_hex
 
@@ -183,8 +203,25 @@ class ModelTrainingJobRunner(JobRunner):
                 champion_version.artifact_uri = artifact_info["artifact_uri"]
                 champion_version.artifact_checksum_sha256 = artifact_info["artifact_checksum_sha256"]
 
-            all_versions = session.execute(select(ModelVersion)).scalars().all()
-            set_exactly_one_champion(all_versions, champion_version)
+            # Milestone 7 Layer 5: bootstrap case (no existing champion anywhere in the table) promotes
+            # immediately, exactly as before. Once a champion already exists, this run's winner becomes
+            # a SHADOW_CHALLENGER instead -- real promotion happens later via
+            # app.modeling.promotion.evaluate_promotion/decide_and_record_promotion. See this module's
+            # own docstring for the full rationale.
+            champion_exists = (
+                session.execute(select(ModelVersion.id).where(ModelVersion.is_champion.is_(True)).limit(1))
+                .scalars()
+                .first()
+                is not None
+            )
+            if champion_exists:
+                champion_version.lifecycle_state = ModelLifecycleState.SHADOW_CHALLENGER
+                promotion_outcome = "shadow_challenger"
+            else:
+                all_versions = session.execute(select(ModelVersion)).scalars().all()
+                set_exactly_one_champion(all_versions, champion_version)
+                champion_version.lifecycle_state = ModelLifecycleState.CHAMPION
+                promotion_outcome = "champion"
 
             session.commit()
 
@@ -197,6 +234,8 @@ class ModelTrainingJobRunner(JobRunner):
                     "model_family": champion_family.value,
                     "model_version_id": str(champion_version.id),
                     "artifact_uri": champion_version.artifact_uri,
+                    "promotion_outcome": promotion_outcome,
+                    "lifecycle_state": champion_version.lifecycle_state.value,
                 },
                 "candidates": {
                     family.value: {
