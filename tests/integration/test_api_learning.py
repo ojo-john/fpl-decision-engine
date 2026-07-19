@@ -1,10 +1,11 @@
-"""Integration tests for the /jobs/review-gameweek and /learning endpoints against a real database.
+"""Integration tests for the /jobs/review-gameweek, /jobs/backtest, and /learning endpoints against
+a real database.
 
 Mirrors ``test_api_recommendations.py``'s own "duplicate a minimal setup
 rather than import from the job-level test module" discipline -- this module
 tests the HTTP layer specifically (request/response shape, error-to-409/404/400
-mapping, query-param filtering), not the job's own orchestration logic, which
-is already covered in depth by ``test_gameweek_review_job.py``.
+mapping, query-param filtering), not the jobs' own orchestration logic, which
+is already covered in depth by ``test_gameweek_review_job.py``/``test_backtest_job.py``.
 """
 
 import uuid
@@ -17,6 +18,7 @@ from sqlalchemy import select
 from app.jobs.service import execute_job
 from apps.api.main import create_app
 from packages.database.models.gameweek import Gameweek
+from packages.database.models.model_version import ModelVersion
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
@@ -149,6 +151,13 @@ def test_review_gameweek_happy_path(db_session, patched_fpl_client_optimization)
     assert body["failure_attribution_count"] == 1
     assert body["recommendation_outcome_id"] is not None
     assert body["report_markdown"]
+    # Milestone 7 Layer 6: retraining_triggered/retraining_job_id are surfaced on the response --
+    # this minimal one-gameweek scenario has too little rolling history to ever breach
+    # ROLLING_PROJECTION_MAE's own sustained-window threshold, so both stay at their "not triggered"
+    # values (present, just not True/set) -- see test_gameweek_review_job.py's own dedicated Layer 6
+    # scenarios for the triggered case.
+    assert body["retraining_triggered"] is False
+    assert body["retraining_job_id"] is None
     assert len(body["notable_findings"]) >= 1
     assert any(f["type"] == "material_failure" for f in body["notable_findings"])
 
@@ -301,3 +310,80 @@ def test_list_failure_attributions_invalid_category_returns_400(db_session):
     response = client.get("/learning/failures", params={"category": "not_a_real_category"})
 
     assert response.status_code == 400
+
+
+# --- POST /jobs/backtest (Milestone 7 Layer 6) ------------------------------------------------------
+
+
+def _seed_trained_model_version_id(db_session, patched_historical_fpl_client) -> uuid.UUID:
+    """A real, already-trained ``model_versions`` row via a genuine HISTORICAL_DATA_INGESTION ->
+    FEATURE_GENERATION -> MODEL_TRAINING pipeline -- duplicated (not imported) from
+    ``tests/integration/test_backtest_job.py``'s own identically-shaped helper, per this repo's own
+    "duplicate test setup rather than cross-import between test modules" convention.
+    """
+    ingestion_job = execute_job(
+        db_session,
+        job_type=JobType.HISTORICAL_DATA_INGESTION,
+        parameters={"season_label": "2023-24"},
+        trigger_type=TriggerType.LOCAL,
+    )
+    assert ingestion_job.status == JobStatus.SUCCEEDED
+    features_job = execute_job(
+        db_session,
+        job_type=JobType.FEATURE_GENERATION,
+        parameters={"season_label": "2023-24"},
+        trigger_type=TriggerType.LOCAL,
+    )
+    assert features_job.status == JobStatus.SUCCEEDED
+    training_job = execute_job(
+        db_session,
+        job_type=JobType.MODEL_TRAINING,
+        parameters={"feature_version": 1},
+        trigger_type=TriggerType.LOCAL,
+    )
+    assert training_job.status == JobStatus.SUCCEEDED
+    champion_id = uuid.UUID(training_job.output_json["champion"]["model_version_id"])
+    return champion_id
+
+
+def test_run_backtest_happy_path(db_session, patched_historical_fpl_client):
+    model_version_id = _seed_trained_model_version_id(db_session, patched_historical_fpl_client)
+    model_version = db_session.get(ModelVersion, model_version_id)
+    client = TestClient(create_app())
+
+    response = client.post("/jobs/backtest", json={"model_version_id": str(model_version_id)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["model_version_id"] == str(model_version_id)
+    assert body["model_family"] == model_version.model_family.value
+    assert body["feature_version"] == 1
+    assert body["run_status"] == "succeeded"
+    assert body["usable_seasons"] == ["2023-24"]
+    assert body["fold_count"] == 1
+    assert body["degenerate_single_season"] is True
+    assert len(body["fold_metrics"]) == 1
+    assert body["aggregate_mae"] is not None
+    assert float(body["aggregate_mae"]) >= 0
+    assert body["n_observations"] > 0
+    assert body["started_at"]
+    assert body["completed_at"]
+
+
+def test_run_backtest_model_version_not_found_returns_409(db_session):
+    client = TestClient(create_app())
+
+    response = client.post("/jobs/backtest", json={"model_version_id": str(uuid.uuid4())})
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error_code"] == "MODEL_VERSION_NOT_FOUND"
+    assert "job_id" in body
+
+
+def test_run_backtest_invalid_request_body_returns_422(db_session):
+    client = TestClient(create_app())
+
+    response = client.post("/jobs/backtest", json={})
+
+    assert response.status_code == 422

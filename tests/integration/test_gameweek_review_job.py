@@ -28,22 +28,40 @@ call for gameweeks this job itself never reviews) so
 ``FAILURE_REASON_CONCENTRATION`` breaches too. This gives the happy-path test
 a real, hand-verified ``notable_findings_json`` to assert against, not an
 empty list.
+
+Milestone 7 Layer 6 (BACKTEST job + the GAMEWEEK_REVIEW -> MODEL_TRAINING
+retraining-trigger wiring) adds its own dedicated tests near the bottom of
+this module. One side effect worth calling out explicitly: the happy-path
+scenario above's own sustained ``ROLLING_PROJECTION_MAE`` breach now ALSO
+triggers a real retraining attempt as a side effect (that is the new, correct
+behavior this layer adds, not a regression) -- the happy-path test's own
+``notable_finding_count``/``notable_findings_json`` assertions account for
+this. ``_clear_model_lifecycle_state_around_test`` (autouse, this whole
+module) resets ``model_versions.is_champion``/``lifecycle_state`` before AND
+after every test here, exactly like ``test_promotion.py``'s own precedent --
+required because a real, nested ``MODEL_TRAINING`` run's own
+bootstrap-vs-shadow-challenger decision (and this module's own Layer 6 tests'
+determinism) depends on that global state, on this shared, non-truncated
+Postgres.
 """
 
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+import pytest
+from sqlalchemy import select, update
 
 from app.jobs.service import execute_job
 from app.learning.attribution import FailureAttributionData, persist_failure_attributions
 from packages.database.models.chip_optimization_run import ChipOptimizationRun  # noqa: F401 (registers model)
 from packages.database.models.failure_attribution import FailureAttribution
 from packages.database.models.gameweek import Gameweek
+from packages.database.models.job import Job
 from packages.database.models.learning_report import LearningReport
 from packages.database.models.learning_signal import LearningSignal
 from packages.database.models.model_metric import ModelMetric
+from packages.database.models.model_promotion import ModelPromotion
 from packages.database.models.model_version import ModelVersion
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
@@ -59,6 +77,8 @@ from packages.domain.learning import (
     FailureReasonCode,
     GameweekReviewRunStatus,
     LearningSignalType,
+    ModelLifecycleState,
+    PromotionVerdict,
     RecommendationConfidence,
 )
 from packages.domain.modeling import ModelFamily
@@ -69,6 +89,13 @@ from packages.domain.optimization import (
     TargetGameweekStatus,
 )
 from packages.domain.rules import RulesStatus
+
+# Milestone 7 Layer 6: a deliberately implausible sentinel feature_version, guaranteed to never
+# have any real player_features rows anywhere in this shared test database -- used by the
+# retraining-trigger-fails scenario below to make a nested MODEL_TRAINING run's own
+# NO_SEASONS_WITH_FEATURES failure fully deterministic, regardless of what other test modules may
+# have already ingested/generated features for feature_version=1 earlier in the same pytest session.
+_NO_FEATURES_SENTINEL_FEATURE_VERSION = 987654321
 
 _CAPTAIN_ELEMENT_ID = 30000
 _REVIEWED_FPL_EVENT_ID = 20
@@ -82,6 +109,33 @@ _ACTUAL_RAW_POINTS = 2
 
 def _now():
     return datetime.now(UTC)
+
+
+def _clear_global_model_lifecycle_state(db_session) -> None:
+    """Blanket reset across the WHOLE ``model_versions`` table -- mirrors
+    ``tests/integration/test_promotion.py``'s own ``_clear_global_model_lifecycle_state`` (Milestone
+    7 Layer 5's own precedent for this exact cross-test-pollution risk).
+
+    Milestone 7 Layer 6's retraining-trigger wiring means this module's own "sustained MAE breach"
+    scenario -- already exercised by the pre-existing happy-path/rerun tests below, which construct
+    exactly such a breach to prove ``ROLLING_PROJECTION_MAE.threshold_breached=True`` -- now ALSO
+    triggers a real, nested ``MODEL_TRAINING`` job as a side effect. Without this fixture, whether
+    that nested run takes the bootstrap-champion or shadow-challenger path (and whether it succeeds
+    or fails) would depend on whatever ``is_champion``/``lifecycle_state`` state happens to be left
+    over from other test modules that already ran earlier in this same pytest session, since this
+    whole suite shares one persistent, non-truncated Postgres (see ``conftest.py``'s own docstring).
+    """
+    db_session.execute(
+        update(ModelVersion).values(is_champion=False, lifecycle_state=ModelLifecycleState.CANDIDATE)
+    )
+    db_session.commit()
+
+
+@pytest.fixture(autouse=True)
+def _clear_model_lifecycle_state_around_test(db_session):
+    _clear_global_model_lifecycle_state(db_session)
+    yield
+    _clear_global_model_lifecycle_state(db_session)
 
 
 def _seed_players(db_session) -> uuid.UUID:
@@ -138,6 +192,72 @@ def _create_champion_model_version(db_session, season_label: str, baseline_mae: 
     )
     db_session.commit()
     return model_version.id
+
+
+def _create_global_champion_model_version(
+    db_session, season_label: str, baseline_mae: float, feature_version: int = 1
+) -> uuid.UUID:
+    """Like ``_create_champion_model_version``, but ALSO flags this row the REAL global champion
+    (``is_champion=True``, ``lifecycle_state=CHAMPION``) -- needed only by this module's own
+    Layer 6 retraining-trigger tests, which need
+    ``app.jobs.handlers.gameweek_review``'s own ``_resolve_feature_version_for_retraining``/
+    ``_trigger_retraining_and_promotion_check`` to resolve a real ``(feature_version, champion)``
+    pair the same way production does. Safe here -- unlike ``_create_champion_model_version``'s own
+    deliberate avoidance of this -- ONLY because ``_clear_model_lifecycle_state_around_test`` above
+    guarantees this is reset before AND after every test in this module, so it can never leak into
+    another test module.
+    """
+    model_version = ModelVersion(
+        model_name="gw-review-test-global-champion",
+        model_family=ModelFamily.BASELINE_SEASON_AVERAGE,
+        feature_version=feature_version,
+        target_variable="total_points",
+        training_seasons_json=[season_label],
+        is_champion=True,
+        lifecycle_state=ModelLifecycleState.CHAMPION,
+        trained_at=_now(),
+    )
+    db_session.add(model_version)
+    db_session.commit()
+    db_session.refresh(model_version)
+    db_session.add(
+        ModelMetric(
+            model_version_id=model_version.id,
+            fold_index=None,
+            mae=Decimal(str(baseline_mae)),
+            rmse=Decimal(str(baseline_mae)),
+            mean_bias=Decimal("0.0000"),
+            n_observations=100,
+        )
+    )
+    db_session.commit()
+    return model_version.id
+
+
+def _seed_historical_season_for_model_training(db_session) -> None:
+    """Real historical ``2023-24`` ``player_features`` rows (``feature_version=1``), so a nested
+    ``MODEL_TRAINING`` run triggered mid-GAMEWEEK_REVIEW has genuine data to train against.
+
+    Duplicated (not imported) from ``tests/integration/test_model_training_job.py``'s own
+    ``_seed_historical_season`` -- mirrors this repo's own established "duplicate test setup rather
+    than cross-import between test modules" convention (see e.g. ``test_api_learning.py``'s own
+    module docstring). Idempotent to call again for the same ``season_label`` -- already relied on
+    by ``test_model_training_job.py``'s own multiple, independent tests doing exactly this.
+    """
+    ingestion_job = execute_job(
+        db_session,
+        job_type=JobType.HISTORICAL_DATA_INGESTION,
+        parameters={"season_label": "2023-24"},
+        trigger_type=TriggerType.LOCAL,
+    )
+    assert ingestion_job.status == JobStatus.SUCCEEDED
+    features_job = execute_job(
+        db_session,
+        job_type=JobType.FEATURE_GENERATION,
+        parameters={"season_label": "2023-24"},
+        trigger_type=TriggerType.LOCAL,
+    )
+    assert features_job.status == JobStatus.SUCCEEDED
 
 
 def _create_optimization_run_with_captain_projection(
@@ -380,11 +500,15 @@ def test_gameweek_review_happy_path_produces_succeeded_report_with_real_findings
     assert set(report.learning_signals_computed_json.keys()) == {s.value for s in LearningSignalType}
     assert report.learning_signals_computed_json["rolling_projection_mae"]["threshold_breached"] is True
 
-    # --- notable_findings_json: 1 material failure + 2 breached signals, mechanically derived ---
+    # --- notable_findings_json: 1 material failure + 2 breached signals + 1 retraining-triggered
+    # entry (Milestone 7 Layer 6: this scenario's own sustained ROLLING_PROJECTION_MAE breach ALSO
+    # triggers a real retraining attempt -- see the dedicated Layer 6 tests below for the full
+    # trigger/promotion assertions; this happy-path test only needs to know a 4th finding now exists) --
     assert report.notable_findings_json is not None
     findings_by_type = [f["type"] for f in report.notable_findings_json]
     assert findings_by_type.count("material_failure") == 1
     assert findings_by_type.count("signal_breached") == 2
+    assert findings_by_type.count("retraining_triggered") == 1
     material_finding = next(f for f in report.notable_findings_json if f["type"] == "material_failure")
     assert material_finding["reason_code"] == "projection_overestimated"
     breached_signal_types = {
@@ -395,7 +519,8 @@ def test_gameweek_review_happy_path_produces_succeeded_report_with_real_findings
     # --- summary_json ---
     assert report.summary_json["target_fpl_event_id"] == _REVIEWED_FPL_EVENT_ID
     assert report.summary_json["failure_attribution_count"] == 1
-    assert report.summary_json["notable_finding_count"] == 3
+    assert report.summary_json["notable_finding_count"] == 4
+    assert report.retraining_triggered is True
 
 
 # --- Refusal paths --------------------------------------------------------------------------------
@@ -515,3 +640,208 @@ def test_gameweek_review_rerun_creates_a_second_insert_only_report_row(
         .all()
     )
     assert len(signals) == 8  # 4 signal types x 2 runs
+
+
+# --- Milestone 7 Layer 6: retraining-trigger wiring ------------------------------------------------
+
+
+def test_gameweek_review_no_mae_breach_does_not_trigger_retraining(
+    db_session, patched_fpl_client_optimization
+):
+    """A normal review (no sustained ROLLING_PROJECTION_MAE breach -- only 1 gameweek in the window,
+    well under ``_MIN_CONSECUTIVE_DEGRADED_GAMEWEEKS=3``, so ``_is_sustained_breach`` cannot fire
+    regardless of magnitude) never triggers a MODEL_TRAINING job.
+    """
+    season_id = _seed_players(db_session)
+    season = db_session.get(Season, season_id)
+    rules_config_id = _seed_rules_config_id(db_session, season_id)
+    model_version_id = _create_champion_model_version(db_session, season.label, _BASELINE_MAE)
+    audit = _seed_reviewed_gameweek(db_session, season_id, rules_config_id, model_version_id)
+
+    def _model_training_job_count() -> int:
+        return len(
+            db_session.execute(select(Job).where(Job.job_type == JobType.MODEL_TRAINING)).scalars().all()
+        )
+
+    model_training_jobs_before = _model_training_job_count()
+
+    job = execute_job(
+        db_session,
+        job_type=JobType.GAMEWEEK_REVIEW,
+        parameters={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID, "season_id": str(season_id)},
+        trigger_type=TriggerType.LOCAL,
+    )
+
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    learning_report_id = uuid.UUID(job.output_json["learning_report_id"])
+    report = db_session.get(LearningReport, learning_report_id)
+    assert report is not None
+
+    mae_signal = db_session.execute(
+        select(LearningSignal).where(
+            LearningSignal.season_id == season_id,
+            LearningSignal.as_of_gameweek_id == audit.target_gameweek_id,
+            LearningSignal.signal_type == LearningSignalType.ROLLING_PROJECTION_MAE,
+        )
+    ).scalar_one()
+    assert mae_signal.threshold_breached is False
+
+    assert report.retraining_triggered is False
+    assert report.retraining_job_id is None
+    assert job.output_json["retraining_triggered"] is False
+    assert job.output_json["retraining_job_id"] is None
+    findings_by_type = [f["type"] for f in report.notable_findings_json]
+    assert "retraining_triggered" not in findings_by_type
+
+    # No new MODEL_TRAINING job was created as a side effect.
+    assert _model_training_job_count() == model_training_jobs_before
+
+
+def test_gameweek_review_sustained_mae_breach_triggers_model_training_and_shadow_promotion_check(
+    db_session, patched_fpl_client_optimization, patched_historical_fpl_client
+):
+    """A genuine, sustained ROLLING_PROJECTION_MAE breach triggers a real MODEL_TRAINING job; since a
+    real global champion already exists, that training run's own winner becomes a SHADOW_CHALLENGER
+    (never an immediate new champion -- Layer 5's own non-bootstrap branch), which this handler then
+    immediately runs a promotion-gate check against -- with zero prior shadow-evaluation history,
+    that always comes back RETAINED_INCONCLUSIVE (see app.modeling.promotion's own module docstring),
+    which is exactly what's asserted here: nothing special-cased, just the real gate function called
+    and its real (inconclusive) verdict recorded.
+    """
+    _seed_historical_season_for_model_training(db_session)
+
+    season_id = _seed_players(db_session)
+    season = db_session.get(Season, season_id)
+    rules_config_id = _seed_rules_config_id(db_session, season_id)
+    champion_id = _create_global_champion_model_version(db_session, season.label, _BASELINE_MAE)
+
+    for fpl_event_id in _PRIOR_FPL_EVENT_IDS:
+        _seed_prior_degraded_gameweek(db_session, season_id, rules_config_id, fpl_event_id, champion_id)
+    audit = _seed_reviewed_gameweek(db_session, season_id, rules_config_id, champion_id)
+
+    job = execute_job(
+        db_session,
+        job_type=JobType.GAMEWEEK_REVIEW,
+        parameters={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID, "season_id": str(season_id)},
+        trigger_type=TriggerType.LOCAL,
+    )
+
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    learning_report_id = uuid.UUID(job.output_json["learning_report_id"])
+    report = db_session.get(LearningReport, learning_report_id)
+    assert report is not None
+
+    mae_signal = db_session.execute(
+        select(LearningSignal).where(
+            LearningSignal.season_id == season_id,
+            LearningSignal.as_of_gameweek_id == audit.target_gameweek_id,
+            LearningSignal.signal_type == LearningSignalType.ROLLING_PROJECTION_MAE,
+        )
+    ).scalar_one()
+    assert mae_signal.threshold_breached is True
+
+    # --- retraining_triggered=True, retraining_job_id points at a real, SUCCEEDED MODEL_TRAINING job ---
+    assert report.retraining_triggered is True
+    assert report.retraining_job_id is not None
+    training_job = db_session.get(Job, report.retraining_job_id)
+    assert training_job is not None
+    assert training_job.job_type == JobType.MODEL_TRAINING
+    assert training_job.status == JobStatus.SUCCEEDED
+    assert training_job.output_json["champion"]["promotion_outcome"] == "shadow_challenger"
+
+    shadow_challenger_id = uuid.UUID(training_job.output_json["champion"]["model_version_id"])
+    shadow_challenger = db_session.get(ModelVersion, shadow_challenger_id)
+    assert shadow_challenger.lifecycle_state == ModelLifecycleState.SHADOW_CHALLENGER
+    assert shadow_challenger.is_champion is False
+
+    # The pre-existing global champion is untouched.
+    champion = db_session.get(ModelVersion, champion_id)
+    assert champion.is_champion is True
+    assert champion.lifecycle_state == ModelLifecycleState.CHAMPION
+
+    # --- a real, RETAINED_INCONCLUSIVE ModelPromotion row was recorded for this exact pair ---
+    promotions = (
+        db_session.execute(select(ModelPromotion).where(ModelPromotion.decided_by_job_id == job.id))
+        .scalars()
+        .all()
+    )
+    assert len(promotions) == 1
+    assert promotions[0].verdict == PromotionVerdict.RETAINED_INCONCLUSIVE
+    assert promotions[0].challenger_model_version_id == shadow_challenger_id
+
+    assert job.output_json["retraining_triggered"] is True
+    assert job.output_json["retraining_promotion_verdict"] == "retained_inconclusive"
+
+    # --- notable_findings_json/report_markdown fold in the retraining outcome ---
+    retraining_finding = next(f for f in report.notable_findings_json if f["type"] == "retraining_triggered")
+    assert retraining_finding["model_training_status"] == "succeeded"
+    assert retraining_finding["promotion_verdict"] == "retained_inconclusive"
+    assert "Retraining trigger" in report.report_markdown
+    assert str(training_job.id) in report.report_markdown
+
+
+def test_gameweek_review_retraining_failure_is_recorded_but_never_fails_the_review(
+    db_session, patched_fpl_client_optimization
+):
+    """A sustained MAE breach still triggers a MODEL_TRAINING attempt even when that nested training
+    run itself would fail (here: no player_features exist anywhere for the champion's own
+    feature_version, so MODEL_TRAINING refuses with NO_SEASONS_WITH_FEATURES) -- GAMEWEEK_REVIEW's
+    own primary work (outcome ingestion, failure attribution, the 4 signals) already succeeded by
+    this point, so the overall job result must still be SUCCEEDED, with the retraining failure
+    recorded on the report, never propagated as this run's own failure.
+    """
+    season_id = _seed_players(db_session)
+    season = db_session.get(Season, season_id)
+    rules_config_id = _seed_rules_config_id(db_session, season_id)
+    champion_id = _create_global_champion_model_version(
+        db_session, season.label, _BASELINE_MAE, feature_version=_NO_FEATURES_SENTINEL_FEATURE_VERSION
+    )
+
+    for fpl_event_id in _PRIOR_FPL_EVENT_IDS:
+        _seed_prior_degraded_gameweek(db_session, season_id, rules_config_id, fpl_event_id, champion_id)
+    audit = _seed_reviewed_gameweek(db_session, season_id, rules_config_id, champion_id)
+
+    job = execute_job(
+        db_session,
+        job_type=JobType.GAMEWEEK_REVIEW,
+        parameters={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID, "season_id": str(season_id)},
+        trigger_type=TriggerType.LOCAL,
+    )
+
+    # --- the review itself still reports SUCCEEDED overall ---
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    learning_report_id = uuid.UUID(job.output_json["learning_report_id"])
+    report = db_session.get(LearningReport, learning_report_id)
+    assert report is not None
+    assert report.run_status == GameweekReviewRunStatus.SUCCEEDED
+
+    mae_signal = db_session.execute(
+        select(LearningSignal).where(
+            LearningSignal.season_id == season_id,
+            LearningSignal.as_of_gameweek_id == audit.target_gameweek_id,
+            LearningSignal.signal_type == LearningSignalType.ROLLING_PROJECTION_MAE,
+        )
+    ).scalar_one()
+    assert mae_signal.threshold_breached is True
+
+    # --- the retraining ATTEMPT is recorded, and its own failure is visible, never masked ---
+    assert report.retraining_triggered is True
+    assert report.retraining_job_id is not None
+    training_job = db_session.get(Job, report.retraining_job_id)
+    assert training_job is not None
+    assert training_job.job_type == JobType.MODEL_TRAINING
+    assert training_job.status == JobStatus.FAILED
+    assert training_job.error_code == "NO_SEASONS_WITH_FEATURES"
+
+    retraining_finding = next(f for f in report.notable_findings_json if f["type"] == "retraining_triggered")
+    assert retraining_finding["model_training_status"] == "failed"
+    assert retraining_finding["error"] is not None
+    assert retraining_finding["promotion_verdict"] is None
+
+    # --- no promotion-gate check ever ran (training never succeeded, so no SHADOW_CHALLENGER exists) ---
+    promotions = (
+        db_session.execute(select(ModelPromotion).where(ModelPromotion.decided_by_job_id == job.id))
+        .scalars()
+        .all()
+    )
+    assert promotions == []
