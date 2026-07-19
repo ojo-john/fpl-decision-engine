@@ -18,6 +18,17 @@ Two entry points, both PURE:
   Markdown summary -- gameweek reviewed, what was recommended and with what
   confidence, what actually happened, the counterfactual highlights, the
   failure attributions, and the learning signals with their breach status.
+
+Milestone 7 Layer 6 (Recursive Learning Loop: BACKTEST job + the
+GAMEWEEK_REVIEW -> MODEL_TRAINING retraining-trigger wiring) adds
+``RetrainingTriggerSummary`` below, and folds it into both entry points
+additively: ``compose_notable_findings`` gets an optional third
+``retraining`` parameter (default ``None`` -- every pre-existing call site
+keeps working unchanged) that appends one more mechanically-derived
+``"retraining_triggered"`` finding whenever a retraining attempt actually
+happened this run, and ``render_gameweek_review_report_markdown`` gets a new
+"Retraining trigger" section. See ``app.jobs.handlers.gameweek_review``'s own
+module docstring for exactly when this fires.
 """
 
 from dataclasses import dataclass
@@ -85,15 +96,42 @@ class OutcomeSummary:
     recommendation_net_gain: float | None
 
 
+@dataclass(frozen=True)
+class RetrainingTriggerSummary:
+    """What happened, if anything, when this run's own ``ROLLING_PROJECTION_MAE`` learning signal
+    came back with ``threshold_breached=True`` (Milestone 7 Layer 6).
+
+    ``triggered=False`` for the overwhelmingly common case (no breach this
+    run) -- every other field is ``None`` in that case. When ``triggered`` is
+    ``True``, ``model_training_status``/``error`` describe whether the
+    triggered ``MODEL_TRAINING`` job itself succeeded (a training-side
+    failure is recorded here, never propagated as this GAMEWEEK_REVIEW run's
+    own failure -- see ``app.jobs.handlers.gameweek_review``'s own module
+    docstring), and ``promotion_verdict`` is populated only when training
+    succeeded AND a shadow challenger/champion pair existed to run
+    ``app.modeling.promotion.evaluate_promotion`` against.
+    """
+
+    triggered: bool
+    model_training_job_id: str | None = None
+    model_training_status: str | None = None
+    shadow_challenger_model_version_id: str | None = None
+    promotion_verdict: str | None = None
+    promotion_id: str | None = None
+    error: str | None = None
+
+
 def compose_notable_findings(
     failure_attributions: list[FailureAttributionSummary],
     learning_signals: list[LearningSignalSummary],
+    retraining: RetrainingTriggerSummary | None = None,
 ) -> list[dict[str, Any]]:
     """A bounded, mechanically-derived list of what's worth surfacing from this run.
 
     Never free-text-generated -- every entry is a direct, structured read of
-    already-computed data. See module docstring for the exact two inclusion
-    rules.
+    already-computed data. See module docstring for the exact inclusion
+    rules -- a ``retraining_triggered`` entry is appended only when
+    ``retraining`` is given AND ``retraining.triggered`` is ``True``.
     """
     findings: list[dict[str, Any]] = []
     for attribution in failure_attributions:
@@ -118,6 +156,17 @@ def compose_notable_findings(
                 "value": signal.value,
                 "sample_count": signal.sample_count,
                 "window_size_gameweeks": signal.window_size_gameweeks,
+            }
+        )
+    if retraining is not None and retraining.triggered:
+        findings.append(
+            {
+                "type": "retraining_triggered",
+                "model_training_job_id": retraining.model_training_job_id,
+                "model_training_status": retraining.model_training_status,
+                "shadow_challenger_model_version_id": retraining.shadow_challenger_model_version_id,
+                "promotion_verdict": retraining.promotion_verdict,
+                "error": retraining.error,
             }
         )
     return findings
@@ -228,11 +277,33 @@ def _notable_findings_section(findings: list[dict[str, Any]]) -> str:
                 f"- **Material failure**: {finding['reason_code']} ({finding['category']}), "
                 f"severity={finding['severity']}, evidence={finding['evidence']}"
             )
-        else:
+        elif finding["type"] == "signal_breached":
             lines.append(
                 f"- **Signal breached**: {finding['signal_type']} = {finding['value']} "
                 f"(sample_count={finding['sample_count']})"
             )
+        else:  # "retraining_triggered"
+            lines.append(
+                f"- **Retraining triggered**: model_training_job_id={finding['model_training_job_id']}, "
+                f"status={finding['model_training_status']}, "
+                f"promotion_verdict={finding['promotion_verdict']}, error={finding['error']}"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _retraining_trigger_section(retraining: RetrainingTriggerSummary | None) -> str:
+    if retraining is None or not retraining.triggered:
+        return "_No retraining triggered this gameweek._\n"
+    lines = [
+        "| Field | Value |",
+        "| --- | --- |",
+        f"| model_training_job_id | {retraining.model_training_job_id} |",
+        f"| model_training_status | {retraining.model_training_status} |",
+        f"| shadow_challenger_model_version_id | {retraining.shadow_challenger_model_version_id} |",
+        f"| promotion_verdict | {retraining.promotion_verdict} |",
+        f"| promotion_id | {retraining.promotion_id} |",
+        f"| error | {retraining.error} |",
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -248,6 +319,7 @@ def render_gameweek_review_report_markdown(
     failure_attributions: list[FailureAttributionSummary],
     learning_signals: list[LearningSignalSummary],
     notable_findings: list[dict[str, Any]],
+    retraining: RetrainingTriggerSummary | None = None,
 ) -> str:
     """Render the full Markdown report for one GAMEWEEK_REVIEW run."""
     sections = [
@@ -274,5 +346,8 @@ def render_gameweek_review_report_markdown(
         "## Learning signals",
         "",
         _learning_signals_table(learning_signals),
+        "## Retraining trigger",
+        "",
+        _retraining_trigger_section(retraining),
     ]
     return "\n".join(sections)

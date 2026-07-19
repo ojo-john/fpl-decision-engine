@@ -74,17 +74,52 @@ computed retroactively here rather than during live optimization. This job
 does NOT itself decide whether to promote/reject/roll back -- that is
 ``app.modeling.promotion``'s job, invoked separately (Milestone 7 Layer 6's
 concern to wire into an automatic trigger; not done by this handler).
+
+Milestone 7 Layer 6 (Recursive Learning Loop: BACKTEST job + the
+GAMEWEEK_REVIEW -> MODEL_TRAINING retraining-trigger wiring) adds the final
+step this module docstring promised: after the 4 rolling learning signals
+above are persisted, if THIS run's own ``ROLLING_PROJECTION_MAE`` signal came
+back with ``threshold_breached=True`` (a genuine, sustained degradation
+pattern -- see ``app.learning.signals``' own module docstring for the exact
+sustained-window semantics), a ``MODEL_TRAINING`` job is triggered via
+``app.jobs.service.execute_job`` -- the first place in this codebase one job
+programmatically triggers another. If that training run succeeds and leaves
+a ``SHADOW_CHALLENGER`` in place against the current champion, a promotion-
+gate check (``app.modeling.promotion.evaluate_promotion``/
+``decide_and_record_promotion``) runs immediately too -- a challenger trained
+THIS SAME run has zero shadow-evaluation history yet, so this will always
+come back ``RETAINED_INCONCLUSIVE`` in practice (nothing special-cased for
+that; the gate function is simply called and whatever it decides is
+recorded). ``ROLLING_CHIP_RECOMMENDATION_VALUE``'s own ``threshold_breached``
+is NEVER consulted here -- that signal is permanently informational-only per
+its own module docstring.
+
+Failure-isolation boundary: this entire retraining-trigger step is wrapped so
+that ANY failure inside it (the nested ``MODEL_TRAINING`` job itself failing,
+or the promotion-gate check raising) is caught and folded into
+``app.learning.report.RetrainingTriggerSummary.error`` instead of ever
+reaching this handler's own top-level exception handler -- GAMEWEEK_REVIEW's
+own primary work (outcome ingestion, failure attribution, the 4 signals) has
+ALREADY fully succeeded by the time this step runs, and a downstream
+retraining attempt failing is a completely different, non-fatal event that
+must never flip this run's own ``learning_reports.run_status`` to ``FAILED``.
+See ``GameweekReviewJobRunner._trigger_retraining_and_promotion_check``'s own
+docstring for exactly how this is implemented, including why the nested
+``MODEL_TRAINING`` job runs on a DEDICATED session while the promotion-gate
+check reuses this handler's own.
 """
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.features.service import FEATURE_VERSION
 from app.jobs.registry import register_handler
 from app.jobs.runner import JobContext, JobResult, JobRunner
+from app.jobs.service import execute_job
 from app.learning.attribution import attribute_failures_for_outcome
 from app.learning.outcome_ingestion import ingest_outcome_for_audit
 from app.learning.report import (
@@ -93,6 +128,7 @@ from app.learning.report import (
     LearningSignalSummary,
     OutcomeSummary,
     RecommendationSummary,
+    RetrainingTriggerSummary,
     compose_notable_findings,
     render_gameweek_review_report_markdown,
 )
@@ -103,19 +139,21 @@ from app.learning.signals import (
     compute_rolling_projection_mae,
     persist_learning_signal,
 )
+from app.modeling.promotion import decide_and_record_promotion, evaluate_promotion
 from app.modeling.shadow_evaluation import compute_shadow_challenger_evaluation
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.counterfactual_result import CounterfactualResult
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.h2h_simulation_run import H2HSimulationRun
 from packages.database.models.learning_report import LearningReport
+from packages.database.models.model_version import ModelVersion
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.recommendation_audit import RecommendationAudit
 from packages.database.models.season import Season
 from packages.database.models.transfer_optimization_run import TransferOptimizationRun
 from packages.database.session import SessionLocal
-from packages.domain.jobs import JobStatus, JobType
-from packages.domain.learning import GameweekReviewRunStatus
+from packages.domain.jobs import JobStatus, JobType, TriggerType
+from packages.domain.learning import GameweekReviewRunStatus, LearningSignalType, ModelLifecycleState
 
 
 class _InputResolutionError(Exception):
@@ -198,6 +236,24 @@ def _resolve_inputs(session: Session, parameters: dict | None) -> _ResolvedInput
         )
 
     return _ResolvedInputs(season_id=season_id, gameweek=gameweek, audit=audit)
+
+
+def _find_projection_mae_signal(
+    signal_summaries: list[LearningSignalSummary],
+) -> LearningSignalSummary | None:
+    """Pure lookup -- the one ``LearningSignalSummary`` (if any) for
+    ``LearningSignalType.ROLLING_PROJECTION_MAE`` among this run's own 4 just-computed signals.
+
+    The actual retraining-trigger DECISION is just reading that signal's own
+    ``threshold_breached`` boolean directly (see module docstring) -- there is
+    no further decision logic to factor out beyond this lookup, which is why
+    this is the one piece of Layer 6 logic broken out as a small, directly
+    unit-testable pure function.
+    """
+    return next(
+        (s for s in signal_summaries if s.signal_type == LearningSignalType.ROLLING_PROJECTION_MAE.value),
+        None,
+    )
 
 
 # --- "What was recommended" summary -- deliberately duplicated (not imported) from
@@ -337,7 +393,21 @@ class GameweekReviewJobRunner(JobRunner):
                     for result in counterfactual_results
                 ]
 
-                notable_findings = compose_notable_findings(failure_summaries, signal_summaries)
+                # --- Layer 6: retraining-trigger wiring -- reacts ONLY to ROLLING_PROJECTION_MAE's
+                # own threshold_breached (never ROLLING_CHIP_RECOMMENDATION_VALUE's, which is
+                # permanently informational-only). See module docstring for the full failure-
+                # isolation boundary _trigger_retraining_and_promotion_check itself enforces.
+                mae_signal_summary = _find_projection_mae_signal(signal_summaries)
+                retraining_summary = RetrainingTriggerSummary(triggered=False)
+                retraining_job_id: uuid.UUID | None = None
+                if mae_signal_summary is not None and mae_signal_summary.threshold_breached:
+                    retraining_job_id, retraining_summary = self._trigger_retraining_and_promotion_check(
+                        session, ctx
+                    )
+
+                notable_findings = compose_notable_findings(
+                    failure_summaries, signal_summaries, retraining_summary
+                )
                 recommendation_summary = _build_recommendation_summary(session, audit)
                 outcome_summary = OutcomeSummary(
                     actual_xi_points=outcome.actual_xi_points,
@@ -365,6 +435,7 @@ class GameweekReviewJobRunner(JobRunner):
                     failure_attributions=failure_summaries,
                     learning_signals=signal_summaries,
                     notable_findings=notable_findings,
+                    retraining=retraining_summary,
                 )
 
                 learning_signals_computed = {
@@ -397,6 +468,9 @@ class GameweekReviewJobRunner(JobRunner):
                         if shadow_evaluation is not None
                         else None
                     ),
+                    "retraining_triggered": retraining_summary.triggered,
+                    "retraining_job_id": retraining_summary.model_training_job_id,
+                    "retraining_promotion_verdict": retraining_summary.promotion_verdict,
                 }
 
                 report_row.recommendation_outcome_id = outcome.id
@@ -405,6 +479,8 @@ class GameweekReviewJobRunner(JobRunner):
                 report_row.report_markdown = report_markdown
                 report_row.summary_json = summary
                 report_row.notable_findings_json = notable_findings
+                report_row.retraining_triggered = retraining_summary.triggered
+                report_row.retraining_job_id = retraining_job_id
                 report_row.run_status = GameweekReviewRunStatus.SUCCEEDED
                 report_row.completed_at = completed_at
                 session.commit()
@@ -420,6 +496,11 @@ class GameweekReviewJobRunner(JobRunner):
                         "shadow_challenger_evaluation_id": (
                             str(shadow_evaluation.id) if shadow_evaluation is not None else None
                         ),
+                        "retraining_triggered": retraining_summary.triggered,
+                        "retraining_job_id": (
+                            str(retraining_job_id) if retraining_job_id is not None else None
+                        ),
+                        "retraining_promotion_verdict": retraining_summary.promotion_verdict,
                     },
                     error_code=None,
                     error_message=None,
@@ -447,3 +528,115 @@ class GameweekReviewJobRunner(JobRunner):
                 session.commit()
         except Exception:  # noqa: BLE001 - best-effort finalization only
             session.rollback()
+
+    @staticmethod
+    def _resolve_feature_version_for_retraining(session: Session) -> int:
+        """The current champion's own ``feature_version`` -- the most sensible "same features this
+        system is currently live on" default for a reactive retrain.
+
+        Falls back to ``app.features.service.FEATURE_VERSION`` (mirrors
+        ``MODEL_TRAINING``'s own default -- see that handler's own module
+        docstring) only in the defensive case no champion currently exists.
+        That case should not actually be reachable here in practice: this is
+        only ever called after ``ROLLING_PROJECTION_MAE.threshold_breached``
+        came back ``True``, and that computation itself requires a champion's
+        own baseline aggregate MAE to ever produce a breach in the first
+        place (see ``app.learning.signals.compute_rolling_projection_mae``) --
+        but this stays a graceful fallback rather than an assumption, per this
+        codebase's own "never crash confusingly on a defensive edge case"
+        convention.
+        """
+        feature_version = session.execute(
+            select(ModelVersion.feature_version).where(ModelVersion.is_champion.is_(True))
+        ).scalar_one_or_none()
+        return feature_version if feature_version is not None else FEATURE_VERSION
+
+    def _trigger_retraining_and_promotion_check(
+        self, session: Session, ctx: JobContext
+    ) -> tuple[uuid.UUID | None, RetrainingTriggerSummary]:
+        """Trigger a ``MODEL_TRAINING`` run and, if it leaves a fresh ``SHADOW_CHALLENGER`` in place,
+        immediately run a promotion-gate check against the current champion.
+
+        NEVER raises -- every failure mode here (feature-version resolution,
+        the nested ``MODEL_TRAINING`` job itself, the promotion-gate check) is
+        caught and folded into the returned ``RetrainingTriggerSummary.error``
+        instead, so a retraining-trigger failure can never fail
+        GAMEWEEK_REVIEW's own primary success. This is the concrete failure-
+        isolation boundary the module docstring promises -- the caller (
+        ``run``) still keeps its own top-level ``except Exception`` as defense
+        in depth, but should never actually need it because of this.
+
+        ``MODEL_TRAINING`` is executed via ``execute_job`` on a DEDICATED,
+        fresh ``SessionLocal()`` -- never this handler's own ``session``.
+        ``execute_job`` commits the ``jobs`` bookkeeping row on whatever
+        session it is given, and ``MODEL_TRAINING``'s own handler opens its
+        OWN session internally regardless (it never reads ``ctx`` for a
+        session at all -- see that handler), so reusing this handler's own
+        session here would only couple two otherwise-unrelated transactions
+        for no benefit, and risks prematurely committing this handler's own
+        not-yet-finalized ``report_row`` state. ``evaluate_promotion``/
+        ``decide_and_record_promotion``, in contrast, are plain functions (not
+        a nested job execution) -- this handler's own Layer 5 step
+        (``compute_shadow_challenger_evaluation``, a few lines above in
+        ``run``) already calls a function shaped exactly like this against
+        this SAME ``session``, so reusing it here again is simply consistent
+        with that established precedent.
+        """
+        training_job_id: uuid.UUID | None = None
+        try:
+            feature_version = self._resolve_feature_version_for_retraining(session)
+
+            training_session = SessionLocal()
+            try:
+                training_job = execute_job(
+                    training_session,
+                    job_type=JobType.MODEL_TRAINING,
+                    parameters={"feature_version": feature_version},
+                    requested_by="gameweek_review:retraining_trigger",
+                    trigger_type=TriggerType.LOCAL,
+                )
+            finally:
+                training_session.close()
+            training_job_id = training_job.id
+
+            summary = RetrainingTriggerSummary(
+                triggered=True,
+                model_training_job_id=str(training_job.id),
+                model_training_status=training_job.status.value,
+            )
+            if training_job.status != JobStatus.SUCCEEDED:
+                return training_job_id, replace(summary, error=training_job.error_message)
+
+            # A SHADOW_CHALLENGER should exist now (this run's own winner, per
+            # app.jobs.handlers.model_training's own non-bootstrap branch) -- resolved by most
+            # recent trained_at, mirroring app.optimization.champion_loader.load_shadow_challenger's
+            # own precedent for this same "should be unique but not DB-enforced" lookup.
+            shadow = session.execute(
+                select(ModelVersion)
+                .where(ModelVersion.lifecycle_state == ModelLifecycleState.SHADOW_CHALLENGER)
+                .order_by(ModelVersion.trained_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            champion = session.execute(
+                select(ModelVersion).where(ModelVersion.is_champion.is_(True))
+            ).scalar_one_or_none()
+            if shadow is None or champion is None:
+                return training_job_id, summary
+
+            gate_result = evaluate_promotion(session, shadow.id, champion.id)
+            promotion = decide_and_record_promotion(
+                session, gate_result, shadow.id, decided_by_job_id=uuid.UUID(ctx.job_id)
+            )
+            return training_job_id, replace(
+                summary,
+                shadow_challenger_model_version_id=str(shadow.id),
+                promotion_verdict=promotion.verdict.value,
+                promotion_id=str(promotion.id),
+            )
+        except Exception as exc:  # noqa: BLE001 - see this method's own docstring: never propagates
+            session.rollback()
+            return training_job_id, RetrainingTriggerSummary(
+                triggered=True,
+                model_training_job_id=(str(training_job_id) if training_job_id is not None else None),
+                error=str(exc),
+            )
