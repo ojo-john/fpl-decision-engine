@@ -6,6 +6,7 @@ tables on ``Base.metadata`` — future milestones adding a model only need to
 update this file, not also remember to touch ``env.py``.
 """
 
+from packages.database.models.backtest_run import BacktestRun
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.chip_recommendation import ChipRecommendation
 from packages.database.models.chip_window_candidate import ChipWindowCandidate
@@ -49,6 +50,7 @@ from packages.database.models.transfer_optimization_run_move import TransferOpti
 from packages.database.models.transfer_optimization_run_scenario import TransferOptimizationRunScenario
 
 __all__ = [
+    "BacktestRun",
     "ChipOptimizationRun",
     "ChipRecommendation",
     "ChipWindowCandidate",

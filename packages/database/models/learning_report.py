@@ -49,11 +49,31 @@ run computed. See ``app.learning.report.compose_notable_findings`` for the
 exact, pure composition logic (Section 31's "notify only on material
 findings" principle -- an all-sound, no-breach review yields an EMPTY list
 here, not a manufactured "nothing to report" entry).
+
+Milestone 7 Layer 6 (Recursive Learning Loop: BACKTEST job + the
+GAMEWEEK_REVIEW -> MODEL_TRAINING retraining-trigger wiring) adds
+``retraining_triggered``/``retraining_job_id`` below. Once this run's own
+``ROLLING_PROJECTION_MAE`` learning signal comes back with
+``threshold_breached=True``, ``app.jobs.handlers.gameweek_review`` triggers a
+``MODEL_TRAINING`` job and records the outcome here --
+``retraining_triggered=True`` and ``retraining_job_id`` pointing at that
+``jobs`` row. Both stay ``NULL`` for the overwhelmingly common case (no
+breach this run) and also for any row that never reached this final step
+(e.g. a ``FAILED`` row from an earlier failure) -- same "``NULL`` until this
+step actually runs" convention already used by
+``recommendation_outcome_id``/``failure_attribution_count`` above.
+``retraining_triggered=True`` does NOT imply the triggered training (or any
+downstream promotion-gate check) succeeded -- see
+``summary_json``/``notable_findings_json``/``report_markdown`` for the full
+outcome (this job's own retraining-trigger step is explicitly failure-
+isolated from GAMEWEEK_REVIEW's own primary success; a training failure is
+recorded, never propagated as this row's own ``FAILED`` status).
 """
 
 import uuid
 from datetime import datetime
 
+from sqlalchemy import Boolean as SABoolean
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
@@ -93,6 +113,8 @@ class LearningReport(Base):
     report_markdown: Mapped[str | None] = mapped_column(Text)
     summary_json: Mapped[dict | None] = mapped_column(JSONB)
     notable_findings_json: Mapped[list | None] = mapped_column(JSONB)
+    retraining_triggered: Mapped[bool | None] = mapped_column(SABoolean)
+    retraining_job_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("jobs.id"))
     error_code: Mapped[str | None] = mapped_column(String(100))
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

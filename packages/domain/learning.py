@@ -35,6 +35,19 @@ Milestone 7 Layer 5 (Recursive Learning Loop: Challenger Training/Shadow-Mode
 Evaluation/Promotion Gates/Rollback) adds ``ModelLifecycleState``/
 ``PromotionVerdict`` below -- see ``app.modeling.promotion`` and
 ``app.jobs.handlers.model_training`` for the full lifecycle this drives.
+
+Milestone 7 Layer 6 (Recursive Learning Loop: BACKTEST job + the
+GAMEWEEK_REVIEW -> MODEL_TRAINING retraining-trigger wiring) adds
+``BacktestRunStatus`` below -- see ``app.jobs.handlers.backtest`` for the full
+job this tracks. Unlike ``GameweekReviewRunStatus`` (all 3 members genuinely
+persisted, since GAMEWEEK_REVIEW is a multi-step orchestrator using the
+create-early-RUNNING-row discipline), ``BacktestRunStatus`` mirrors
+``RecommendationGenerationRunStatus``'s own precedent instead: BACKTEST is
+pure computation (fold building + scoring already-persisted, read-only data)
+with a single, atomic "build fully in memory, insert once" persistence step
+at the end, so only ``SUCCEEDED`` is ever actually written to
+``backtest_runs.run_status`` -- ``RUNNING``/``FAILED`` exist here purely for
+3-state shape symmetry with every other ``*RunStatus`` enum, never persisted.
 """
 
 from enum import Enum
@@ -261,3 +274,16 @@ class PromotionVerdict(str, Enum):
     REJECTED = "rejected"
     RETAINED_INCONCLUSIVE = "retained_inconclusive"  # not enough evidence yet -- stays SHADOW_CHALLENGER
     ROLLED_BACK = "rolled_back"
+
+
+class BacktestRunStatus(str, Enum):
+    """Lifecycle status of a BACKTEST job run (Milestone 7 Layer 6).
+
+    See ``app.jobs.handlers.backtest`` and this enum's own module-docstring
+    paragraph for why, unlike ``GameweekReviewRunStatus``, only ``SUCCEEDED``
+    is ever actually persisted to ``backtest_runs.run_status``.
+    """
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
