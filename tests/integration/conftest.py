@@ -13,7 +13,7 @@ import copy
 import csv
 import itertools
 import json
-import time
+import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -57,12 +57,22 @@ def db_session(require_database):
 
 FPL_API_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "fpl_api"
 
-# Seeded from wall-clock time (not a fixed constant) so re-running the suite
-# against the same persistent, non-ephemeral local Postgres across separate
-# process invocations doesn't collide with a season label left over from a
-# previous run — each pytest session gets its own practically-unique block of
-# synthetic season years.
-_season_year_counter = itertools.count(2100 + (int(time.time()) % 5000))
+# Seeded from a cryptographically random starting point (NOT wall-clock time) so re-running the
+# suite against the same persistent, non-ephemeral local Postgres across separate process
+# invocations doesn't collide with a season label left over from a previous run. Wall-clock time
+# was tried first and found NOT sufficient in practice: two separate `pytest` invocations run
+# minutes (or even seconds) apart start with near-identical `time.time()` values, so their two
+# `_season_year_counter` sequences end up almost perfectly overlapping — exactly the scenario
+# Milestone 7 Layer 6's own validation protocol (run the full integration suite TWICE against the
+# same volume) surfaced as a real, reproducible collision (e.g.
+# ``test_data_ingestion_job.py::test_data_ingestion_row_counts_and_quarantine`` picking up a stray
+# 60-player pool from an unrelated, earlier-run optimization test that happened to land on the same
+# synthetic season year). `secrets.randbelow` draws independently on every process start, so two
+# separate invocations' own consumed ranges only overlap by pure chance, not by wall-clock
+# correlation — each pytest session gets a genuinely, not just "practically", unique block of
+# synthetic season years. Range kept at 2100-9999 (all valid 4-digit years, safely parseable in the
+# ISO ``deadline_time`` strings this feeds into).
+_season_year_counter = itertools.count(2100 + secrets.randbelow(7899))
 
 
 def load_bootstrap_json() -> dict:

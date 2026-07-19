@@ -15,15 +15,32 @@ test/module run may already have flagged a champion by the time this file's
 "no champion" test runs -- it explicitly clears ``is_champion`` first rather
 than assuming a pristine DB, to deterministically exercise the "no champion
 has ever been selected" path.
+
+The "mirror the real pipeline" ``FEATURE_GENERATION`` call in
+``test_squad_optimization_uses_champion_projection_when_present`` below
+deletes its own ``player_features`` rows immediately after confirming the
+run itself succeeded (its own output is never otherwise read by this test) --
+without that cleanup, those rows leak into ``app.modeling.walk_forward
+.usable_season_labels_with_features``, a GLOBAL (not season-scoped) lookup
+``MODEL_TRAINING``/``BACKTEST`` both rely on to mean "exactly the
+intentionally-seeded historical season(s)" -- a real cross-test-pollution bug
+surfaced by running the full integration suite TWICE against the same,
+non-truncated Postgres (Milestone 7 Layer 6's own validation protocol; see
+``tests/integration/test_model_training_job.py``'s and
+``tests/integration/test_backtest_job.py``'s own single-usable-season
+assertions, both of which this pollution would otherwise break on a second
+run).
 """
 
 import uuid
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from app.jobs.service import execute_job
 from packages.database.models.model_version import ModelVersion
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
+from packages.database.models.player_features import PlayerFeatures
+from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.optimization import TargetGameweekStatus
 
@@ -84,6 +101,14 @@ def test_squad_optimization_uses_champion_projection_when_present(
         trigger_type=TriggerType.LOCAL,
     )
     assert features_job.status == JobStatus.SUCCEEDED
+
+    # Delete this call's own player_features rows immediately -- its own output is never otherwise
+    # read by this test, and left in place they leak into every OTHER test's own GLOBAL
+    # usable_season_labels_with_features query (see this module's own docstring for the real
+    # cross-test-pollution bug this prevents).
+    season_id = db_session.execute(select(Season.id).where(Season.label == season_label)).scalar_one()
+    db_session.execute(delete(PlayerFeatures).where(PlayerFeatures.season_id == season_id))
+    db_session.commit()
 
     squad_job = execute_job(db_session, job_type=JobType.SQUAD_OPTIMIZATION, trigger_type=TriggerType.LOCAL)
     assert squad_job.status == JobStatus.SUCCEEDED

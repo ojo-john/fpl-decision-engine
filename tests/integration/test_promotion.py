@@ -19,6 +19,20 @@ BEFORE running and a module-scoped autouse fixture clears it again AFTER
 every test, regardless of pass/fail/order, so a stray row from this module
 never leaks into another test module running later in the same session (or
 into a second full run of the suite against the same volume).
+
+The two ``compute_shadow_challenger_evaluation`` tests that hand-build real
+``PlayerFeatures`` rows (via ``_seed_player_features``) against a
+``_seed_players``-created "current" season delete those rows again at the end
+of each test, for the exact same reason: left in place, they leak into
+``app.modeling.walk_forward.usable_season_labels_with_features`` -- a GLOBAL
+(not season-scoped) lookup ``MODEL_TRAINING``/``BACKTEST`` both rely on to
+mean "exactly the intentionally-seeded historical season(s)". This is a real
+cross-test-pollution bug, surfaced by running the full integration suite
+TWICE against the same, non-truncated Postgres (Milestone 7 Layer 6's own
+validation protocol) -- see ``tests/integration/test_model_training_job.py``'s
+and ``tests/integration/test_backtest_job.py``'s own single-usable-season
+assertions, both of which this pollution would otherwise break on a second
+run.
 """
 
 import uuid
@@ -26,7 +40,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from app.jobs.service import execute_job
 from app.modeling.promotion import decide_and_record_promotion as _decide_and_record_promotion
@@ -432,6 +446,11 @@ def test_compute_shadow_challenger_evaluation_computes_real_paired_mae(
     )
     assert len(rows) == 1
 
+    # See this module's own docstring: this test's own hand-built PlayerFeatures rows must not
+    # leak into app.modeling.walk_forward.usable_season_labels_with_features's GLOBAL lookup.
+    db_session.execute(delete(PlayerFeatures).where(PlayerFeatures.season_id == season_id))
+    db_session.commit()
+
 
 def test_compute_shadow_challenger_evaluation_rerun_upserts_in_place(
     db_session, patched_fpl_client_optimization
@@ -491,6 +510,11 @@ def test_compute_shadow_challenger_evaluation_rerun_upserts_in_place(
         .all()
     )
     assert len(rows) == 1
+
+    # See this module's own docstring: this test's own hand-built PlayerFeatures rows must not
+    # leak into app.modeling.walk_forward.usable_season_labels_with_features's GLOBAL lookup.
+    db_session.execute(delete(PlayerFeatures).where(PlayerFeatures.season_id == season_id))
+    db_session.commit()
 
 
 def test_compute_shadow_challenger_evaluation_returns_none_when_no_shadow_challenger(
