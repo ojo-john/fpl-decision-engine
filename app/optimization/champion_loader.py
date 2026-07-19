@@ -27,6 +27,15 @@ from that same run might score only marginally worse historically. So in
 that one case, this module substitutes the best-aggregate-MAE sibling from
 the SAME training run whose family isn't live-incapable, and loads that
 instead — falling back to ``None`` only if no such sibling exists.
+
+Milestone 7 Layer 5 (Recursive Learning Loop: Challenger Training/Shadow-Mode
+Evaluation/Promotion Gates/Rollback) adds ``load_shadow_challenger`` below,
+purely additively — ``load_current_champion`` itself is completely
+unchanged, still queries ``is_champion IS TRUE`` and nothing else, and every
+existing caller/test keeps working verbatim. See ``load_shadow_challenger``'s
+own docstring for how it differs from ``load_current_champion`` (no
+live-incapable substitution — shadow evaluation is always retroactive, never
+live).
 """
 
 import logging
@@ -41,11 +50,12 @@ from sqlalchemy.orm import Session
 
 from packages.database.models.model_metric import ModelMetric
 from packages.database.models.model_version import ModelVersion
+from packages.domain.learning import ModelLifecycleState
 from packages.domain.modeling import LIVE_INCAPABLE_MODEL_FAMILIES, ModelFamily
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["LoadedChampion", "load_current_champion"]
+__all__ = ["LoadedChampion", "load_current_champion", "load_shadow_challenger"]
 
 
 @dataclass(frozen=True)
@@ -115,6 +125,69 @@ def load_current_champion(session: Session) -> LoadedChampion | None:
         logger.warning(
             "Champion model_version_id=%s (family=%s) artifact at %r failed to load; "
             "optimization will fall back to the non-ML projection formula for this run.",
+            version.id,
+            version.model_family.value,
+            version.artifact_uri,
+            exc_info=True,
+        )
+        return None
+
+    return LoadedChampion(
+        model_version_id=version.id,
+        model_family=version.model_family,
+        feature_version=version.feature_version,
+        sklearn_model=sklearn_model,
+    )
+
+
+def load_shadow_challenger(session: Session) -> LoadedChampion | None:
+    """Load the current shadow challenger ``model_versions`` row, if any exists (Milestone 7 Layer 5).
+
+    Mirrors ``load_current_champion``'s own loading mechanics (same
+    ``LoadedChampion`` shape, same graceful-degrade-to-``None`` discipline for
+    a missing/corrupt artifact) but queries ``lifecycle_state ==
+    SHADOW_CHALLENGER`` instead of ``is_champion IS TRUE``. If more than one
+    row is somehow flagged ``SHADOW_CHALLENGER`` at once (e.g. ``MODEL_TRAINING``
+    ran again before the previous challenger's promotion gate was decided),
+    the most recently trained one wins — mirrors
+    ``app.jobs.handlers.recommendation_generation._current_champion_model_version_id``'s
+    own "most recent by ``trained_at``" precedent for resolving a
+    should-be-unique-but-not-DB-enforced flag.
+
+    Deliberately does NOT apply ``LIVE_INCAPABLE_MODEL_FAMILIES`` substitution
+    the way ``load_current_champion`` does: that substitution exists because a
+    LIVE optimizer run needs a prediction for a player who hasn't played yet,
+    and ``BASELINE_RULES_EP_NEXT`` structurally cannot produce one in that
+    context. Shadow-challenger evaluation is the opposite situation — it is
+    always computed RETROACTIVELY, against an already-finished gameweek whose
+    real ``player_gameweek_stats``/``player_features`` rows already exist (see
+    ``app.modeling.shadow_evaluation``), so ``BASELINE_RULES_EP_NEXT`` is
+    perfectly usable there and must not be silently swapped out.
+    """
+    version = session.execute(
+        select(ModelVersion)
+        .where(ModelVersion.lifecycle_state == ModelLifecycleState.SHADOW_CHALLENGER)
+        .order_by(ModelVersion.trained_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if version is None:
+        return None
+
+    if version.artifact_uri is None:
+        # Baseline family: pure lookup/formula, nothing to deserialize.
+        return LoadedChampion(
+            model_version_id=version.id,
+            model_family=version.model_family,
+            feature_version=version.feature_version,
+            sklearn_model=None,
+        )
+
+    try:
+        sklearn_model = joblib.load(Path(version.artifact_uri))
+    except Exception:  # noqa: BLE001 - shadow-challenger loading must never raise into a caller
+        logger.warning(
+            "Shadow challenger model_version_id=%s (family=%s) artifact at %r failed to load; "
+            "no shadow evaluation will be produced this run.",
             version.id,
             version.model_family.value,
             version.artifact_uri,
