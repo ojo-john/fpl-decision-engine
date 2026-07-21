@@ -95,7 +95,11 @@ def test_rival_profiles_created_for_every_non_excluded_rival_with_sane_values(
     assert profile_b.unknowns_json  # non-empty
     assert profile_b.evidence_json["history_available"] is True
     assert profile_b.evidence_json["history_current_row_count"] == 5
-    assert profile_b.derived_likely_remaining_chips_json == ["freehit", "bboost", "3xc"]
+    # history.json's one wildcard play is at event 2, which only matches
+    # wildcard's FIRST window (2-19 in the bootstrap-static sample) -- its
+    # second window (20-38) is still open (the fixture's last finished event
+    # is 38, not past it), so wildcard must still be reported as remaining.
+    assert profile_b.derived_likely_remaining_chips_json == ["wildcard", "freehit", "bboost", "3xc"]
     for probability_field in (
         profile_b.predicted_no_transfer_probability,
         profile_b.predicted_one_transfer_probability,

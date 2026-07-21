@@ -2,16 +2,17 @@
 
 No I/O here -- same "transform already-fetched/already-queried data" style
 as ``app.chips.windows``. This is the user-side equivalent of
-``app.h2h.rival_state._derive_remaining_chips``, but deliberately MORE
-precise: a rival's chip-play history is only ever a name-level,
-deduplicated best guess (that function's own docstring is explicit that an
-empty rival history means "assume nothing played yet", the safest
-non-overclaiming answer), whereas the user's own
+``app.h2h.rival_state._derive_remaining_chips`` -- both are window-aware
+(match an observed play's ``event`` to the specific window it falls in,
+rather than treating a chip name as fully spent the moment either window is
+used) -- but this module is still deliberately MORE precise: the user's own
 ``ManagerSquadSnapshot.chips_used_json``/``active_chip`` are authoritative,
-exact records of what the user themselves actually did -- so this module
-classifies each individual scheduling WINDOW (not just each chip name) as
-used/available/expired/active, which a rival-side equivalent could never
-honestly claim.
+exact records of what the user themselves actually did, whereas a rival's
+chip-play history (``history_chip_rows``) is a best-effort read of FPL's
+public ``/history/`` endpoint with no equivalent of ``active_chip`` -- so
+only this module can honestly classify a window as ``ACTIVE_THIS_GAMEWEEK``;
+a rival-side equivalent can only ever report ``used``/``available`` (folded
+into "remaining", not "expired_unused" as a separate state) for that reason.
 """
 
 from dataclasses import dataclass

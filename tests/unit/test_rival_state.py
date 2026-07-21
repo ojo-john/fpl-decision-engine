@@ -9,6 +9,7 @@ Layer 2 plan (never-took-a-hit, all-chips-played).
 
 from decimal import Decimal
 
+from app.chips.windows import ChipWindow, resolve_chip_windows
 from app.h2h.rival_state import (
     CaptainObservation,
     RivalStateInputs,
@@ -19,17 +20,33 @@ from app.transfers.free_transfers import derive_free_transfers_available
 from packages.domain.h2h import RivalStateConfidence
 
 CAP = 5  # 1 + max_extra_free_transfers(4), matching the real 2025-26 rules.
-FULL_CHIP_INVENTORY = ["wildcard", "freehit", "bboost", "3xc"]
+ALL_CHIP_NAMES = ["wildcard", "freehit", "bboost", "3xc"]
+
+# Mirrors the real 2025-26 bootstrap-static chips[] shape (see
+# tests/fixtures/fpl_api/bootstrap_static_sample.json): every chip has two
+# windows, one per season half.
+_RAW_CHIPS = [
+    {"name": "wildcard", "start_event": 2, "stop_event": 19},
+    {"name": "freehit", "start_event": 2, "stop_event": 19},
+    {"name": "bboost", "start_event": 1, "stop_event": 19},
+    {"name": "3xc", "start_event": 1, "stop_event": 19},
+    {"name": "wildcard", "start_event": 20, "stop_event": 38},
+    {"name": "freehit", "start_event": 20, "stop_event": 38},
+    {"name": "bboost", "start_event": 20, "stop_event": 38},
+    {"name": "3xc", "start_event": 20, "stop_event": 38},
+]
+FULL_CHIP_WINDOWS: list[ChipWindow] = resolve_chip_windows(_RAW_CHIPS)
 
 
 def _base_inputs(**overrides) -> RivalStateInputs:
     defaults = dict(
         fpl_manager_id=12345,
-        chip_inventory=FULL_CHIP_INVENTORY,
+        chip_windows=FULL_CHIP_WINDOWS,
         free_transfers_cap=CAP,
         history_available=False,
         history_current_rows=[],
         history_chip_rows=[],
+        current_event=None,
         captain_observations=[],
         last_known_snapshot_id=None,
         squad_selected_by_percent=None,
@@ -190,10 +207,14 @@ def test_rich_history_captain_frequency_and_high_confidence():
     assert result.overall_confidence == RivalStateConfidence.MEDIUM
 
 
-def test_rich_history_remaining_chips_excludes_the_one_played():
+def test_rich_history_remaining_chips_still_lists_wildcard_with_its_other_window_open():
+    # _RICH_CHIP_ROWS plays wildcard at event 15, which only matches
+    # wildcard's FIRST window (2-19) -- its second window (20-38) is
+    # untouched and unlapsed (current_event defaults to None), so wildcard
+    # must still be reported as remaining, not fully excluded.
     result = compute_rival_state(_rich_inputs())
 
-    assert result.derived_likely_remaining_chips == ["freehit", "bboost", "3xc"]
+    assert result.derived_likely_remaining_chips == ALL_CHIP_NAMES
     assert result.derived_free_transfers_confidence == RivalStateConfidence.HIGH
 
 
@@ -235,11 +256,18 @@ def test_never_took_a_hit_all_season_reports_zero_not_an_arbitrary_number():
 
 
 def test_all_chips_already_played_gives_empty_remaining_list():
+    # BOTH windows of every chip played -- only then is a chip name fully
+    # excluded (see test_rich_history_remaining_chips_still_lists_wildcard...
+    # above for the single-window-played case, which must NOT exclude it).
     all_played = [
         {"name": "wildcard", "event": 2, "time": "t"},
+        {"name": "wildcard", "event": 25, "time": "t"},
         {"name": "freehit", "event": 10, "time": "t"},
+        {"name": "freehit", "event": 30, "time": "t"},
         {"name": "bboost", "event": 15, "time": "t"},
-        {"name": "3xc", "event": 20, "time": "t"},
+        {"name": "bboost", "event": 35, "time": "t"},
+        {"name": "3xc", "event": 18, "time": "t"},
+        {"name": "3xc", "event": 38, "time": "t"},
     ]
 
     result = compute_rival_state(_rich_inputs(history_chip_rows=all_played))
@@ -248,13 +276,42 @@ def test_all_chips_already_played_gives_empty_remaining_list():
     assert result.derived_free_transfers_confidence == RivalStateConfidence.HIGH
 
 
-def test_chip_inventory_is_deduplicated_before_subtracting_played_chips():
-    duplicated_inventory = ["wildcard", "wildcard", "freehit", "freehit", "bboost", "3xc"]
-    inputs = _base_inputs(chip_inventory=duplicated_inventory, history_available=True, history_chip_rows=[])
+def test_chip_windows_deduplicate_to_one_name_per_chip_not_one_per_window():
+    # FULL_CHIP_WINDOWS already carries 2 windows per chip (8 entries, 4
+    # distinct names) -- with nothing played, the result must be the 4 names,
+    # never a name repeated once per window.
+    inputs = _base_inputs(history_available=True, history_chip_rows=[])
 
     result = compute_rival_state(inputs)
 
-    assert result.derived_likely_remaining_chips == ["wildcard", "freehit", "bboost", "3xc"]
+    assert result.derived_likely_remaining_chips == ALL_CHIP_NAMES
+
+
+def test_unplayed_window_that_has_lapsed_still_leaves_the_chip_remaining_via_its_other_window():
+    # wildcard's first window (2-19) lapses unplayed once current_event
+    # passes 19, but its second window (20-38) is still open -- the chip
+    # must stay in the remaining list.
+    inputs = _base_inputs(history_available=True, history_chip_rows=[], current_event=25)
+
+    result = compute_rival_state(inputs)
+
+    assert result.derived_likely_remaining_chips == ALL_CHIP_NAMES
+
+
+def test_chip_excluded_once_its_only_window_has_lapsed_unplayed():
+    # A synthetic single-window chip (unlike any real 2025-26 chip, which
+    # always has two) isolates the lapse branch on its own: never played,
+    # and current_event is already past its one and only stop_event.
+    single_window = [
+        ChipWindow(chip_type=FULL_CHIP_WINDOWS[0].chip_type, window_number=1, start_event=2, stop_event=19)
+    ]
+    inputs = _base_inputs(
+        chip_windows=single_window, history_available=True, history_chip_rows=[], current_event=20
+    )
+
+    result = compute_rival_state(inputs)
+
+    assert result.derived_likely_remaining_chips == []
 
 
 def test_history_fetch_failure_widens_remaining_chips_to_full_inventory_not_empty():
@@ -264,7 +321,7 @@ def test_history_fetch_failure_widens_remaining_chips_to_full_inventory_not_empt
 
     # Honesty over convenience: with no play-history, nothing can be ruled
     # OUT -- an empty list would falsely claim every chip is already spent.
-    assert result.derived_likely_remaining_chips == FULL_CHIP_INVENTORY
+    assert result.derived_likely_remaining_chips == ALL_CHIP_NAMES
     assert any("chip-play history unavailable" in note for note in result.unknowns)
 
 

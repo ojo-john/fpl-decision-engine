@@ -70,6 +70,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.chips.windows import ChipWindow, resolve_chip_windows
 from app.h2h.rival_state import (
     CaptainObservation,
     RivalStateInputs,
@@ -388,18 +389,19 @@ def _sync_one_rival(
         return _minimal_snapshot(fpl_manager_id, fpl_event_id, as_of, PicksAvailability.FETCH_FAILED, None)
 
 
-def _load_chip_inventory(session: Session, rules_config_id: uuid.UUID) -> list[str]:
-    """Distinct chip names available this season, from the current rules_config's raw chips[].
+def _load_chip_windows(session: Session, rules_config_id: uuid.UUID) -> list[ChipWindow]:
+    """Every playable chip window this season, from the current rules_config's raw chips[].
 
-    De-duplicated (a chip typically appears twice in FPL's raw ``chips[]`` --
-    once per season half -- ``app.h2h.rival_state`` also de-duplicates this
-    same inventory defensively, so passing a pre-deduplicated list here is a
-    belt-and-braces choice, not a requirement).
+    Reuses ``app.chips.windows.resolve_chip_windows`` verbatim -- the same
+    resolution the user's own chip inventory (``app.chips.inventory``) is
+    built from -- so a rival's remaining-chips prediction
+    (``app.h2h.rival_state._derive_remaining_chips``) is window-aware rather
+    than only name-aware.
     """
     raw_chips = session.execute(
         select(RulesConfig.raw_chips_json).where(RulesConfig.id == rules_config_id)
     ).scalar_one()
-    return list(dict.fromkeys(chip["name"] for chip in raw_chips))
+    return resolve_chip_windows(raw_chips)
 
 
 def _load_population_mean_selected_by_percent(session: Session, season_id: uuid.UUID) -> float | None:
@@ -569,7 +571,8 @@ def _compute_and_upsert_rival_profile(
     season_id: uuid.UUID,
     league_id: uuid.UUID,
     fpl_manager_id: int,
-    chip_inventory: list[str],
+    chip_windows: list[ChipWindow],
+    current_event: int | None,
     free_transfers_cap: int,
     population_mean_selected_by_percent: float | None,
     now: datetime,
@@ -637,11 +640,12 @@ def _compute_and_upsert_rival_profile(
 
         inputs = RivalStateInputs(
             fpl_manager_id=fpl_manager_id,
-            chip_inventory=chip_inventory,
+            chip_windows=chip_windows,
             free_transfers_cap=free_transfers_cap,
             history_available=history_available,
             history_current_rows=history_current_rows,
             history_chip_rows=history_chip_rows,
+            current_event=current_event,
             captain_observations=captain_observations,
             last_known_snapshot_id=last_known_snapshot.id if last_known_snapshot is not None else None,
             squad_selected_by_percent=squad_selected_by_percent,
@@ -804,7 +808,7 @@ class LeagueSyncJobRunner(JobRunner):
                 # gameweek has finished yet this season.
                 rules_config_id = load_current_rules_config_id(session, season.id)
                 transfer_rules = load_transfer_rules(session, rules_config_id)
-                chip_inventory = _load_chip_inventory(session, rules_config_id)
+                chip_windows = _load_chip_windows(session, rules_config_id)
                 population_mean_selected_by_percent = _load_population_mean_selected_by_percent(
                     session, season.id
                 )
@@ -820,7 +824,8 @@ class LeagueSyncJobRunner(JobRunner):
                         season.id,
                         league.id,
                         fpl_manager_id,
-                        chip_inventory,
+                        chip_windows,
+                        fpl_event_id,
                         transfer_rules.free_transfers_cap,
                         population_mean_selected_by_percent,
                         now,

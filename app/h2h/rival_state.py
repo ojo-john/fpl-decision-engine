@@ -49,12 +49,29 @@ every sub-computation below has its own evidence-volume thresholds
 why a rival profiled from a single ``RivalGameweekSnapshot`` (the realistic
 starting state for every real rival right now) gets ``overall_confidence=LOW``
 regardless of how rich their ``current[]`` history already is.
+
+Chip windows, not flat chip names: every 2025-26 chip (wildcard/freehit/
+bboost/3xc) has TWO independent play windows, one per season half (e.g.
+wildcard window 1 spans events 2-19, window 2 spans 20-38 -- see
+``app.chips.windows.resolve_chip_windows``, reused here verbatim rather than
+duplicated). A rival who has played "wildcard" once has used exactly one of
+those two windows, not the chip entirely -- ``_derive_remaining_chips`` is
+window-aware: it matches each observed play (``history_chip_rows``, which
+carries FPL's own ``event`` per play) to the specific window whose
+``[start_event, stop_event]`` contains that play's event (falling back to
+the earliest not-yet-matched same-name window if a play's event doesn't
+cleanly fall inside any declared window -- a defensive fallback, never
+silently ignored, since understating a chip as played is the safe direction
+here), and a chip name is only removed from "remaining" once every one of
+its windows is either used or has fully lapsed (``current_event`` is past
+its ``stop_event``) without being played.
 """
 
 import uuid
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 
+from app.chips.windows import ChipWindow
 from app.transfers.free_transfers import _CHIP_NAMES_FREEZING_TRANSFERS, derive_free_transfers_available
 from packages.domain.h2h import RivalStateConfidence
 
@@ -137,7 +154,7 @@ class RivalStateInputs:
     """Everything ``compute_rival_state`` needs for one rival, as plain data."""
 
     fpl_manager_id: int
-    chip_inventory: list[str]  # distinct chip names available this season, e.g. ["wildcard","freehit",...]
+    chip_windows: list[ChipWindow]  # every playable chip window this season (2 per chip -- see ChipWindow)
     free_transfers_cap: int
     # Whether /history/ was fetched successfully this run at all (independent
     # of whether *this run's* picks fetch succeeded -- Layer 2 reuses
@@ -145,6 +162,11 @@ class RivalStateInputs:
     history_available: bool
     history_current_rows: list[dict]  # FPL's history().current[] shape, verbatim
     history_chip_rows: list[dict]  # FPL's history().chips[] shape, verbatim
+    # The most recently finished gameweek's raw FPL event number, if any --
+    # used only to tell a lapsed-unplayed chip window apart from one still
+    # open (see _derive_remaining_chips). None if no gameweek has finished
+    # yet this season.
+    current_event: int | None = None
     captain_observations: list[CaptainObservation] = field(default_factory=list)
     last_known_snapshot_id: uuid.UUID | None = None
     squad_selected_by_percent: list[float] | None = None
@@ -208,20 +230,51 @@ def _derive_free_transfers(
 
 
 def _derive_remaining_chips(
-    history_available: bool, chip_inventory: list[str], history_chip_rows: list[dict]
+    history_available: bool,
+    chip_windows: list[ChipWindow],
+    history_chip_rows: list[dict],
+    current_event: int | None,
 ) -> tuple[list[str], RivalStateConfidence]:
-    # De-duplicate while preserving first-seen order (a chip typically appears
-    # twice in the inventory, once per season half -- see module docstring).
-    inventory = list(dict.fromkeys(chip_inventory))
+    # De-duplicate while preserving first-seen order (a chip typically has two
+    # windows -- see module docstring).
+    names_in_order = list(dict.fromkeys(window.chip_type.value for window in chip_windows))
     if not history_available:
         # Honesty over convenience: with no play-history at all, nothing can
         # be ruled OUT, so the safest non-overclaiming answer is "assume
-        # nothing has been played yet" (the full inventory), not an empty
+        # nothing has been played yet" (every chip name), not an empty
         # list -- an empty list would silently claim every chip is spent.
-        return inventory, RivalStateConfidence.LOW
+        return names_in_order, RivalStateConfidence.LOW
 
-    played = {c["name"] for c in history_chip_rows}
-    remaining = [name for name in inventory if name not in played]
+    windows_by_name: dict[str, list[ChipWindow]] = {}
+    for window in chip_windows:
+        windows_by_name.setdefault(window.chip_type.value, []).append(window)
+
+    used_windows: set[ChipWindow] = set()
+    for row in history_chip_rows:
+        name = row.get("name")
+        if name is None:
+            continue
+        candidates = [w for w in windows_by_name.get(name, []) if w not in used_windows]
+        if not candidates:
+            continue
+        event = row.get("event")
+        exact_match = next(
+            (w for w in candidates if event is not None and w.start_event <= event <= w.stop_event), None
+        )
+        # Defensive fallback (not the expected case -- see module docstring):
+        # a play whose event doesn't cleanly fall inside any declared window
+        # still counts against the earliest not-yet-matched window of that
+        # name, rather than being silently ignored.
+        used_windows.add(exact_match if exact_match is not None else candidates[0])
+
+    def _window_still_playable(window: ChipWindow) -> bool:
+        if window in used_windows:
+            return False
+        return current_event is None or current_event <= window.stop_event
+
+    remaining = [
+        name for name in names_in_order if any(_window_still_playable(w) for w in windows_by_name[name])
+    ]
     return remaining, RivalStateConfidence.HIGH
 
 
@@ -388,7 +441,7 @@ def compute_rival_state(inputs: RivalStateInputs) -> RivalStateResult:
         )
 
     remaining_chips, chip_confidence = _derive_remaining_chips(
-        inputs.history_available, inputs.chip_inventory, inputs.history_chip_rows
+        inputs.history_available, inputs.chip_windows, inputs.history_chip_rows, inputs.current_event
     )
     if not inputs.history_available:
         unknowns.append(
