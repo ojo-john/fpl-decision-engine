@@ -1,5 +1,6 @@
 import { backendClient } from "@/lib/api-client";
 import { ActionButton } from "@/components/action-button";
+import { H2HSimulateButton } from "@/components/h2h-simulate-button";
 import { SingleFieldActionForm } from "@/components/single-field-action-form";
 import { Card, ConfidenceBadge, EmptyState, ErrorState } from "@/components/ui";
 
@@ -57,6 +58,9 @@ export default async function RivalsPage() {
 
   const standingByManager = new Map((standings ?? []).map((entry) => [entry.fpl_manager_id, entry]));
 
+  const { data: currentSquads } = await client.GET("/squads", { params: { query: { is_current: true } } });
+  const currentSquadId = currentSquads?.[0]?.manager_squad_snapshot_id;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -111,6 +115,14 @@ export default async function RivalsPage() {
               <p style={{ margin: "0.75rem 0 0", fontSize: "0.8rem", color: "var(--text-muted)" }}>
                 {rival.unknowns.join(" ")}
               </p>
+            )}
+            {currentSquadId && (
+              <div style={{ marginTop: "0.75rem" }}>
+                <H2HSimulateButton
+                  managerSquadSnapshotId={currentSquadId}
+                  rivalProfileId={rival.rival_profile_id}
+                />
+              </div>
             )}
           </Card>
         );

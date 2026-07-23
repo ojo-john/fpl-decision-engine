@@ -113,6 +113,7 @@ def _snapshot_out(db: Session, snapshot: ManagerSquadSnapshot) -> ManagerSquadSn
         free_transfers_available=snapshot.free_transfers_available,
         squad_player_ids=[uuid.UUID(pid) for pid in snapshot.squad_player_ids],
         players=_squad_players(db, snapshot.squad_player_ids),
+        has_raw_picks=bool(snapshot.raw_picks_json and snapshot.raw_picks_json.get("picks")),
         has_unresolved_players=snapshot.has_unresolved_players,
         unresolved_fpl_element_ids=snapshot.unresolved_fpl_element_ids_json,
         created_at=snapshot.created_at,

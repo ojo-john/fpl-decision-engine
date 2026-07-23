@@ -238,6 +238,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/squads/{manager_squad_snapshot_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Squad Snapshot */
+        get: operations["get_squad_snapshot_squads__manager_squad_snapshot_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/squads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Squad Snapshots
+         * @description Most-recent-first list of snapshots -- insert-only/audit table (see that model's own
+         *     docstring), so this is a real history, not a single current-state row.
+         */
+        get: operations["list_squad_snapshots_squads_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/h2h/simulate": {
         parameters: {
             query?: never;
@@ -1028,12 +1066,20 @@ export interface components {
             manager_squad_snapshot_id: string;
             /** Source */
             source: string;
+            /** Fpl Manager Id */
+            fpl_manager_id: number | null;
+            /** Is Current */
+            is_current: boolean;
             /** Bank */
             bank: number;
             /** Free Transfers Available */
             free_transfers_available: number;
             /** Squad Player Ids */
             squad_player_ids: string[];
+            /** Players */
+            players: components["schemas"]["SquadPlayerOut"][];
+            /** Has Raw Picks */
+            has_raw_picks: boolean;
             /** Has Unresolved Players */
             has_unresolved_players: boolean;
             /** Unresolved Fpl Element Ids */
@@ -1274,6 +1320,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Fpl Element Id */
+            fpl_element_id: number;
             /** Web Name */
             web_name: string | null;
             /** Team Id */
@@ -1423,6 +1471,23 @@ export interface components {
              * Format: date-time
              */
             computed_at: string;
+        };
+        /**
+         * SquadPlayerOut
+         * @description One resolved squad member -- see apps.api.routers.managers._load_snapshot_response.
+         */
+        SquadPlayerOut: {
+            /**
+             * Player Id
+             * Format: uuid
+             */
+            player_id: string;
+            /** Web Name */
+            web_name: string | null;
+            /** Position */
+            position: string | null;
+            /** Now Cost */
+            now_cost: number;
         };
         /** TransferMoveOut */
         TransferMoveOut: {
@@ -1909,6 +1974,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ManagerSquadSnapshotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_squad_snapshot_squads__manager_squad_snapshot_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                manager_squad_snapshot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManagerSquadSnapshotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_squad_snapshots_squads_get: {
+        parameters: {
+            query?: {
+                fpl_manager_id?: number | null;
+                is_current?: boolean | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManagerSquadSnapshotOut"][];
                 };
             };
             /** @description Validation Error */

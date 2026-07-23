@@ -35,6 +35,7 @@ def test_sync_manager_happy_path_with_unresolved_player(
     assert body["has_unresolved_players"] is True
     assert body["unresolved_fpl_element_ids"] == [99999]
     assert len(body["players"]) == len(body["squad_player_ids"])
+    assert body["has_raw_picks"] is True
 
 
 def test_sync_manager_rejects_missing_body_fields_with_422(db_session):

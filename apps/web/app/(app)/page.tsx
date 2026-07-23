@@ -69,17 +69,19 @@ export default async function DashboardPage() {
         {data.h2h_simulation && (
           <Card>
             <h2 style={{ margin: "0 0 0.5rem", fontSize: "0.95rem" }}>H2H matchup</h2>
-            <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "0.9rem" }}>
+            <p style={{ margin: "0 0 0.75rem", color: "var(--text-muted)", fontSize: "0.9rem" }}>
               {data.h2h_simulation.summary}
             </p>
+            <Link href={`/h2h/${data.h2h_simulation.run_id}`}>View matchup</Link>
           </Card>
         )}
         {data.chip_optimization && (
           <Card>
             <h2 style={{ margin: "0 0 0.5rem", fontSize: "0.95rem" }}>Chips</h2>
-            <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "0.9rem" }}>
+            <p style={{ margin: "0 0 0.75rem", color: "var(--text-muted)", fontSize: "0.9rem" }}>
               {data.chip_optimization.summary}
             </p>
+            <Link href={`/chips/${data.chip_optimization.run_id}`}>View recommendations</Link>
           </Card>
         )}
       </div>

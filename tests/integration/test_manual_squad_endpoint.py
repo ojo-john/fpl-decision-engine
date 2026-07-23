@@ -52,6 +52,8 @@ def test_manual_squad_happy_path(db_session, patched_fpl_client_optimization):
         assert player["now_cost"] > 0
     assert body["has_unresolved_players"] is False
     assert body["unresolved_fpl_element_ids"] == []
+    # Manual entries never have raw_picks_json -- see ManagerSquadSnapshot's own docstring.
+    assert body["has_raw_picks"] is False
 
 
 def test_manual_squad_rejects_duplicate_ids_with_422(db_session, patched_fpl_client_optimization):

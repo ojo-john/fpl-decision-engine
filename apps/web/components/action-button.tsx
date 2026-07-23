@@ -7,19 +7,23 @@ import { buttonStyle } from "@/components/ui";
 /**
  * A single no-input action (e.g. "generate a recommendation") -- POSTs
  * through /api/proxy (see that route's own docstring for why: the browser
- * never holds the real backend token) and refreshes the current Server
- * Component page on success so the new data shows up immediately.
+ * never holds the real backend token). On success, either navigates
+ * wherever `onSuccess` (given the parsed response body) says to, or -- if
+ * `onSuccess` is omitted -- just refreshes the current Server Component
+ * page so newly-created data shows up immediately.
  */
 export function ActionButton({
   path,
   body,
   label,
   pendingLabel,
+  onSuccess,
 }: {
   path: string;
   body?: Record<string, unknown>;
   label: string;
   pendingLabel?: string;
+  onSuccess?: (data: unknown) => void;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
@@ -34,12 +38,16 @@ export function ActionButton({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body ?? {}),
       });
+      const data: unknown = await response.json().catch(() => null);
       if (!response.ok) {
-        const data: unknown = await response.json().catch(() => null);
         setError(extractErrorMessage(data) ?? `Request failed (${response.status}).`);
         return;
       }
-      router.refresh();
+      if (onSuccess) {
+        onSuccess(data);
+      } else {
+        router.refresh();
+      }
     } catch {
       setError("Could not reach the server.");
     } finally {

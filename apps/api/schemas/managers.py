@@ -56,6 +56,14 @@ class ManagerSquadSnapshotOut(BaseModel):
     free_transfers_available: int
     squad_player_ids: list[uuid.UUID]
     players: list[SquadPlayerOut]
+    # Whether this snapshot has a resolvable starting-XI/bench split
+    # (raw_picks_json) -- CHIP_SIMULATION requires it (see
+    # app.jobs.handlers.chip_simulation._split_starting_and_bench); manual
+    # entries never have it (see ManagerSquadSnapshot's own docstring), and
+    # even a MANAGER_SYNC snapshot can lack it if that run's picks fetch
+    # itself failed -- exposed explicitly rather than the caller guessing
+    # from `source` alone.
+    has_raw_picks: bool
     has_unresolved_players: bool
     unresolved_fpl_element_ids: list[int]
     created_at: datetime
