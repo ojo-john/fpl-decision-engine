@@ -47,6 +47,16 @@ def _error_response(job) -> JSONResponse:
     )
 
 
+def _not_found_response(h2h_simulation_run_id: uuid.UUID) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error_code": "H2H_SIMULATION_RUN_NOT_FOUND",
+            "detail": f"h2h_simulation_runs row {h2h_simulation_run_id} not found.",
+        },
+    )
+
+
 def _load_strategy_candidates(db: Session, h2h_simulation_run_id: uuid.UUID) -> list[H2HStrategyCandidateOut]:
     rows = (
         db.execute(
@@ -129,4 +139,14 @@ def simulate_h2h_matchup(
 
     assert job.output_json is not None  # a SUCCEEDED job always has output_json
     h2h_simulation_run_id = uuid.UUID(job.output_json["h2h_simulation_run_id"])
+    return _load_run_response(db, h2h_simulation_run_id)
+
+
+@router.get("/simulate/{h2h_simulation_run_id}", response_model=H2HSimulationRunOut)
+def get_h2h_simulation_run(
+    h2h_simulation_run_id: uuid.UUID, db: Session = Depends(get_db)
+) -> H2HSimulationRunOut | JSONResponse:
+    """Fetch an already-completed H2H simulation run by id (Milestone 8 Layer 1)."""
+    if db.get(H2HSimulationRun, h2h_simulation_run_id) is None:
+        return _not_found_response(h2h_simulation_run_id)
     return _load_run_response(db, h2h_simulation_run_id)

@@ -45,6 +45,16 @@ def _error_response(job) -> JSONResponse:
     )
 
 
+def _not_found_response(chip_optimization_run_id: uuid.UUID) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error_code": "CHIP_OPTIMIZATION_RUN_NOT_FOUND",
+            "detail": f"chip_optimization_runs row {chip_optimization_run_id} not found.",
+        },
+    )
+
+
 def _candidate_out(row: ChipWindowCandidate) -> ChipWindowCandidateOut:
     return ChipWindowCandidateOut(
         candidate_fpl_event_id=row.candidate_fpl_event_id,
@@ -144,4 +154,14 @@ def simulate_chip_optimization(
 
     assert job.output_json is not None  # a SUCCEEDED job always has output_json
     chip_optimization_run_id = uuid.UUID(job.output_json["chip_optimization_run_id"])
+    return _load_run_response(db, chip_optimization_run_id)
+
+
+@router.get("/chips/{chip_optimization_run_id}", response_model=ChipOptimizationRunOut)
+def get_chip_optimization_run(
+    chip_optimization_run_id: uuid.UUID, db: Session = Depends(get_db)
+) -> ChipOptimizationRunOut | JSONResponse:
+    """Fetch an already-completed chip-optimization run by id (Milestone 8 Layer 1)."""
+    if db.get(ChipOptimizationRun, chip_optimization_run_id) is None:
+        return _not_found_response(chip_optimization_run_id)
     return _load_run_response(db, chip_optimization_run_id)

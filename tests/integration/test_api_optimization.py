@@ -7,17 +7,16 @@ Seeds data via ``execute_job`` on ``db_session``, exercises the HTTP layer via
 
 import uuid
 
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.jobs.service import execute_job
-from apps.api.main import create_app
 from packages.database.models.ingestion_run import IngestionRun
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.transfers import ManagerSquadSnapshotSource
+from tests.integration.conftest import authed_client
 
 
 def _seed(db_session):
@@ -104,7 +103,7 @@ def _create_manual_snapshot(db_session, season_id) -> ManagerSquadSnapshot:
 
 def test_optimize_initial_squad_happy_path(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/optimize/initial-squad", json={"requested_by": "api-test"})
 
@@ -148,7 +147,7 @@ def test_optimize_initial_squad_refused_returns_409(db_session, patched_fpl_clie
     ingestion_run.optimization_permitted = False
     db_session.commit()
 
-    client = TestClient(create_app())
+    client = authed_client()
     response = client.post("/optimize/initial-squad", json={})
 
     assert response.status_code == 409
@@ -159,7 +158,7 @@ def test_optimize_initial_squad_refused_returns_409(db_session, patched_fpl_clie
 
 def test_optimize_lineup_chained_from_squad_run(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     squad_response = client.post("/optimize/initial-squad", json={})
     assert squad_response.status_code == 200
@@ -186,7 +185,7 @@ def test_optimize_lineup_chained_from_squad_run(db_session, patched_fpl_client_o
 
 def test_optimize_lineup_explicit_player_ids(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
     squad_run = client.post("/optimize/initial-squad", json={}).json()
     player_ids = [p["player_id"] for p in squad_run["players"]]
 
@@ -199,7 +198,7 @@ def test_optimize_lineup_explicit_player_ids(db_session, patched_fpl_client_opti
 
 def test_optimize_lineup_rejects_ambiguous_input_with_422(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post(
         "/optimize/lineup",
@@ -211,7 +210,7 @@ def test_optimize_lineup_rejects_ambiguous_input_with_422(db_session, patched_fp
 
 def test_optimize_lineup_rejects_missing_input_with_422(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/optimize/lineup", json={})
 
@@ -221,7 +220,7 @@ def test_optimize_lineup_rejects_missing_input_with_422(db_session, patched_fpl_
 def test_optimize_transfers_happy_path(db_session, patched_fpl_client_optimization_with_active_gameweek):
     season_id = _seed_with_active_gameweek(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post(
         "/optimize/transfers",
@@ -267,7 +266,7 @@ def test_optimize_transfers_refused_returns_409(
     ingestion_run.optimization_permitted = False
     db_session.commit()
 
-    client = TestClient(create_app())
+    client = authed_client()
     response = client.post("/optimize/transfers", json={"manager_squad_snapshot_id": str(snapshot.id)})
 
     assert response.status_code == 409
@@ -280,10 +279,60 @@ def test_optimize_transfers_unknown_snapshot_returns_409(
     db_session, patched_fpl_client_optimization_with_active_gameweek
 ):
     _seed_with_active_gameweek(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/optimize/transfers", json={"manager_squad_snapshot_id": str(uuid.uuid4())})
 
     assert response.status_code == 409
     body = response.json()
     assert body["error_code"] == "SNAPSHOT_NOT_FOUND"
+
+
+# --- GET /optimize/{id}, GET /optimize/transfers/{id} (Milestone 8 Layer 1) -----------------
+
+
+def test_get_optimization_run_returns_the_same_body_the_post_returned(
+    db_session, patched_fpl_client_optimization
+):
+    _seed(db_session)
+    client = authed_client()
+    created = client.post("/optimize/initial-squad", json={}).json()
+
+    response = client.get(f"/optimize/{created['optimization_run_id']}")
+
+    assert response.status_code == 200
+    assert response.json() == created
+
+
+def test_get_optimization_run_unknown_id_returns_404():
+    client = authed_client()
+
+    response = client.get(f"/optimize/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "OPTIMIZATION_RUN_NOT_FOUND"
+
+
+def test_get_transfer_optimization_run_returns_the_same_body_the_post_returned(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    season_id = _seed_with_active_gameweek(db_session)
+    snapshot = _create_manual_snapshot(db_session, season_id)
+    client = authed_client()
+    created = client.post(
+        "/optimize/transfers", json={"manager_squad_snapshot_id": str(snapshot.id)}
+    ).json()
+
+    response = client.get(f"/optimize/transfers/{created['transfer_optimization_run_id']}")
+
+    assert response.status_code == 200
+    assert response.json() == created
+
+
+def test_get_transfer_optimization_run_unknown_id_returns_404():
+    client = authed_client()
+
+    response = client.get(f"/optimize/transfers/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "TRANSFER_OPTIMIZATION_RUN_NOT_FOUND"

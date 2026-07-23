@@ -10,18 +10,20 @@ already covered in depth by ``test_h2h_simulation_job.py``.
 import uuid
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.jobs.service import execute_job
-from apps.api.main import create_app
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
 from packages.database.models.rival_profile import RivalProfile
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.transfers import ManagerSquadSnapshotSource
-from tests.integration.conftest import LEAGUE_RIVAL_B_FPL_MANAGER_ID, LEAGUE_SELF_FPL_MANAGER_ID
+from tests.integration.conftest import (
+    LEAGUE_RIVAL_B_FPL_MANAGER_ID,
+    LEAGUE_SELF_FPL_MANAGER_ID,
+    authed_client,
+)
 
 FPL_LEAGUE_ID = 88892  # distinct from every other test file's league id
 
@@ -133,7 +135,7 @@ def test_h2h_simulate_happy_path(
         )
     ).scalar_one()
     snapshot = _create_manual_snapshot(db_session, season_id)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post(
         "/h2h/simulate",
@@ -161,7 +163,7 @@ def test_h2h_simulate_missing_rival_profile_returns_409(
 ):
     season_id = _seed(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post(
         "/h2h/simulate",
@@ -178,8 +180,46 @@ def test_h2h_simulate_missing_rival_profile_returns_409(
 
 
 def test_h2h_simulate_rejects_missing_body_fields_with_422(db_session):
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/h2h/simulate", json={})
 
     assert response.status_code == 422
+
+
+# --- GET /h2h/simulate/{id} (Milestone 8 Layer 1) ----------------------------------------------
+
+
+def test_get_h2h_simulation_run_returns_the_same_body_the_post_returned(
+    db_session, patched_fpl_client_optimization_with_active_gameweek, patched_fpl_client_league
+):
+    season_id = _seed(db_session)
+    _run_league_sync(db_session)
+    rival_profile = db_session.execute(
+        select(RivalProfile).where(
+            RivalProfile.season_id == season_id, RivalProfile.fpl_manager_id == LEAGUE_RIVAL_B_FPL_MANAGER_ID
+        )
+    ).scalar_one()
+    snapshot = _create_manual_snapshot(db_session, season_id)
+    client = authed_client()
+    created = client.post(
+        "/h2h/simulate",
+        json={
+            "manager_squad_snapshot_id": str(snapshot.id),
+            "rival_profile_id": str(rival_profile.id),
+        },
+    ).json()
+
+    response = client.get(f"/h2h/simulate/{created['h2h_simulation_run_id']}")
+
+    assert response.status_code == 200
+    assert response.json() == created
+
+
+def test_get_h2h_simulation_run_unknown_id_returns_404():
+    client = authed_client()
+
+    response = client.get(f"/h2h/simulate/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "H2H_SIMULATION_RUN_NOT_FOUND"

@@ -25,6 +25,23 @@ class Settings(BaseSettings):
     fpl_manager_id: str | None = None
     fpl_h2h_league_id: str | None = None
 
+    # Milestone 8 Layer 1: single-shared-secret auth for apps/web (a single-manager
+    # system has no user table to authenticate against -- see apps.api.auth's own
+    # docstring for why a shared token, not a full auth system, is the deliberate
+    # choice here). Same "insecure dev default, must be overridden for anything
+    # beyond local docker-compose" convention as application_secret_key above.
+    app_shared_token: str = "dev-token-change-me"
+    # Comma-separated allowed CORS origins (e.g. "http://localhost:3000,https://fpl.example.com").
+    # A plain str, not list[str] -- pydantic-settings' env parsing for list-typed
+    # fields expects JSON by default, which is more ceremony than a comma-separated
+    # env var needs here. Empty by default: no browser origin is allowed until one
+    # is explicitly configured (fail closed, not a wildcard).
+    cors_allowed_origins: str = ""
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:

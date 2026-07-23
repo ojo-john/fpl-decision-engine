@@ -51,6 +51,13 @@ def _error_response(job) -> JSONResponse:
     )
 
 
+def _not_found_response(model_name: str, run_id: uuid.UUID) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={"error_code": f"{model_name}_NOT_FOUND", "detail": f"{model_name} {run_id} not found."},
+    )
+
+
 def _load_run_response(db: Session, optimization_run_id: uuid.UUID) -> OptimizationRunOut:
     run = db.get(OptimizationRun, optimization_run_id)
     assert run is not None  # a SUCCEEDED job always leaves its optimization_runs row behind
@@ -111,6 +118,21 @@ def optimize_initial_squad(
 
     assert job.output_json is not None  # a SUCCEEDED job always has output_json
     optimization_run_id = uuid.UUID(job.output_json["optimization_run_id"])
+    return _load_run_response(db, optimization_run_id)
+
+
+@router.get("/{optimization_run_id}", response_model=OptimizationRunOut)
+def get_optimization_run(
+    optimization_run_id: uuid.UUID, db: Session = Depends(get_db)
+) -> OptimizationRunOut | JSONResponse:
+    """Fetch an already-completed initial-squad or lineup run by id (Milestone 8 Layer 1).
+
+    Both ``recommendation_type`` variants live in the same ``optimization_runs``
+    table, so one endpoint covers both -- mirrors ``_load_run_response``'s own
+    reuse across ``/initial-squad`` and ``/lineup`` above.
+    """
+    if db.get(OptimizationRun, optimization_run_id) is None:
+        return _not_found_response("OPTIMIZATION_RUN", optimization_run_id)
     return _load_run_response(db, optimization_run_id)
 
 
@@ -205,6 +227,16 @@ def optimize_transfers(
 
     assert job.output_json is not None  # a SUCCEEDED job always has output_json
     transfer_optimization_run_id = uuid.UUID(job.output_json["transfer_optimization_run_id"])
+    return _load_transfer_run_response(db, transfer_optimization_run_id)
+
+
+@router.get("/transfers/{transfer_optimization_run_id}", response_model=TransferOptimizationRunOut)
+def get_transfer_optimization_run(
+    transfer_optimization_run_id: uuid.UUID, db: Session = Depends(get_db)
+) -> TransferOptimizationRunOut | JSONResponse:
+    """Fetch an already-completed transfer-optimization run by id (Milestone 8 Layer 1)."""
+    if db.get(TransferOptimizationRun, transfer_optimization_run_id) is None:
+        return _not_found_response("TRANSFER_OPTIMIZATION_RUN", transfer_optimization_run_id)
     return _load_transfer_run_response(db, transfer_optimization_run_id)
 
 

@@ -9,16 +9,15 @@ depth by ``test_recommendation_generation_job.py``.
 
 import uuid
 
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.jobs.service import execute_job
-from apps.api.main import create_app
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.transfers import ManagerSquadSnapshotSource
+from tests.integration.conftest import authed_client
 
 _SQUAD_ELEMENT_IDS = [
     30001,
@@ -92,7 +91,7 @@ def _create_manual_snapshot(db_session, season_id) -> ManagerSquadSnapshot:
 def test_recommendation_generate_happy_path(db_session, patched_fpl_client_optimization_with_active_gameweek):
     season_id = _seed(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/recommendations/generate", json={"manager_squad_snapshot_id": str(snapshot.id)})
 
@@ -111,7 +110,7 @@ def test_recommendation_generate_happy_path(db_session, patched_fpl_client_optim
 
 def test_recommendation_generate_off_season_returns_409(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/recommendations/generate", json={})
 
@@ -125,7 +124,7 @@ def test_recommendation_generate_missing_snapshot_returns_409(
     db_session, patched_fpl_client_optimization_with_active_gameweek
 ):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/recommendations/generate", json={"manager_squad_snapshot_id": str(uuid.uuid4())})
 
@@ -139,7 +138,7 @@ def test_recommendation_get_by_id_happy_path(
 ):
     season_id = _seed(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id)
-    client = TestClient(create_app())
+    client = authed_client()
 
     generate_response = client.post(
         "/recommendations/generate", json={"manager_squad_snapshot_id": str(snapshot.id)}
@@ -154,7 +153,7 @@ def test_recommendation_get_by_id_happy_path(
 
 
 def test_recommendation_get_by_id_nonexistent_returns_404(db_session):
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.get(f"/recommendations/{uuid.uuid4()}")
 
@@ -167,7 +166,7 @@ def test_recommendation_get_latest_happy_path(
 ):
     season_id = _seed(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id)
-    client = TestClient(create_app())
+    client = authed_client()
 
     generate_response = client.post(
         "/recommendations/generate", json={"manager_squad_snapshot_id": str(snapshot.id)}
@@ -183,7 +182,7 @@ def test_recommendation_get_latest_happy_path(
 
 def test_recommendation_get_latest_none_exists_returns_404(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.get("/recommendations/latest")
 

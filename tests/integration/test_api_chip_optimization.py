@@ -9,16 +9,15 @@ not the job's own chip-evaluation logic, which is already covered in depth by
 
 import uuid
 
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.jobs.service import execute_job
-from apps.api.main import create_app
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.transfers import ManagerSquadSnapshotSource
+from tests.integration.conftest import authed_client
 
 _SQUAD_ELEMENT_IDS = [
     30001,
@@ -126,7 +125,7 @@ def _create_manual_snapshot(db_session, season_id, raw_picks_json: dict | None) 
 def test_chip_optimization_happy_path(db_session, patched_fpl_client_optimization_with_active_gameweek):
     season_id = _seed(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id, _raw_picks_json())
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/optimize/chips", json={"manager_squad_snapshot_id": str(snapshot.id)})
 
@@ -147,7 +146,7 @@ def test_chip_optimization_respects_chip_types_filter(
 ):
     season_id = _seed(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id, _raw_picks_json())
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post(
         "/optimize/chips",
@@ -164,7 +163,7 @@ def test_chip_optimization_missing_snapshot_returns_409(
     db_session, patched_fpl_client_optimization_with_active_gameweek
 ):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/optimize/chips", json={"manager_squad_snapshot_id": str(uuid.uuid4())})
 
@@ -175,8 +174,34 @@ def test_chip_optimization_missing_snapshot_returns_409(
 
 
 def test_chip_optimization_rejects_missing_body_fields_with_422(db_session):
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/optimize/chips", json={})
 
     assert response.status_code == 422
+
+
+# --- GET /optimize/chips/{id} (Milestone 8 Layer 1) -------------------------------------------
+
+
+def test_get_chip_optimization_run_returns_the_same_body_the_post_returned(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    season_id = _seed(db_session)
+    snapshot = _create_manual_snapshot(db_session, season_id, _raw_picks_json())
+    client = authed_client()
+    created = client.post("/optimize/chips", json={"manager_squad_snapshot_id": str(snapshot.id)}).json()
+
+    response = client.get(f"/optimize/chips/{created['chip_optimization_run_id']}")
+
+    assert response.status_code == 200
+    assert response.json() == created
+
+
+def test_get_chip_optimization_run_unknown_id_returns_404():
+    client = authed_client()
+
+    response = client.get(f"/optimize/chips/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "CHIP_OPTIMIZATION_RUN_NOT_FOUND"

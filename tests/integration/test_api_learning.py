@@ -12,11 +12,9 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.jobs.service import execute_job
-from apps.api.main import create_app
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.model_version import ModelVersion
 from packages.database.models.optimization_run import OptimizationRun
@@ -35,6 +33,7 @@ from packages.domain.optimization import (
     TargetGameweekStatus,
 )
 from packages.domain.rules import RulesStatus
+from tests.integration.conftest import authed_client
 
 _REVIEWED_FPL_EVENT_ID = 20
 _CAPTAIN_ELEMENT_ID = 30000
@@ -140,7 +139,7 @@ def _seed_authoritative_audit_with_material_captain_miss(db_session, season_id) 
 def test_review_gameweek_happy_path(db_session, patched_fpl_client_optimization):
     season_id = _seed_season(db_session)
     _seed_authoritative_audit_with_material_captain_miss(db_session, season_id)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/jobs/review-gameweek", json={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID})
 
@@ -166,7 +165,7 @@ def test_review_gameweek_no_authoritative_recommendation_returns_409(
     db_session, patched_fpl_client_optimization
 ):
     _seed_season(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/jobs/review-gameweek", json={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID})
 
@@ -183,7 +182,7 @@ def test_review_gameweek_unfinished_gameweek_returns_409(
     unfinished_gameweek = db_session.execute(
         select(Gameweek).where(Gameweek.season_id == season_id, Gameweek.is_current.is_(True))
     ).scalar_one()
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post(
         "/jobs/review-gameweek", json={"target_fpl_event_id": unfinished_gameweek.fpl_event_id}
@@ -196,7 +195,7 @@ def test_review_gameweek_unfinished_gameweek_returns_409(
 def test_get_learning_report_by_id_happy_path(db_session, patched_fpl_client_optimization):
     season_id = _seed_season(db_session)
     _seed_authoritative_audit_with_material_captain_miss(db_session, season_id)
-    client = TestClient(create_app())
+    client = authed_client()
 
     generate_response = client.post(
         "/jobs/review-gameweek", json={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID}
@@ -211,7 +210,7 @@ def test_get_learning_report_by_id_happy_path(db_session, patched_fpl_client_opt
 
 
 def test_get_learning_report_nonexistent_returns_404(db_session):
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.get(f"/learning/reports/{uuid.uuid4()}")
 
@@ -222,7 +221,7 @@ def test_get_learning_report_nonexistent_returns_404(db_session):
 def test_get_latest_learning_report_happy_path(db_session, patched_fpl_client_optimization):
     season_id = _seed_season(db_session)
     _seed_authoritative_audit_with_material_captain_miss(db_session, season_id)
-    client = TestClient(create_app())
+    client = authed_client()
 
     generate_response = client.post(
         "/jobs/review-gameweek", json={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID}
@@ -238,7 +237,7 @@ def test_get_latest_learning_report_happy_path(db_session, patched_fpl_client_op
 
 def test_get_latest_learning_report_none_exists_returns_404(db_session, patched_fpl_client_optimization):
     _seed_season(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.get("/learning/latest")
 
@@ -249,7 +248,7 @@ def test_get_latest_learning_report_none_exists_returns_404(db_session, patched_
 def test_list_learning_signals_filters_by_signal_type(db_session, patched_fpl_client_optimization):
     season_id = _seed_season(db_session)
     _seed_authoritative_audit_with_material_captain_miss(db_session, season_id)
-    client = TestClient(create_app())
+    client = authed_client()
     review_response = client.post(
         "/jobs/review-gameweek", json={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID}
     )
@@ -267,7 +266,7 @@ def test_list_learning_signals_filters_by_signal_type(db_session, patched_fpl_cl
 
 
 def test_list_learning_signals_invalid_signal_type_returns_400(db_session):
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.get("/learning/signals", params={"signal_type": "not_a_real_signal_type"})
 
@@ -281,7 +280,7 @@ def test_list_failure_attributions_filters_by_reason_code(db_session, patched_fp
     # THIS test's own outcome shows up correctly filtered, not an exact global count.
     season_id = _seed_season(db_session)
     _seed_authoritative_audit_with_material_captain_miss(db_session, season_id)
-    client = TestClient(create_app())
+    client = authed_client()
     review_response = client.post(
         "/jobs/review-gameweek", json={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID}
     )
@@ -305,7 +304,7 @@ def test_list_failure_attributions_filters_by_reason_code(db_session, patched_fp
 
 
 def test_list_failure_attributions_invalid_category_returns_400(db_session):
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.get("/learning/failures", params={"category": "not_a_real_category"})
 
@@ -349,7 +348,7 @@ def _seed_trained_model_version_id(db_session, patched_historical_fpl_client) ->
 def test_run_backtest_happy_path(db_session, patched_historical_fpl_client):
     model_version_id = _seed_trained_model_version_id(db_session, patched_historical_fpl_client)
     model_version = db_session.get(ModelVersion, model_version_id)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/jobs/backtest", json={"model_version_id": str(model_version_id)})
 
@@ -371,7 +370,7 @@ def test_run_backtest_happy_path(db_session, patched_historical_fpl_client):
 
 
 def test_run_backtest_model_version_not_found_returns_409(db_session):
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/jobs/backtest", json={"model_version_id": str(uuid.uuid4())})
 
@@ -382,7 +381,7 @@ def test_run_backtest_model_version_not_found_returns_409(db_session):
 
 
 def test_run_backtest_invalid_request_body_returns_422(db_session):
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post("/jobs/backtest", json={})
 

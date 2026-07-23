@@ -18,14 +18,29 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.ingestion.historical_client import HistoricalFPLClient
+from apps.api.main import create_app
 from packages.database.session import SessionLocal, engine
 from packages.domain.ingestion import EndpointHealth
 from packages.fpl_client import FetchResult, FPLClient
 from packages.fpl_client.fingerprint import schema_signature, sha256_hex
+from packages.shared.config import get_settings
+
+
+def authed_client() -> TestClient:
+    """A ``TestClient`` pre-configured with the shared-secret auth header every
+    non-health endpoint now requires (Milestone 8 Layer 1) -- reads the real
+    ``Settings.app_shared_token`` (its dev default in a test environment, same
+    as every other unoverridden setting) rather than bypassing the dependency,
+    so these tests keep exercising the real auth path instead of skipping it.
+    """
+    client = TestClient(create_app())
+    client.headers["Authorization"] = f"Bearer {get_settings().app_shared_token}"
+    return client
 
 
 def _database_reachable() -> bool:

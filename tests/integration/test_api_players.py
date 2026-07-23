@@ -8,11 +8,9 @@ committed rows from one are visible to the other.
 
 import uuid
 
-from fastapi.testclient import TestClient
-
 from app.jobs.service import execute_job
-from apps.api.main import create_app
 from packages.domain.jobs import JobStatus, JobType, TriggerType
+from tests.integration.conftest import authed_client
 
 
 def _seed(db_session):
@@ -23,7 +21,7 @@ def _seed(db_session):
 
 def test_list_players_returns_paginated_current_season_players(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.get("/players", params={"page": 1, "page_size": 10})
 
@@ -39,7 +37,7 @@ def test_list_players_returns_paginated_current_season_players(db_session, patch
 
 def test_list_players_filters_by_position(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.get("/players", params={"position": "gkp", "page_size": 200})
 
@@ -51,7 +49,7 @@ def test_list_players_filters_by_position(db_session, patched_fpl_client_optimiz
 
 def test_list_players_search_matches_web_name_substring(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     all_players = client.get("/players", params={"page_size": 200}).json()["items"]
     target = all_players[0]["web_name"]
@@ -67,7 +65,7 @@ def test_list_players_search_matches_web_name_substring(db_session, patched_fpl_
 
 def test_get_player_detail_returns_full_row(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
     listed = client.get("/players", params={"page_size": 1}).json()["items"][0]
 
     response = client.get(f"/players/{listed['id']}")
@@ -81,7 +79,7 @@ def test_get_player_detail_returns_full_row(db_session, patched_fpl_client_optim
 
 def test_get_player_detail_404_for_unknown_id(db_session, patched_fpl_client_optimization):
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.get(f"/players/{uuid.uuid4()}")
 
@@ -95,7 +93,7 @@ def test_get_player_projection_shape(db_session, patched_fpl_client_optimization
     # enough to guarantee at least one eligible ('a'/'d' status) player
     # rather than assuming the alphabetically-first one happens to be.
     _seed(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
     listed_players = client.get("/players", params={"page_size": 200}).json()["items"]
     eligible = next(p for p in listed_players if p["status"] not in {"i", "s", "u"})
 

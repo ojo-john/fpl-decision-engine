@@ -8,11 +8,10 @@ MANAGER_SYNC, an unresolvable id here is a 422, not a tolerated case -- see
 that asymmetry is deliberate.
 """
 
-from fastapi.testclient import TestClient
 
 from app.jobs.service import execute_job
-from apps.api.main import create_app
 from packages.domain.jobs import JobStatus, JobType, TriggerType
+from tests.integration.conftest import authed_client
 
 _VALID_ELEMENT_IDS = [30000 + i for i in range(15)]
 
@@ -25,7 +24,7 @@ def _seed_players(db_session):
 
 def test_manual_squad_happy_path(db_session, patched_fpl_client_optimization):
     _seed_players(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post(
         "/squads/manual",
@@ -48,7 +47,7 @@ def test_manual_squad_happy_path(db_session, patched_fpl_client_optimization):
 
 def test_manual_squad_rejects_duplicate_ids_with_422(db_session, patched_fpl_client_optimization):
     _seed_players(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     duplicated = _VALID_ELEMENT_IDS[:14] + [_VALID_ELEMENT_IDS[0]]
     response = client.post(
@@ -61,7 +60,7 @@ def test_manual_squad_rejects_duplicate_ids_with_422(db_session, patched_fpl_cli
 
 def test_manual_squad_rejects_wrong_count_with_422(db_session, patched_fpl_client_optimization):
     _seed_players(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     response = client.post(
         "/squads/manual",
@@ -73,7 +72,7 @@ def test_manual_squad_rejects_wrong_count_with_422(db_session, patched_fpl_clien
 
 def test_manual_squad_rejects_unresolvable_id_with_422(db_session, patched_fpl_client_optimization):
     _seed_players(db_session)
-    client = TestClient(create_app())
+    client = authed_client()
 
     unresolvable = _VALID_ELEMENT_IDS[:14] + [999999]
     response = client.post(
