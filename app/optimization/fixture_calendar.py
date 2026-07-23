@@ -58,13 +58,20 @@ def _team_ids_for_season(session: Session, season_id: uuid.UUID) -> list[uuid.UU
 def _non_quarantined_fixtures_for_gameweeks(
     session: Session, season_id: uuid.UUID, gameweek_ids: list[uuid.UUID]
 ) -> list[Fixture]:
+    # Ordered by fpl_fixture_id (a stable, meaningful business key) so a
+    # team's TeamFixtureCount.fixture_ids has a deterministic order -- an
+    # unordered query has no obligation to return rows in insertion order,
+    # and drifts as the underlying table grows (same bug class as the
+    # player_features cross-test pollution fixed for MODEL_TRAINING/BACKTEST).
     return list(
         session.execute(
-            select(Fixture).where(
+            select(Fixture)
+            .where(
                 Fixture.season_id == season_id,
                 Fixture.gameweek_id.in_(gameweek_ids),
                 Fixture.is_quarantined.is_(False),
             )
+            .order_by(Fixture.fpl_fixture_id)
         )
         .scalars()
         .all()
