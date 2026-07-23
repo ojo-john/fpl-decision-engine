@@ -143,11 +143,31 @@ Migrations live in `migrations/versions/`. The Alembic environment
 `packages.shared.config.get_settings().database_url` — never hardcode a URL
 in `alembic.ini` or a migration file.
 
+## Web dashboard (apps/web)
+
+See the README's "Web dashboard" section for local setup. Operationally:
+
+- `docker compose logs web` / `docker compose logs api` -- both containers
+  log structured JSON to stdout, same convention as every other job.
+- If `apps/web` can't log in or every page 500s, first check
+  `APP_SHARED_TOKEN` actually matches between the two `.env` files
+  (`.env`/`apps/web/.env.local` locally, or the two containers' resolved
+  environments under Docker Compose) -- a mismatch here is the most likely
+  cause, not a code bug.
+- `apps/web/lib/api-types.ts` is generated, not hand-written -- if a page
+  shows a TypeScript error about a field that clearly exists on the API
+  response, regenerate it (see the README) rather than hand-editing the
+  generated file.
+
 ## Secret rotation
 
-Not applicable yet. There are no persistent, deployed secrets — CI workflows
-(`ci.yml`, `health.yml`, `ingest.yml`, `scheduled-dispatcher.yml`) all use
-ephemeral, CI-local Postgres containers with fixed, non-sensitive
-placeholder credentials, and the FPL API endpoints hit by `packages.fpl_client`
-are all public and unauthenticated. This section will be filled in once a
-real deployment target and real secrets exist.
+`APP_SHARED_TOKEN` is the one real secret in this system once it's deployed
+anywhere beyond local Docker Compose (see `apps/api/auth.py`'s own
+docstring) -- rotating it means updating it in both the API's and
+`apps/web`'s environments at the same time (they must always match) and
+every existing browser session will need to log in again. Otherwise, not
+applicable yet: CI workflows (`ci.yml`, `health.yml`, `ingest.yml`,
+`scheduled-dispatcher.yml`) all use ephemeral, CI-local Postgres containers
+with fixed, non-sensitive placeholder credentials, and the FPL API endpoints
+hit by `packages.fpl_client` are all public and unauthenticated. This
+section will be filled in further once a real deployment target exists.

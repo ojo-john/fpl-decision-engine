@@ -135,6 +135,32 @@ jobs:
       - name: Build image (no push)
         run: docker build -t fpl-api:ci .
 
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+
+  web-docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (no push)
+        run: docker build -t fpl-web:ci apps/web
+
   ci-success:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -146,6 +172,8 @@ jobs:
       - integration-tests
       - security-scan
       - docker-build
+      - web
+      - web-docker-build
     if: always()
     steps:
       - name: Check all required jobs succeeded

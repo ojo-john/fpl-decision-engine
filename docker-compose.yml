@@ -30,5 +30,24 @@ services:
       timeout: 5s
       retries: 5
 
+  web:
+    build: { context: ./apps/web, dockerfile: Dockerfile }
+    env_file: .env
+    environment:
+      # api's own compose-network hostname, not localhost -- mirrors the
+      # DATABASE_URL override above. APP_SHARED_TOKEN comes from the root
+      # .env via env_file: it MUST be the same value the api service reads,
+      # since apps/web/lib/api-client.ts sends it as the api service's own
+      # Bearer token.
+      API_BASE_URL: http://api:8000
+    ports: ["3000:3000"]
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/login', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata: {}

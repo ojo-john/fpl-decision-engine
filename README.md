@@ -20,8 +20,8 @@ placeholder package — those land in later milestones.
 ## Architecture overview
 
 ```
-apps/api/        FastAPI app (health endpoints only, so far)
-apps/web/        Frontend (not started)
+apps/api/        FastAPI app -- auth, CORS, and the full REST surface over every domain job
+apps/web/        Next.js dashboard (Milestone 8): login, read-only pages, and a few interactive actions
 app/*/           Domain subpackages — placeholders except app/jobs, app/rules, app/data_quality, app/ingestion
 app/jobs/        Job runner framework: JobRunner ABC, registry, execute_job service
 app/rules/       Rules extraction/diff/versioning (bootstrap-static -> RulesConfigSnapshot)
@@ -68,15 +68,48 @@ cp .env.example .env   # if not already done
 docker compose up
 ```
 
-This starts a `postgres:16-alpine` container and the API container (with
-live reload). The API depends on Postgres passing its healthcheck before
-starting. Once up: `curl http://localhost:8000/health` and
-`curl http://localhost:8000/health/db`.
+This starts three containers: `postgres:16-alpine`, the API (with live
+reload), and the web dashboard (production build) -- `web` depends on `api`
+passing its healthcheck, which depends on `postgres` passing its own. Once
+up: `curl http://localhost:8000/health`, `curl http://localhost:8000/health/db`,
+and open `http://localhost:3000` (log in with `APP_SHARED_TOKEN` from your
+`.env` -- the committed `.env.example` default is `dev-token-change-me`).
 
-> **Note:** Docker was not installed on the machine this repository was
-> originally scaffolded on, so `docker compose up` and the integration test
-> suite have been reviewed for correctness but not yet runtime-validated.
-> See "Known limitations" in the Milestone 0 completion report for details.
+## Web dashboard (apps/web)
+
+Next.js (App Router, TypeScript), single shared-secret login (see
+`apps/api/auth.py`'s own docstring for why a full multi-user auth system
+would be over-engineering here), talking to the API above. Local, non-Docker
+setup:
+
+```bash
+cd apps/web
+cp .env.example .env.local   # APP_SHARED_TOKEN must match the API's own value
+npm install
+npm run dev                   # http://localhost:3000, API must already be running
+```
+
+Two things worth knowing:
+
+- `lib/api-types.ts` is generated from the API's own OpenAPI schema, not
+  hand-written -- regenerate it after changing any `apps/api` request/response
+  schema:
+  ```bash
+  # with the API running on :8000
+  uv run python -c "import json; from apps.api.main import app; json.dump(app.openapi(), open('openapi.json', 'w'))"
+  cd apps/web && npm run generate-api-types
+  ```
+- The browser never holds `APP_SHARED_TOKEN` directly. Read-only pages are
+  Server Components that call the API directly (server-to-server); the few
+  interactive actions (buttons/forms) go through `apps/web`'s own
+  `/api/proxy/*` route, which attaches the real token server-side.
+
+```bash
+cd apps/web
+npm run lint
+npm run typecheck
+npm run build
+```
 
 ## Database setup
 
@@ -176,6 +209,13 @@ local Postgres): `make ingest`.
 | `ENVIRONMENT` | No | `development` | Free-form environment label. |
 | `FPL_MANAGER_ID` | No | `None` | Public numeric FPL manager ID. Not a secret. Unused until a later milestone. |
 | `FPL_H2H_LEAGUE_ID` | No | `None` | Public numeric FPL H2H league ID. Not a secret. Unused until a later milestone. |
+| `APP_SHARED_TOKEN` | No | `dev-token-change-me` | Gates every non-`/health` API endpoint (see `apps/api/auth.py`) and is `apps/web`'s login password / Bearer token in one. **Must be overridden to a real random value for anything beyond local Docker Compose.** |
+| `CORS_ALLOWED_ORIGINS` | No | `` (empty, fail-closed) | Comma-separated browser origins allowed to call the API directly. Not needed by `apps/web` itself (it always talks to the API server-to-server, never from the browser) -- only relevant if something else calls the API from a browser. |
+
+`apps/web` has its own env file, `apps/web/.env.example` (`APP_SHARED_TOKEN`
+— **must match** the API's own value above — and `API_BASE_URL`, the API's
+reachable base URL: `http://localhost:8000` for local `npm run dev`,
+`http://api:8000` inside Docker Compose).
 
 ## GitHub setup
 
