@@ -1,0 +1,34 @@
+import { NextRequest, NextResponse } from "next/server";
+import { isValidSessionCookieValue, SESSION_COOKIE_NAME } from "@/lib/session";
+
+// Gates every route except /login and /api/session behind the signed session
+// cookie (Milestone 8 Layer 1/2). Named `proxy.ts` per Next.js 16's rename of
+// the "Middleware" file convention -- same mechanism, new name.
+const PUBLIC_PATHS = ["/login", "/api/session"];
+
+export async function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  if (PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))) {
+    return NextResponse.next();
+  }
+
+  const expected = process.env.APP_SHARED_TOKEN;
+  if (!expected) {
+    throw new Error("Missing required environment variable: APP_SHARED_TOKEN");
+  }
+
+  const cookieValue = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+  if (await isValidSessionCookieValue(cookieValue, expected)) {
+    return NextResponse.next();
+  }
+
+  const loginUrl = new URL("/login", request.url);
+  loginUrl.searchParams.set("next", pathname);
+  return NextResponse.redirect(loginUrl);
+}
+
+export const config = {
+  // Every request except Next.js internals and static assets -- an
+  // unauthenticated request to any page or API route must hit this check.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+};

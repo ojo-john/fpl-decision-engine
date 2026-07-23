@@ -14,10 +14,17 @@ __pycache__/
 # OS
 .DS_Store
 
-# Frontend (future)
+# Frontend
 node_modules/
 dist/
 build/
+.next/
+apps/web/.env.local
+apps/web/tsconfig.tsbuildinfo
+
+# Generated OpenAPI schema dump -- transient input to `npm run generate-api-types`
+# (see apps/web/package.json); the generated apps/web/lib/api-types.ts IS committed.
+/openapi.json
 
 # Logs
 *.log
