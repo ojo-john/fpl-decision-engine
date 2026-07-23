@@ -18,6 +18,7 @@ one and only unfinished gameweek) while still exercising a real, live
 ``AVAILABLE`` window end to end.
 """
 
+import secrets
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -389,16 +390,45 @@ def test_chip_simulation_snapshot_not_found(db_session, patched_fpl_client_optim
     assert job.error_code == "SNAPSHOT_NOT_FOUND"
 
 
-def test_chip_simulation_snapshot_missing_picks_data(
+def test_chip_simulation_snapshot_missing_picks_data_falls_back_to_solved_lineup(
     db_session, patched_fpl_client_optimization_with_active_gameweek
 ):
+    """A snapshot with no raw_picks_json (every MANUAL_ENTRY squad -- see that model's own
+    docstring) can't have its starting XI read verbatim, but CHIP_SIMULATION must not just refuse
+    outright: _derive_starting_and_bench_from_solver solves one instead, from the same feasible
+    15-player squad _raw_picks_json() would have described by hand."""
     season_id = _seed_players_with_active_gameweek(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id, raw_picks_json=None)
 
     job = _run_chip_simulation(db_session, snapshot.id)
 
+    assert job.status == JobStatus.SUCCEEDED
+    run_id = uuid.UUID(job.output_json["chip_optimization_run_id"])
+    run_row = db_session.get(ChipOptimizationRun, run_id)
+    assert run_row is not None
+    assert run_row.run_status == ChipOptimizationRunStatus.SUCCEEDED
+
+    recommendations = _recommendations_by_chip_type(db_session, run_id)
+    assert set(recommendations.keys()) == _ALL_CHIP_TYPE_VALUES
+    for recommendation in recommendations.values():
+        assert recommendation.verdict in (ChipVerdict.USE_NOW, ChipVerdict.HOLD)
+        assert recommendation.rationale
+
+
+def test_chip_simulation_snapshot_with_unsolvable_squad_still_fails_cleanly(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """The solver fallback degrades to the same clean failure as before when there's genuinely
+    nothing to solve -- an empty squad can never produce a feasible starting XI."""
+    season_id = _seed_players_with_active_gameweek(db_session)
+    snapshot = _create_manual_snapshot(db_session, season_id, raw_picks_json=None)
+    snapshot.squad_player_ids = []
+    db_session.commit()
+
+    job = _run_chip_simulation(db_session, snapshot.id)
+
     assert job.status == JobStatus.FAILED
-    assert job.error_code == "SNAPSHOT_MISSING_PICKS_DATA"
+    assert job.error_code == "CHIP_SIMULATION_FAILED"
 
 
 # --- Milestone 6 Layer 4: league-context refinement ---------------------------------------------
@@ -434,8 +464,12 @@ _RIVAL_VICE_CAPTAIN_ELEMENT_ID = 30054
 
 _USER_REAL_FPL_MANAGER_ID = 910001
 _RIVAL_REAL_FPL_MANAGER_ID = 910002
-_REAL_LEAGUE_FPL_ID = 910100
-_REAL_H2H_MATCH_FPL_ID = 920001
+# Randomized (not a fixed literal) so separate pytest invocations against the same
+# non-truncated Postgres never collide on League.fpl_league_id's / H2HMatch.fpl_match_id's
+# own UNIQUE constraints -- same rationale, same fix shape, as conftest.py's own
+# secrets.randbelow-seeded season-year counter.
+_REAL_LEAGUE_FPL_ID = 910100 + secrets.randbelow(1_000_000)
+_REAL_H2H_MATCH_FPL_ID = 920001 + secrets.randbelow(1_000_000)
 
 # > _WILDCARD_MAX_CANDIDATE_GAMEWEEKS (4) would exercise the cap; deliberately small here instead
 # (well within the cap) so every one of the 4 chip types genuinely evaluates the SAME 3 candidate

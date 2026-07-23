@@ -173,6 +173,7 @@ from app.h2h.simulate import (
     sample_user_scores,
     summarize_matchup,
 )
+from app.jobs.handlers.lineup_optimization import _build_lineup_candidates
 from app.jobs.registry import register_handler
 from app.jobs.runner import JobContext, JobResult, JobRunner
 from app.optimization.champion_loader import LoadedChampion, load_current_champion
@@ -188,6 +189,7 @@ from app.optimization.fixture_calendar import (
 )
 from app.optimization.gameweek_resolution import resolve_gameweeks_within_window, resolve_target_gameweek
 from app.optimization.gate import check_optimization_gate
+from app.optimization.lineup_solver import solve_lineup
 from app.optimization.projection import PROJECTION_FORMULA_VERSION, project_player_with_champion
 from app.optimization.residual_cache import _ResidualCache
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
@@ -204,7 +206,7 @@ from packages.database.models.rules_config import RulesConfig
 from packages.database.session import SessionLocal
 from packages.domain.chips import ChipOptimizationRunStatus, ChipType, ChipVerdict, UserChipWindowStatus
 from packages.domain.jobs import JobStatus, JobType
-from packages.domain.optimization import TargetGameweekStatus
+from packages.domain.optimization import SolverStatus, TargetGameweekStatus
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +271,59 @@ def _split_starting_and_bench(raw_picks_json: dict | None) -> tuple[list[dict], 
         (p for p in picks if p.get("position", 0) > _STARTING_XI_MAX_POSITION),
         key=lambda p: p.get("position", 99),
     )
+    return starters, bench
+
+
+def _derive_starting_and_bench_from_solver(
+    session: Session,
+    season_id: uuid.UUID,
+    squad_player_ids: list[str],
+    target_gameweek_id: uuid.UUID | None,
+    champion: LoadedChampion | None,
+    constraints: OptimizationConstraints,
+) -> tuple[list[dict], list[dict]]:
+    """Fallback for a snapshot with no usable ``raw_picks_json`` (MANUAL_ENTRY squads never have
+    one -- see ``ManagerSquadSnapshot``'s own docstring; a MANAGER_SYNC snapshot could in principle
+    lack one too, if that run's own picks fetch failed).
+
+    A manually-entered squad was never assigned a real starting XI/bench/captain by an actual
+    human, so there is nothing in ``raw_picks_json`` to reuse verbatim (see this module's own
+    docstring on why every OTHER caller reads it verbatim, never re-derives it) -- the honest
+    substitute is the SAME solver ``LINEUP_OPTIMIZATION`` itself uses
+    (``app.optimization.lineup_solver.solve_lineup``, via the same
+    ``app.jobs.handlers.lineup_optimization._build_lineup_candidates`` candidate-building this
+    module reuses directly rather than duplicating), reshaped into the identical picks-dict shape
+    ``_split_starting_and_bench`` produces so every downstream consumer here is unchanged.
+    """
+    player_ids = [uuid.UUID(pid) for pid in squad_player_ids]
+    candidates = _build_lineup_candidates(session, season_id, player_ids, target_gameweek_id, champion)
+    solution = solve_lineup(candidates, constraints.position_requirements)
+    if solution.solver_status != SolverStatus.OPTIMAL:
+        return [], []
+
+    players_by_id = {
+        p.id: p
+        for p in session.execute(select(Player).where(Player.id.in_(player_ids))).scalars()
+    }
+
+    starters = [
+        {
+            "element": players_by_id[player_id].fpl_element_id,
+            "position": index + 1,
+            "is_captain": player_id == solution.captain_player_id,
+        }
+        for index, player_id in enumerate(solution.starting_player_ids)
+        if player_id in players_by_id
+    ]
+    bench = [
+        {
+            "element": players_by_id[player_id].fpl_element_id,
+            "position": _STARTING_XI_MAX_POSITION + 1 + index,
+            "is_captain": False,
+        }
+        for index, player_id in enumerate(solution.bench_player_ids_ordered)
+        if player_id in players_by_id
+    ]
     return starters, bench
 
 
@@ -1091,11 +1146,10 @@ class ChipSimulationJobRunner(JobRunner):
                     )
                 season_id = snapshot.season_id
 
-                if not snapshot.raw_picks_json or not snapshot.raw_picks_json.get("picks"):
-                    raise _InputResolutionError(
-                        "SNAPSHOT_MISSING_PICKS_DATA",
-                        "manager_squad_snapshot has no raw_picks_json to resolve a starting XI from.",
-                    )
+                # No upfront raw_picks_json gate here anymore: a snapshot without one (every
+                # MANUAL_ENTRY squad, or a MANAGER_SYNC one whose own picks fetch failed) falls back
+                # to solving a starting XI instead, once execution reaches that point below -- see
+                # _derive_starting_and_bench_from_solver's own docstring.
 
                 requested_chip_types = _resolve_requested_chip_types(ctx.parameters)
 
@@ -1154,10 +1208,23 @@ class ChipSimulationJobRunner(JobRunner):
                 residuals = _ResidualCache(session, season_id)
                 captain_multiplier = get_captain_multiplier(session, constraints.rules_config_id)
 
-                starters, bench = _split_starting_and_bench(snapshot.raw_picks_json)
+                if snapshot.raw_picks_json and snapshot.raw_picks_json.get("picks"):
+                    starters, bench = _split_starting_and_bench(snapshot.raw_picks_json)
+                else:
+                    starters, bench = _derive_starting_and_bench_from_solver(
+                        session,
+                        season_id,
+                        snapshot.squad_player_ids,
+                        target_gameweek_id,
+                        champion,
+                        constraints,
+                    )
                 if not starters:
                     raise _SimulationBuildError(
-                        "User picks' starting XI could not be read from raw_picks_json."
+                        "Could not resolve a starting XI for this squad, neither from its own "
+                        "raw_picks_json nor by solving one -- see "
+                        "_derive_starting_and_bench_from_solver's own docstring for when this "
+                        "fallback itself can still come back empty (solver infeasibility)."
                     )
 
                 element_ids = {p["element"] for p in starters + bench}

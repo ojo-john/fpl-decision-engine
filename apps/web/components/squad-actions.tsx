@@ -52,21 +52,20 @@ export function SquadActions({
           router.push(`/transfers/${body.transfer_optimization_run_id}`);
         }}
       />
-      {hasRawPicks ? (
-        <ActionButton
-          path="/optimize/chips"
-          body={{ manager_squad_snapshot_id: snapshotId }}
-          label="Simulate chips"
-          pendingLabel="Simulating..."
-          onSuccess={(data) => {
-            const body = data as { chip_optimization_run_id: string };
-            router.push(`/chips/${body.chip_optimization_run_id}`);
-          }}
-        />
-      ) : (
-        <span style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
-          Chip simulation needs a squad with a known starting XI/bench split -- unavailable for this
-          snapshot.
+      <ActionButton
+        path="/optimize/chips"
+        body={{ manager_squad_snapshot_id: snapshotId }}
+        label="Simulate chips"
+        pendingLabel="Simulating..."
+        onSuccess={(data) => {
+          const body = data as { chip_optimization_run_id: string };
+          router.push(`/chips/${body.chip_optimization_run_id}`);
+        }}
+      />
+      {!hasRawPicks && (
+        <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>
+          This squad has no confirmed starting XI, so chip simulation will estimate one via the
+          lineup solver first.
         </span>
       )}
     </div>
