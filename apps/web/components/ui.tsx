@@ -1,5 +1,24 @@
 import type { CSSProperties, ReactNode } from "react";
 
+export const inputStyle: CSSProperties = {
+  background: "var(--bg)",
+  border: "1px solid var(--border)",
+  borderRadius: "6px",
+  color: "var(--text)",
+  padding: "0.45rem 0.6rem",
+  fontSize: "0.9rem",
+};
+
+export const buttonStyle: CSSProperties = {
+  background: "var(--accent)",
+  border: "none",
+  borderRadius: "6px",
+  color: "white",
+  padding: "0.45rem 0.85rem",
+  fontSize: "0.9rem",
+  cursor: "pointer",
+};
+
 export function Card({ children, style }: { children: ReactNode; style?: CSSProperties }) {
   return (
     <section

@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import { buttonStyle, inputStyle } from "@/components/ui";
 
 export function LoginForm() {
   const router = useRouter();
@@ -47,26 +48,16 @@ export function LoginForm() {
         value={token}
         onChange={(event) => setToken(event.target.value)}
         autoFocus
-        style={{
-          background: "var(--surface)",
-          border: "1px solid var(--border)",
-          borderRadius: "6px",
-          color: "var(--text)",
-          padding: "0.6rem 0.75rem",
-          fontSize: "1rem",
-        }}
+        style={{ ...inputStyle, fontSize: "1rem", padding: "0.6rem 0.75rem" }}
       />
       {error && <p style={{ color: "var(--danger)", margin: 0 }}>{error}</p>}
       <button
         type="submit"
         disabled={submitting || token.length === 0}
         style={{
-          background: "var(--accent)",
-          border: "none",
-          borderRadius: "6px",
-          color: "white",
-          padding: "0.6rem 0.75rem",
+          ...buttonStyle,
           fontSize: "1rem",
+          padding: "0.6rem 0.75rem",
           cursor: submitting ? "wait" : "pointer",
           opacity: token.length === 0 ? 0.6 : 1,
         }}

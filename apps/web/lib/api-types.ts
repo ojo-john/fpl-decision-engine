@@ -465,6 +465,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/leagues/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync League */
+        post: operations["sync_league_leagues_sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/leagues": {
         parameters: {
             query?: never;
@@ -862,6 +879,41 @@ export interface components {
             fpl_league_id: number;
             /** Name */
             name: string;
+        };
+        /** LeagueSyncRequest */
+        LeagueSyncRequest: {
+            /** Fpl League Id */
+            fpl_league_id: number;
+            /** Exclude Fpl Manager Id */
+            exclude_fpl_manager_id?: number | null;
+            /** Requested By */
+            requested_by?: string | null;
+        };
+        /**
+         * LeagueSyncRunOut
+         * @description See packages.database.models.league_sync_run.LeagueSyncRun.
+         */
+        LeagueSyncRunOut: {
+            /**
+             * League Sync Run Id
+             * Format: uuid
+             */
+            league_sync_run_id: string;
+            /** League Id */
+            league_id: string | null;
+            /** Run Status */
+            run_status: string;
+            /** Rivals Synced Count */
+            rivals_synced_count: number | null;
+            /** Rivals Unavailable Count */
+            rivals_unavailable_count: number | null;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Completed At */
+            completed_at: string | null;
         };
         /** LearningReportOut */
         LearningReportOut: {
@@ -2296,6 +2348,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FailureAttributionOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_league_leagues_sync_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LeagueSyncRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeagueSyncRunOut"];
                 };
             };
             /** @description Validation Error */

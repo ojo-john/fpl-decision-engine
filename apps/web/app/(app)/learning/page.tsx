@@ -1,8 +1,19 @@
 import ReactMarkdown from "react-markdown";
 import { backendClient } from "@/lib/api-client";
+import { SingleFieldActionForm } from "@/components/single-field-action-form";
 import { Card, EmptyState, ErrorState } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
+
+const reviewForm = (
+  <SingleFieldActionForm
+    path="/jobs/review-gameweek"
+    fieldName="target_fpl_event_id"
+    fieldLabel="Gameweek to review"
+    fieldType="number"
+    submitLabel="Run review"
+  />
+);
 
 export default async function LearningPage() {
   const client = backendClient();
@@ -10,10 +21,10 @@ export default async function LearningPage() {
 
   if (response.status === 404) {
     return (
-      <EmptyState>
-        No gameweek review has run for the current season yet -- run{" "}
-        <code>POST /jobs/review-gameweek</code>.
-      </EmptyState>
+      <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        <EmptyState>No gameweek review has run for the current season yet.</EmptyState>
+        {reviewForm}
+      </div>
     );
   }
   if (!data) {
@@ -32,6 +43,8 @@ export default async function LearningPage() {
           </p>
         )}
       </Card>
+
+      {reviewForm}
 
       {data.report_markdown ? (
         <Card>

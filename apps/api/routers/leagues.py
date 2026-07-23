@@ -1,11 +1,12 @@
-"""``/leagues`` endpoints: read already-persisted LEAGUE_SYNC output (Milestone 8 Layer 1).
+"""``/leagues`` endpoints: trigger and read LEAGUE_SYNC output (Milestone 8 Layers 1 & 3).
 
 LEAGUE_SYNC (Milestone 5 Layer 1/2) previously had zero REST exposure --
-reachable only via ``scripts/run_job.py`` or the scheduled dispatcher. These
-are plain, capped-result reads over already-persisted rows, mirroring
-``apps.api.routers.learning``'s GET endpoints exactly -- no job execution
-here, and no ``POST /leagues/sync`` trigger endpoint either (that's a
-natural Layer 3 "interactive actions" follow-up, not this layer's concern).
+reachable only via ``scripts/run_job.py`` or the scheduled dispatcher.
+``POST /leagues/sync`` mirrors every other job-triggering endpoint's exact
+shape (``execute_job`` -> 409-with-``error_code`` on non-success -> assembled
+response on success -- see ``apps.api.routers.recommendations``). The GET
+endpoints below it are plain, capped-result reads over already-persisted
+rows -- no job execution involved.
 """
 
 import uuid
@@ -15,14 +16,34 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.jobs.service import execute_job
 from apps.api.dependencies import get_db
-from apps.api.schemas.leagues import LeagueEntryOut, LeagueOut, RivalProfileOut
+from apps.api.schemas.leagues import (
+    LeagueEntryOut,
+    LeagueOut,
+    LeagueSyncRequest,
+    LeagueSyncRunOut,
+    RivalProfileOut,
+)
 from packages.database.models.league import League
 from packages.database.models.league_entry import LeagueEntry
+from packages.database.models.league_sync_run import LeagueSyncRun
 from packages.database.models.rival_profile import RivalProfile
 from packages.database.models.season import Season
+from packages.domain.jobs import JobStatus, JobType, TriggerType
 
 router = APIRouter(prefix="/leagues", tags=["leagues"])
+
+
+def _error_response(job) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error_code": job.error_code,
+            "error_message": job.error_message,
+            "job_id": str(job.id),
+        },
+    )
 
 # Same "capped read, not full pagination" convention as apps.api.routers.learning --
 # a real H2H league's rival/standings row count never approaches a size where
@@ -77,6 +98,37 @@ def _league_entry_out(row: LeagueEntry) -> LeagueEntryOut:
         matches_lost=row.matches_lost,
         points_for=row.points_for,
         total=row.total,
+    )
+
+
+@router.post("/sync", response_model=LeagueSyncRunOut)
+def sync_league(body: LeagueSyncRequest, db: Session = Depends(get_db)) -> LeagueSyncRunOut | JSONResponse:
+    parameters: dict[str, int] = {"fpl_league_id": body.fpl_league_id}
+    if body.exclude_fpl_manager_id is not None:
+        parameters["exclude_fpl_manager_id"] = body.exclude_fpl_manager_id
+
+    job = execute_job(
+        db,
+        job_type=JobType.LEAGUE_SYNC,
+        parameters=parameters,
+        requested_by=body.requested_by,
+        trigger_type=TriggerType.API,
+    )
+    if job.status != JobStatus.SUCCEEDED:
+        return _error_response(job)
+
+    assert job.output_json is not None  # a SUCCEEDED job always has output_json
+    run_id = uuid.UUID(job.output_json["league_sync_run_id"])
+    run = db.get(LeagueSyncRun, run_id)
+    assert run is not None  # a SUCCEEDED job always leaves its league_sync_runs row behind
+    return LeagueSyncRunOut(
+        league_sync_run_id=run.id,
+        league_id=run.league_id,
+        run_status=run.run_status.value,
+        rivals_synced_count=run.rivals_synced_count,
+        rivals_unavailable_count=run.rivals_unavailable_count,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
     )
 
 

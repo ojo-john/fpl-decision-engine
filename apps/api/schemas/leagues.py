@@ -7,6 +7,27 @@ from decimal import Decimal
 from pydantic import BaseModel
 
 
+class LeagueSyncRequest(BaseModel):
+    fpl_league_id: int
+    # The calling user's own FPL manager id, if provided -- excluded from
+    # being synced as a "rival" of themselves (see
+    # app.jobs.handlers.league_sync's own "self exclusion is optional" note).
+    exclude_fpl_manager_id: int | None = None
+    requested_by: str | None = None
+
+
+class LeagueSyncRunOut(BaseModel):
+    """See packages.database.models.league_sync_run.LeagueSyncRun."""
+
+    league_sync_run_id: uuid.UUID
+    league_id: uuid.UUID | None
+    run_status: str
+    rivals_synced_count: int | None
+    rivals_unavailable_count: int | None
+    started_at: datetime
+    completed_at: datetime | None
+
+
 class LeagueOut(BaseModel):
     """One synced H2H league -- lets a caller (apps/web) resolve a league_id before
     calling GET /leagues/{league_id}/rivals or /standings, since neither of those

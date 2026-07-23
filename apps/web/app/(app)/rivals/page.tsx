@@ -1,4 +1,6 @@
 import { backendClient } from "@/lib/api-client";
+import { ActionButton } from "@/components/action-button";
+import { SingleFieldActionForm } from "@/components/single-field-action-form";
 import { Card, ConfidenceBadge, EmptyState, ErrorState } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +14,18 @@ export default async function RivalsPage() {
   }
   const league = leagues[0];
   if (!league) {
-    return <EmptyState>No league has been synced yet -- run a LEAGUE_SYNC job.</EmptyState>;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        <EmptyState>No league has been synced yet.</EmptyState>
+        <SingleFieldActionForm
+          path="/leagues/sync"
+          fieldName="fpl_league_id"
+          fieldLabel="FPL H2H league ID"
+          fieldType="number"
+          submitLabel="Sync league"
+        />
+      </div>
+    );
   }
 
   const [{ data: rivals, response: rivalsResponse }, { data: standings }] = await Promise.all([
@@ -23,15 +36,33 @@ export default async function RivalsPage() {
   if (!rivals) {
     return <ErrorState>Could not load rivals for {league.name} ({rivalsResponse.status}).</ErrorState>;
   }
+
+  const syncButton = (
+    <ActionButton
+      path="/leagues/sync"
+      body={{ fpl_league_id: league.fpl_league_id }}
+      label="Sync now"
+      pendingLabel="Syncing..."
+    />
+  );
+
   if (rivals.length === 0) {
-    return <EmptyState>No rival profiles computed yet for {league.name} this season.</EmptyState>;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        <EmptyState>No rival profiles computed yet for {league.name} this season.</EmptyState>
+        {syncButton}
+      </div>
+    );
   }
 
   const standingByManager = new Map((standings ?? []).map((entry) => [entry.fpl_manager_id, entry]));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-      <h1 style={{ margin: 0, fontSize: "1.1rem" }}>{league.name}</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h1 style={{ margin: 0, fontSize: "1.1rem" }}>{league.name}</h1>
+        {syncButton}
+      </div>
       {rivals.map((rival) => {
         const standing = standingByManager.get(rival.fpl_manager_id);
         return (

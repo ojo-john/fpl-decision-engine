@@ -52,6 +52,34 @@ def _league_id(db_session, fpl_league_id: int = FPL_LEAGUE_ID) -> uuid.UUID:
     return db_session.execute(select(League.id).where(League.fpl_league_id == fpl_league_id)).scalar_one()
 
 
+def test_sync_league_happy_path(db_session, patched_fpl_client_optimization, patched_fpl_client_league):
+    _seed(db_session)
+    client = authed_client()
+
+    response = client.post(
+        "/leagues/sync",
+        json={"fpl_league_id": FPL_LEAGUE_ID, "exclude_fpl_manager_id": LEAGUE_SELF_FPL_MANAGER_ID},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    # patched_fpl_client_league's fixture gives rival B a clean picks fetch
+    # (rivals_synced_count=1) and rivals C/D unavailable outcomes (404 /
+    # simulated raise) -- see that fixture's own docstring.
+    assert body["run_status"] == "succeeded_with_warnings"
+    assert body["rivals_synced_count"] == 1
+    assert body["rivals_unavailable_count"] == 2
+    assert body["league_id"] is not None
+
+
+def test_sync_league_rejects_missing_body_fields_with_422(db_session):
+    client = authed_client()
+
+    response = client.post("/leagues/sync", json={})
+
+    assert response.status_code == 422
+
+
 def test_list_leagues_includes_every_synced_league(
     db_session, patched_fpl_client_optimization, patched_fpl_client_league
 ):

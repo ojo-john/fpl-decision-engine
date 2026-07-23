@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { backendClient } from "@/lib/api-client";
+import { ActionButton } from "@/components/action-button";
 import { Card, ConfidenceBadge, EmptyState, ErrorState } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -10,10 +11,14 @@ export default async function DashboardPage() {
 
   if (response.status === 404) {
     return (
-      <EmptyState>
-        No recommendation has been generated for the current season yet -- run{" "}
-        <code>POST /recommendations/generate</code>.
-      </EmptyState>
+      <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        <EmptyState>No recommendation has been generated for the current season yet.</EmptyState>
+        <ActionButton
+          path="/recommendations/generate"
+          label="Generate recommendation"
+          pendingLabel="Generating..."
+        />
+      </div>
     );
   }
   if (!data) {
@@ -35,6 +40,12 @@ export default async function DashboardPage() {
           <ConfidenceBadge confidence={data.confidence} />
         </div>
       </Card>
+
+      <ActionButton
+        path="/recommendations/generate"
+        label="Regenerate recommendation"
+        pendingLabel="Generating..."
+      />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "1rem" }}>
         {data.optimization && (
