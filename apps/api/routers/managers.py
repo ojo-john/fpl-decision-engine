@@ -15,22 +15,33 @@ this codebase for lightweight operations.
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.jobs.service import execute_job
 from apps.api.dependencies import get_db
-from apps.api.schemas.managers import ManagerSquadSnapshotOut, ManagerSyncRequest, ManualSquadRequest
+from apps.api.schemas.managers import (
+    ManagerSquadSnapshotOut,
+    ManagerSyncRequest,
+    ManualSquadRequest,
+    SquadPlayerOut,
+)
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
+from packages.database.models.position import Position
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.transfers import ManagerSquadSnapshotSource
 
 router_managers = APIRouter(prefix="/managers", tags=["managers"])
 router_squads = APIRouter(prefix="/squads", tags=["squads"])
+
+# Same "capped read, not full pagination" convention as apps.api.routers.learning/leagues --
+# this system's own snapshot volume (one manager, occasional manual entries) never
+# approaches a size where offset/limit paging is actually needed.
+_MAX_RESULTS = 200
 
 
 def _error_response(job) -> JSONResponse:
@@ -51,15 +62,57 @@ def _current_season_id(db: Session) -> uuid.UUID:
     return season_id
 
 
+def _not_found_response(snapshot_id: uuid.UUID) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error_code": "MANAGER_SQUAD_SNAPSHOT_NOT_FOUND",
+            "detail": f"manager_squad_snapshots row {snapshot_id} not found.",
+        },
+    )
+
+
+def _squad_players(db: Session, squad_player_ids: list[str]) -> list[SquadPlayerOut]:
+    ids = [uuid.UUID(pid) for pid in squad_player_ids]
+    rows = (
+        db.execute(
+            select(Player, Position)
+            .outerjoin(Position, Player.position_id == Position.id)
+            .where(Player.id.in_(ids))
+        )
+        .all()
+    )
+    by_id = {player.id: (player, position) for player, position in rows}
+    # Preserve squad_player_ids's own order -- a plain `id IN (...)` query has
+    # no obligation to return rows in that order.
+    return [
+        SquadPlayerOut(
+            player_id=pid,
+            web_name=by_id[pid][0].web_name if pid in by_id else None,
+            position=by_id[pid][1].short_name if pid in by_id and by_id[pid][1] is not None else None,
+            now_cost=by_id[pid][0].now_cost if pid in by_id else 0,
+        )
+        for pid in ids
+        if pid in by_id
+    ]
+
+
 def _load_snapshot_response(db: Session, snapshot_id: uuid.UUID) -> ManagerSquadSnapshotOut:
     snapshot = db.get(ManagerSquadSnapshot, snapshot_id)
     assert snapshot is not None  # a SUCCEEDED sync / just-inserted manual entry always leaves this row
+    return _snapshot_out(db, snapshot)
+
+
+def _snapshot_out(db: Session, snapshot: ManagerSquadSnapshot) -> ManagerSquadSnapshotOut:
     return ManagerSquadSnapshotOut(
         manager_squad_snapshot_id=snapshot.id,
         source=snapshot.source.value,
+        fpl_manager_id=snapshot.fpl_manager_id,
+        is_current=snapshot.is_current,
         bank=snapshot.bank,
         free_transfers_available=snapshot.free_transfers_available,
         squad_player_ids=[uuid.UUID(pid) for pid in snapshot.squad_player_ids],
+        players=_squad_players(db, snapshot.squad_player_ids),
         has_unresolved_players=snapshot.has_unresolved_players,
         unresolved_fpl_element_ids=snapshot.unresolved_fpl_element_ids_json,
         created_at=snapshot.created_at,
@@ -155,3 +208,31 @@ def create_manual_squad(body: ManualSquadRequest, db: Session = Depends(get_db))
     db.refresh(snapshot)
 
     return _load_snapshot_response(db, snapshot.id)
+
+
+@router_squads.get("/{manager_squad_snapshot_id}", response_model=ManagerSquadSnapshotOut)
+def get_squad_snapshot(
+    manager_squad_snapshot_id: uuid.UUID, db: Session = Depends(get_db)
+) -> ManagerSquadSnapshotOut | JSONResponse:
+    if db.get(ManagerSquadSnapshot, manager_squad_snapshot_id) is None:
+        return _not_found_response(manager_squad_snapshot_id)
+    return _load_snapshot_response(db, manager_squad_snapshot_id)
+
+
+@router_squads.get("", response_model=list[ManagerSquadSnapshotOut])
+def list_squad_snapshots(
+    fpl_manager_id: int | None = Query(None),
+    is_current: bool | None = Query(None),
+    db: Session = Depends(get_db),
+) -> list[ManagerSquadSnapshotOut]:
+    """Most-recent-first list of snapshots -- insert-only/audit table (see that model's own
+    docstring), so this is a real history, not a single current-state row."""
+    stmt = select(ManagerSquadSnapshot)
+    if fpl_manager_id is not None:
+        stmt = stmt.where(ManagerSquadSnapshot.fpl_manager_id == fpl_manager_id)
+    if is_current is not None:
+        stmt = stmt.where(ManagerSquadSnapshot.is_current.is_(is_current))
+    stmt = stmt.order_by(ManagerSquadSnapshot.created_at.desc()).limit(_MAX_RESULTS)
+
+    rows = db.execute(stmt).scalars().all()
+    return [_snapshot_out(db, row) for row in rows]

@@ -92,6 +92,7 @@ def list_players(
     items = [
         PlayerSummary(
             id=p.id,
+            fpl_element_id=p.fpl_element_id,
             web_name=p.web_name,
             team_id=p.team_id,
             team_short_name=teams_by_id[p.team_id].short_name if p.team_id in teams_by_id else None,

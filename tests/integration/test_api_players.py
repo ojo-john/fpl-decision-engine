@@ -33,6 +33,7 @@ def test_list_players_returns_paginated_current_season_players(db_session, patch
     assert len(body["items"]) == 10
     for item in body["items"]:
         assert item["is_quarantined"] is False
+        assert isinstance(item["fpl_element_id"], int)
 
 
 def test_list_players_filters_by_position(db_session, patched_fpl_client_optimization):

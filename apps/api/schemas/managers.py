@@ -38,12 +38,24 @@ class ManualSquadRequest(BaseModel):
         return self
 
 
+class SquadPlayerOut(BaseModel):
+    """One resolved squad member -- see apps.api.routers.managers._load_snapshot_response."""
+
+    player_id: uuid.UUID
+    web_name: str | None
+    position: str | None
+    now_cost: int
+
+
 class ManagerSquadSnapshotOut(BaseModel):
     manager_squad_snapshot_id: uuid.UUID
     source: str
+    fpl_manager_id: int | None
+    is_current: bool
     bank: int
     free_transfers_available: int
     squad_player_ids: list[uuid.UUID]
+    players: list[SquadPlayerOut]
     has_unresolved_players: bool
     unresolved_fpl_element_ids: list[int]
     created_at: datetime

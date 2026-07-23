@@ -15,6 +15,7 @@ class PlayerSummary(BaseModel):
     """
 
     id: uuid.UUID
+    fpl_element_id: int
     web_name: str | None
     team_id: uuid.UUID | None
     team_short_name: str | None
