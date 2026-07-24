@@ -10,8 +10,8 @@ own bootstrap logic (the first league ever synced becomes priority
 automatically; every league synced after that stays non-priority until a
 manager explicitly calls ``POST /leagues/{league_id}/priority``).
 
-Revision ID: 0026
-Revises: 0025
+Revision ID: 0027
+Revises: 0026
 Create Date: 2026-07-24
 
 """
@@ -22,8 +22,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "0026"
-down_revision: str | None = "0025"
+revision: str = "0027"
+down_revision: str | None = "0026"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

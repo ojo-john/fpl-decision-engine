@@ -241,7 +241,7 @@ new code needed, just running the existing pipeline.
 - **`model_versions`** is deliberately **not** season-scoped (global,
   `training_job_id` → `jobs` only) — a champion trained on historical data
   applies regardless of which season is "current".
-- **`leagues.is_priority`** (added post-review, migration `0026`): a manager
+- **`leagues.is_priority`** (added post-review, migration `0027`): a manager
   can sync more than one real H2H league (`POST /leagues/sync` has no cap),
   but the Rivals page needs exactly one to show by default — same
   application-enforced "exactly one `True` at a time, unset every other row
