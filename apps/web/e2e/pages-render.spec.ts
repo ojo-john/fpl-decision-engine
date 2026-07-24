@@ -15,15 +15,18 @@ test.describe("page rendering", () => {
     await login(page);
   });
 
-  test("dashboard renders either a real recommendation or its documented empty state", async ({
-    page,
-  }) => {
+  test("dashboard renders one of its three documented states", async ({ page }) => {
     const issues = trackConsoleErrors(page);
     await page.goto("/");
 
-    const emptyState = page.getByText("No recommendation has been generated for the current season yet.");
+    // 1. No recommendation_audits row exists at all (404) -- never generated.
+    const noneGenerated = page.getByText("No recommendation has been generated for the current season yet.");
+    // 2. A recommendation was generated but resolved zero of the 4 correlated components --
+    //    a real, current possibility (this is the live dev database's own current state).
+    const generatedButNothingResolved = page.getByText(/none of the squad, transfer, H2H, or chip/);
+    // 3. A real, at-least-partially-resolved recommendation.
     const realRecommendation = page.getByRole("heading", { name: /recommendation$/ });
-    await expect(emptyState.or(realRecommendation)).toBeVisible();
+    await expect(noneGenerated.or(generatedButNothingResolved).or(realRecommendation)).toBeVisible();
     expect(issues.errors).toEqual([]);
   });
 
