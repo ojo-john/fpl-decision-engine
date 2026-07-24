@@ -1,5 +1,5 @@
 import { backendClient } from "@/lib/api-client";
-import { Card, ErrorState } from "@/components/ui";
+import { Card, ErrorState, TableScroll } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -64,30 +64,32 @@ export default async function BacktestPage({ params }: { params: Promise<{ runId
       {folds.length > 0 && (
         <Card>
           <h2 style={{ margin: "0 0 0.75rem", fontSize: "0.95rem" }}>Folds ({folds.length})</h2>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
-            <thead>
-              <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
-                <th style={{ padding: "0.25rem 0" }}>Season</th>
-                <th>MAE</th>
-                <th>RMSE</th>
-                <th>Spearman</th>
-                <th>Top-20 capture</th>
-                <th>N</th>
-              </tr>
-            </thead>
-            <tbody>
-              {folds.map((fold, index) => (
-                <tr key={fold.fold_index ?? index} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ padding: "0.35rem 0" }}>{fold.validation_season_label ?? "-"}</td>
-                  <td>{fold.mae?.toFixed(3) ?? "-"}</td>
-                  <td>{fold.rmse?.toFixed(3) ?? "-"}</td>
-                  <td>{fold.spearman?.toFixed(3) ?? "-"}</td>
-                  <td>{fold.top_20_capture_rate?.toFixed(3) ?? "-"}</td>
-                  <td>{fold.n_observations ?? "-"}</td>
+          <TableScroll>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
+                  <th style={{ padding: "0.25rem 0" }}>Season</th>
+                  <th>MAE</th>
+                  <th>RMSE</th>
+                  <th>Spearman</th>
+                  <th>Top-20 capture</th>
+                  <th>N</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {folds.map((fold, index) => (
+                  <tr key={fold.fold_index ?? index} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "0.35rem 0" }}>{fold.validation_season_label ?? "-"}</td>
+                    <td>{fold.mae?.toFixed(3) ?? "-"}</td>
+                    <td>{fold.rmse?.toFixed(3) ?? "-"}</td>
+                    <td>{fold.spearman?.toFixed(3) ?? "-"}</td>
+                    <td>{fold.top_20_capture_rate?.toFixed(3) ?? "-"}</td>
+                    <td>{fold.n_observations ?? "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroll>
         </Card>
       )}
     </div>

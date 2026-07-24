@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { backendClient } from "@/lib/api-client";
-import { Card, EmptyState, ErrorState, inputStyle, buttonStyle } from "@/components/ui";
+import { Card, EmptyState, ErrorState, TableScroll, inputStyle, buttonStyle } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -74,39 +74,43 @@ export default async function PlayersPage({
         <EmptyState>No players match this filter.</EmptyState>
       ) : (
         <Card>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
-            <thead>
-              <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
-                <th style={{ padding: "0.3rem 0" }}>Pos</th>
-                <th>Player</th>
-                <th>Team</th>
-                <th>Price</th>
-                <th>Form</th>
-                <th>Total pts</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.items.map((player) => (
-                <tr key={player.id} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ padding: "0.4rem 0", color: "var(--text-muted)" }}>{player.position ?? "-"}</td>
-                  <td>
-                    <Link href={`/players/${player.id}`}>{player.web_name ?? "Unknown"}</Link>
-                    {player.is_quarantined && (
-                      <span style={{ color: "var(--danger)", marginLeft: "0.4rem", fontSize: "0.8rem" }}>
-                        quarantined
-                      </span>
-                    )}
-                  </td>
-                  <td>{player.team_short_name ?? "-"}</td>
-                  <td>{(player.now_cost / 10).toFixed(1)}</td>
-                  <td>{player.form ?? "-"}</td>
-                  <td>{player.total_points}</td>
-                  <td>{player.status ?? "-"}</td>
+          <TableScroll>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
+                  <th style={{ padding: "0.3rem 0" }}>Pos</th>
+                  <th>Player</th>
+                  <th>Team</th>
+                  <th>Price</th>
+                  <th>Form</th>
+                  <th>Total pts</th>
+                  <th>Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data.items.map((player) => (
+                  <tr key={player.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "0.4rem 0", color: "var(--text-muted)" }}>
+                      {player.position ?? "-"}
+                    </td>
+                    <td>
+                      <Link href={`/players/${player.id}`}>{player.web_name ?? "Unknown"}</Link>
+                      {player.is_quarantined && (
+                        <span style={{ color: "var(--danger)", marginLeft: "0.4rem", fontSize: "0.8rem" }}>
+                          quarantined
+                        </span>
+                      )}
+                    </td>
+                    <td>{player.team_short_name ?? "-"}</td>
+                    <td>{(player.now_cost / 10).toFixed(1)}</td>
+                    <td>{player.form ?? "-"}</td>
+                    <td>{player.total_points}</td>
+                    <td>{player.status ?? "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroll>
 
           <div
             style={{

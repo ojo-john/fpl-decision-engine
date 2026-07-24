@@ -1,5 +1,5 @@
 import { backendClient } from "@/lib/api-client";
-import { Card, ErrorState } from "@/components/ui";
+import { Card, ErrorState, TableScroll } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -47,37 +47,41 @@ export default async function ChipsPage({ params }: { params: Promise<{ runId: s
             {recommendation.rationale}
           </p>
           {recommendation.candidates.length > 0 && (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem", marginTop: "0.5rem" }}>
-              <thead>
-                <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
-                  <th style={{ padding: "0.25rem 0" }}>Gameweek</th>
-                  <th>Expected gain</th>
-                  <th>Range</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {recommendation.candidates.map((candidate) => (
-                  <tr key={candidate.candidate_fpl_event_id} style={{ borderTop: "1px solid var(--border)" }}>
-                    <td style={{ padding: "0.35rem 0" }}>
-                      GW{candidate.candidate_fpl_event_id}
-                      {candidate.is_double_gameweek && " (DGW)"}
-                      {candidate.is_blank_gameweek && " (BGW)"}
-                    </td>
-                    <td>{Number(candidate.gain_mean).toFixed(1)}</td>
-                    <td>
-                      {Number(candidate.gain_floor).toFixed(1)} - {Number(candidate.gain_ceiling).toFixed(1)}
-                    </td>
-                    <td>
-                      {recommendation.recommended_candidate?.candidate_fpl_event_id ===
-                        candidate.candidate_fpl_event_id && (
-                        <span style={{ color: "var(--accent)" }}>recommended</span>
-                      )}
-                    </td>
+            <TableScroll>
+              <table
+                style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem", marginTop: "0.5rem" }}
+              >
+                <thead>
+                  <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
+                    <th style={{ padding: "0.25rem 0" }}>Gameweek</th>
+                    <th>Expected gain</th>
+                    <th>Range</th>
+                    <th></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {recommendation.candidates.map((candidate) => (
+                    <tr key={candidate.candidate_fpl_event_id} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={{ padding: "0.35rem 0" }}>
+                        GW{candidate.candidate_fpl_event_id}
+                        {candidate.is_double_gameweek && " (DGW)"}
+                        {candidate.is_blank_gameweek && " (BGW)"}
+                      </td>
+                      <td>{Number(candidate.gain_mean).toFixed(1)}</td>
+                      <td>
+                        {Number(candidate.gain_floor).toFixed(1)} - {Number(candidate.gain_ceiling).toFixed(1)}
+                      </td>
+                      <td>
+                        {recommendation.recommended_candidate?.candidate_fpl_event_id ===
+                          candidate.candidate_fpl_event_id && (
+                          <span style={{ color: "var(--accent)" }}>recommended</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableScroll>
           )}
         </Card>
       ))}

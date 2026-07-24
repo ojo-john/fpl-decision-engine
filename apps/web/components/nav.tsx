@@ -24,15 +24,17 @@ export function Nav() {
 
   return (
     <nav
+      className="app-nav"
       style={{
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "center",
         justifyContent: "space-between",
         padding: "0.85rem 1.5rem",
         borderBottom: "1px solid var(--border)",
       }}
     >
-      <div style={{ display: "flex", gap: "1.25rem", alignItems: "center" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "1.25rem", alignItems: "center" }}>
         <strong>FPL Decision Engine</strong>
         {LINKS.map((link) => (
           <Link

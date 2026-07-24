@@ -2,7 +2,7 @@ import ReactMarkdown from "react-markdown";
 import { backendClient } from "@/lib/api-client";
 import { BacktestButton } from "@/components/backtest-button";
 import { SingleFieldActionForm } from "@/components/single-field-action-form";
-import { Card, EmptyState, ErrorState } from "@/components/ui";
+import { Card, EmptyState, ErrorState, TableScroll } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -48,33 +48,35 @@ async function LearningSignalsSection() {
           No rolling-window signals computed yet.
         </p>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
-          <thead>
-            <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
-              <th style={{ padding: "0.3rem 0" }}>Signal</th>
-              <th>Window (GWs)</th>
-              <th>Value</th>
-              <th>Samples</th>
-              <th>Computed</th>
-            </tr>
-          </thead>
-          <tbody>
-            {signals.map((signal) => (
-              <tr key={signal.learning_signal_id} style={{ borderTop: "1px solid var(--border)" }}>
-                <td style={{ padding: "0.3rem 0" }}>
-                  {humanize(signal.signal_type)}
-                  {signal.threshold_breached && (
-                    <span style={{ color: "var(--danger)", marginLeft: "0.4rem" }}>breach</span>
-                  )}
-                </td>
-                <td>{signal.window_size_gameweeks}</td>
-                <td>{Number(signal.value).toFixed(3)}</td>
-                <td>{signal.sample_count}</td>
-                <td>{new Date(signal.computed_at).toLocaleDateString()}</td>
+        <TableScroll>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
+                <th style={{ padding: "0.3rem 0" }}>Signal</th>
+                <th>Window (GWs)</th>
+                <th>Value</th>
+                <th>Samples</th>
+                <th>Computed</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {signals.map((signal) => (
+                <tr key={signal.learning_signal_id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ padding: "0.3rem 0" }}>
+                    {humanize(signal.signal_type)}
+                    {signal.threshold_breached && (
+                      <span style={{ color: "var(--danger)", marginLeft: "0.4rem" }}>breach</span>
+                    )}
+                  </td>
+                  <td>{signal.window_size_gameweeks}</td>
+                  <td>{Number(signal.value).toFixed(3)}</td>
+                  <td>{signal.sample_count}</td>
+                  <td>{new Date(signal.computed_at).toLocaleDateString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
     </Card>
   );
@@ -91,26 +93,28 @@ async function FailureAttributionsSection() {
           No material misses have been attributed to a cause yet.
         </p>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
-          <thead>
-            <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
-              <th style={{ padding: "0.3rem 0" }}>Reason</th>
-              <th>Category</th>
-              <th>Severity</th>
-              <th>Recorded</th>
-            </tr>
-          </thead>
-          <tbody>
-            {failures.map((failure) => (
-              <tr key={failure.failure_attribution_id} style={{ borderTop: "1px solid var(--border)" }}>
-                <td style={{ padding: "0.3rem 0" }}>{humanize(failure.reason_code)}</td>
-                <td>{humanize(failure.category)}</td>
-                <td>{failure.severity !== null ? Number(failure.severity).toFixed(2) : "--"}</td>
-                <td>{new Date(failure.created_at).toLocaleDateString()}</td>
+        <TableScroll>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
+                <th style={{ padding: "0.3rem 0" }}>Reason</th>
+                <th>Category</th>
+                <th>Severity</th>
+                <th>Recorded</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {failures.map((failure) => (
+                <tr key={failure.failure_attribution_id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ padding: "0.3rem 0" }}>{humanize(failure.reason_code)}</td>
+                  <td>{humanize(failure.category)}</td>
+                  <td>{failure.severity !== null ? Number(failure.severity).toFixed(2) : "--"}</td>
+                  <td>{new Date(failure.created_at).toLocaleDateString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
     </Card>
   );
