@@ -1,15 +1,19 @@
 """GET /players endpoints, scoped to the current season only."""
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.features.service import compute_features_for_player_gameweek
 from app.optimization.champion_loader import load_current_champion
 from app.optimization.gameweek_resolution import resolve_target_gameweek
 from app.optimization.projection import (
     PROJECTION_FORMULA_VERSION,
+    PlayerProjection,
+    is_cold_start_season,
     project_player,
     project_player_with_champion,
 )
@@ -26,6 +30,8 @@ from packages.database.models.player_price_history import PlayerPriceHistory
 from packages.database.models.position import Position
 from packages.database.models.season import Season
 from packages.database.models.team import Team
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/players", tags=["players"])
 
@@ -166,6 +172,44 @@ def get_player_price_history(
     ]
 
 
+def _explain_projection(
+    projection: PlayerProjection,
+    *,
+    ep_next: float | None,
+    career_avg_points_prior_seasons: float | None,
+    next_fixture_difficulty: int | None,
+    champion_model_family: str | None,
+) -> str:
+    """A one-line, plain-English account of which code path produced ``projection`` and why --
+    the "why this projection" breakdown's human-readable summary. Branches on ``projection.source``
+    (see ``app.optimization.projection``'s own source strings) rather than re-deriving state,
+    since the source string already IS the authoritative record of which path ran."""
+    if projection.source == "unavailable_status_excluded":
+        return "This player is currently unavailable, so no points are projected."
+    if projection.source == "cold_start_blend_ep_next_and_career_avg":
+        difficulty_note = (
+            f", adjusted for a next-fixture difficulty of {next_fixture_difficulty}/5"
+            if next_fixture_difficulty is not None
+            else ""
+        )
+        return (
+            f"First gameweek of a new season -- no current-season form yet, so this blends "
+            f"FPL's own estimate ({ep_next}) with this player's real prior-season average "
+            f"({career_avg_points_prior_seasons}){difficulty_note}."
+        )
+    if champion_model_family is not None:
+        return f"Prediction from the trained champion model ({champion_model_family})."
+    scaled_note = " (scaled down for a reduced chance of playing)" if "scaled" in projection.source else ""
+    if projection.source in ("ep_next", "ep_next_availability_scaled"):
+        return f"FPL's own forward-looking estimate (ep_next){scaled_note}."
+    if projection.source in ("points_per_game", "points_per_game_availability_scaled"):
+        return (
+            f"No ep_next estimate available; using this season's points-per-game average "
+            f"instead{scaled_note}."
+        )
+    return "No projection data is available for this player yet."
+
+
 @router.get("/{player_id}/projection", response_model=PlayerProjectionResponse)
 def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -> PlayerProjectionResponse:
     """Champion-aware live projection — mirrors exactly what the optimizer would actually use.
@@ -176,17 +220,65 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
     ``project_player_with_champion``; falls back to the plain
     ``project_player`` formula otherwise (no active gameweek, or no
     champion yet) — identical fallback behavior to the optimizer jobs.
+
+    Also returns the "why this projection" breakdown (added post-review): the
+    real inputs already computed behind ``projected_points`` -- for a
+    cold-start season, the ``ep_next``/``career_avg_points_prior_seasons``/
+    ``next_fixture_difficulty`` values ``_cold_start_projection`` actually
+    blended; for a warm season with a champion-sourced prediction, which
+    model family/version produced it. Deliberately NOT full feature-level
+    attribution (no SHAP, no per-feature contribution breakdown) -- these are
+    the same few numbers the projection formula itself already computes, just
+    surfaced rather than recomputed or approximated.
     """
     player = db.get(Player, player_id)
     if player is None:
         raise HTTPException(status_code=404, detail=f"Player {player_id} not found.")
 
     target_gameweek_id, _ = resolve_target_gameweek(db, player.season_id)
+    champion = None
+    cold_start = False
     if target_gameweek_id is None:
         projection = project_player(player)
     else:
         champion = load_current_champion(db)
+        cold_start = is_cold_start_season(db, player.season_id)
         projection = project_player_with_champion(db, player, target_gameweek_id, champion)
+
+    # Best-effort display-only lookup of the two cold-start blend inputs (and the schedule-fact
+    # next_fixture_difficulty, which is meaningful regardless of cold-start) -- never allowed to
+    # fail this endpoint, mirroring _cold_start_projection's own graceful-degrade discipline.
+    career_avg_points_prior_seasons = None
+    next_fixture_difficulty = None
+    if target_gameweek_id is not None:
+        try:
+            feature_row = compute_features_for_player_gameweek(db, player.id, target_gameweek_id)
+            career_avg_points_prior_seasons = feature_row.career_avg_points_prior_seasons
+            next_fixture_difficulty = feature_row.next_fixture_difficulty
+        except Exception:  # noqa: BLE001 - this breakdown must never fail the endpoint
+            logger.warning(
+                "Could not compute feature row for projection breakdown "
+                "player_id=%s target_gameweek_id=%s.",
+                player.id,
+                target_gameweek_id,
+                exc_info=True,
+            )
+
+    champion_model_family = None
+    champion_model_version_id = None
+    if champion is not None and projection.source == f"ml_champion_{champion.model_family.value}":
+        champion_model_family = champion.model_family.value
+        champion_model_version_id = champion.model_version_id
+
+    explanation = _explain_projection(
+        projection,
+        ep_next=float(player.ep_next) if player.ep_next is not None else None,
+        career_avg_points_prior_seasons=(
+            float(career_avg_points_prior_seasons) if career_avg_points_prior_seasons is not None else None
+        ),
+        next_fixture_difficulty=next_fixture_difficulty,
+        champion_model_family=champion_model_family,
+    )
 
     return PlayerProjectionResponse(
         player_id=player.id,
@@ -196,4 +288,11 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
         projection_formula_version=PROJECTION_FORMULA_VERSION,
         chance_of_playing_next_round=player.chance_of_playing_next_round,
         status=player.status,
+        is_cold_start_season=cold_start,
+        ep_next=player.ep_next,
+        career_avg_points_prior_seasons=career_avg_points_prior_seasons,
+        next_fixture_difficulty=next_fixture_difficulty,
+        champion_model_family=champion_model_family,
+        champion_model_version_id=champion_model_version_id,
+        explanation=explanation,
     )

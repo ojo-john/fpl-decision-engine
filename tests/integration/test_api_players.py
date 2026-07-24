@@ -110,6 +110,43 @@ def test_get_player_projection_shape(db_session, patched_fpl_client_optimization
     assert isinstance(body["projected_points"], float)
     assert body["is_eligible"] is True
     assert body["projection_formula_version"] >= 1
+    # "Why this projection" breakdown fields (added post-review) -- this fixture has every
+    # gameweek finished (no active gameweek), so is_cold_start_season is always False here
+    # regardless of player_gameweek_stats state -- see get_player_projection's own
+    # target_gameweek_id is None short-circuit.
+    assert body["is_cold_start_season"] is False
+    assert body["champion_model_family"] is None
+    assert body["champion_model_version_id"] is None
+    assert isinstance(body["explanation"], str) and body["explanation"] != ""
+
+
+def test_get_player_projection_cold_start_breakdown(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    # This fixture leaves the current season's last gameweek unfinished (a real target gameweek
+    # resolves) but seeds no player_gameweek_stats rows at all -- a genuine cold-start season
+    # (see app.optimization.projection._is_cold_start_season). Unlike
+    # test_optimization_uses_champion.py's tests, no player_gameweek_stats row is seeded here
+    # on purpose: this test asserts is_cold_start_season reflects the real season state.
+    _seed(db_session)
+    client = authed_client()
+    listed_players = client.get("/players", params={"page_size": 200}).json()["items"]
+    eligible = next(p for p in listed_players if p["status"] not in {"i", "s", "u"})
+
+    response = client.get(f"/players/{eligible['id']}/projection")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_cold_start_season"] is True
+    # No champion has ever been selected in this test's own seeding path, so the cold-start
+    # blend never actually engages (project_player_with_champion only consults
+    # _cold_start_projection once a champion exists) -- champion_model_family must stay None.
+    assert body["champion_model_family"] is None
+    assert body["champion_model_version_id"] is None
+    assert isinstance(body["explanation"], str) and body["explanation"] != ""
+    # next_fixture_difficulty is a schedule fact, resolvable even with zero current-season
+    # history -- present for a player with an upcoming fixture in this fixture's data.
+    assert body["next_fixture_difficulty"] is None or isinstance(body["next_fixture_difficulty"], int)
 
 
 # --- GET /players/{id}/price-history ---------------------------------------------------------

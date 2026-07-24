@@ -148,6 +148,15 @@ def _is_cold_start_season(session: Session, season_id: uuid.UUID) -> bool:
     )
 
 
+def is_cold_start_season(session: Session, season_id: uuid.UUID) -> bool:
+    """Public wrapper around ``_is_cold_start_season`` for callers outside this module that need
+    to know whether cold-start logic applies without duplicating the query — e.g. the
+    ``/players/{player_id}/projection`` endpoint's "why this projection" breakdown
+    (``apps.api.routers.players.get_player_projection``), which needs this alongside
+    ``project_player_with_champion``'s own output to explain which code path produced it."""
+    return _is_cold_start_season(session, season_id)
+
+
 def _cold_start_projection(
     session: Session, player: Player, target_gameweek_id: uuid.UUID
 ) -> PlayerProjection:

@@ -63,7 +63,7 @@ export default async function PlayerDetailPage({
       {projection && (
         <Card>
           <h2 style={{ margin: "0 0 0.5rem", fontSize: "0.95rem" }}>Live projection</h2>
-          <div style={{ display: "flex", gap: "1.5rem", fontSize: "0.9rem" }}>
+          <div style={{ display: "flex", gap: "1.5rem", fontSize: "0.9rem", flexWrap: "wrap" }}>
             <span>{Number(projection.projected_points).toFixed(1)} pts</span>
             <span style={{ color: "var(--text-muted)" }}>source: {projection.source}</span>
             <span style={{ color: projection.is_eligible ? "var(--success)" : "var(--danger)" }}>
@@ -73,6 +73,58 @@ export default async function PlayerDetailPage({
               <span style={{ color: "var(--text-muted)" }}>
                 {projection.chance_of_playing_next_round}% chance of playing next round
               </span>
+            )}
+          </div>
+
+          <p
+            style={{
+              margin: "0.6rem 0 0",
+              padding: "0.5rem 0.6rem",
+              borderRadius: "6px",
+              background: "var(--surface-muted, rgba(127,127,127,0.08))",
+              color: "var(--text-muted)",
+              fontSize: "0.85rem",
+            }}
+          >
+            {projection.explanation}
+          </p>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(11rem, 1fr))",
+              gap: "0.4rem 1.5rem",
+              fontSize: "0.85rem",
+              marginTop: "0.6rem",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: "var(--text-muted)" }}>Cold-start season</span>
+              <span>{projection.is_cold_start_season ? "yes" : "no"}</span>
+            </div>
+            {projection.champion_model_family && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-muted)" }}>Model</span>
+                <span>{projection.champion_model_family}</span>
+              </div>
+            )}
+            {projection.ep_next !== null && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-muted)" }}>FPL ep_next</span>
+                <span>{Number(projection.ep_next).toFixed(1)}</span>
+              </div>
+            )}
+            {projection.career_avg_points_prior_seasons !== null && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-muted)" }}>Prior-season average</span>
+                <span>{Number(projection.career_avg_points_prior_seasons).toFixed(1)}</span>
+              </div>
+            )}
+            {projection.next_fixture_difficulty !== null && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-muted)" }}>Next fixture difficulty</span>
+                <span>{projection.next_fixture_difficulty}/5</span>
+              </div>
             )}
           </div>
         </Card>
