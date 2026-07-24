@@ -2,12 +2,13 @@
 
 import { useRouter } from "next/navigation";
 import { ActionButton } from "@/components/action-button";
+import { H2HSimulatePicker } from "@/components/h2h-simulate-picker";
 
 /**
- * The three optimization/simulation triggers that make sense against any
- * squad snapshot (synced or manual) -- each navigates straight to the new
- * run's own detail page on success, rather than just refreshing in place,
- * since the interesting result lives on that page, not this one.
+ * The optimization/simulation triggers that make sense against any squad
+ * snapshot (synced or manual) -- each navigates straight to the new run's
+ * own detail page on success, rather than just refreshing in place, since
+ * the interesting result lives on that page, not this one.
  */
 export function SquadActions({
   snapshotId,
@@ -64,10 +65,11 @@ export function SquadActions({
       />
       {!hasRawPicks && (
         <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>
-          This squad has no confirmed starting XI, so chip simulation will estimate one via the
-          lineup solver first.
+          This squad has no confirmed starting XI, so chip/H2H simulation will estimate one via
+          the lineup solver first.
         </span>
       )}
+      <H2HSimulatePicker managerSquadSnapshotId={snapshotId} />
     </div>
   );
 }

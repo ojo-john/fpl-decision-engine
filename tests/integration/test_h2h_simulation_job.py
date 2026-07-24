@@ -705,9 +705,14 @@ def test_h2h_simulation_rival_profile_not_found(
     assert job.error_code == "RIVAL_PROFILE_NOT_FOUND"
 
 
-def test_h2h_simulation_snapshot_missing_picks_data(
+def test_h2h_simulation_snapshot_missing_picks_data_falls_back_to_solved_lineup(
     db_session, patched_fpl_client_optimization_with_active_gameweek, patched_fpl_client_league
 ):
+    """A user snapshot with no raw_picks_json (every MANUAL_ENTRY squad -- see that model's own
+    docstring) can't have its starting XI read verbatim, but H2H_SIMULATION must not just refuse
+    outright: _derive_starting_and_bench_from_solver solves one instead, mirroring
+    CHIP_SIMULATION's identical fix (Milestone 8 item 5). The RIVAL side is untouched -- still
+    covered by test_h2h_simulation_rival_squad_unavailable_creates_no_row below."""
     season_id = _seed_players_with_active_gameweek(db_session)
     _run_league_sync(db_session)
     rival_profile = _rival_profile(db_session, season_id, LEAGUE_RIVAL_B_FPL_MANAGER_ID)
@@ -716,8 +721,31 @@ def test_h2h_simulation_snapshot_missing_picks_data(
 
     job = _run_h2h_simulation(db_session, snapshot.id, rival_profile.id)
 
+    assert job.status == JobStatus.SUCCEEDED
+    run_id = uuid.UUID(job.output_json["h2h_simulation_run_id"])
+    run_row = db_session.get(H2HSimulationRun, run_id)
+    assert run_row is not None
+    assert run_row.run_status == H2HSimulationRunStatus.SUCCEEDED
+    total_probability = run_row.win_probability + run_row.draw_probability + run_row.loss_probability
+    assert total_probability == pytest.approx(1, abs=1e-6)
+
+
+def test_h2h_simulation_snapshot_with_unsolvable_squad_still_fails_cleanly(
+    db_session, patched_fpl_client_optimization_with_active_gameweek, patched_fpl_client_league
+):
+    """The solver fallback degrades to the same clean failure as before when there's genuinely
+    nothing to solve -- an empty squad can never produce a feasible starting XI."""
+    season_id = _seed_players_with_active_gameweek(db_session)
+    _run_league_sync(db_session)
+    rival_profile = _rival_profile(db_session, season_id, LEAGUE_RIVAL_B_FPL_MANAGER_ID)
+    snapshot = _create_manual_user_snapshot(db_session, season_id, raw_picks_json=None)
+    snapshot.squad_player_ids = []
+    db_session.commit()
+
+    job = _run_h2h_simulation(db_session, snapshot.id, rival_profile.id)
+
     assert job.status == JobStatus.FAILED
-    assert job.error_code == "SNAPSHOT_MISSING_PICKS_DATA"
+    assert job.error_code == "H2H_SIMULATION_FAILED"
 
 
 def test_h2h_simulation_rival_squad_unavailable_creates_no_row(

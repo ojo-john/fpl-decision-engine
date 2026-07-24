@@ -48,11 +48,16 @@ Starting-XI resolution: neither ``ManagerSquadSnapshot.squad_player_ids`` nor
 which 11 of the (up to) 15 squad members are actually STARTING, and who is
 captain/vice, can only be read back out of each snapshot's own
 ``raw_picks_json["picks"]`` (``position`` 1-11 = starting XI, ``multiplier``/
-``is_captain`` for the user's deterministic captain choice). A snapshot with
-no ``raw_picks_json`` (e.g. a hand-built ``MANUAL_ENTRY`` squad with no picks
-recorded) cannot be simulated at all in this v1 — refused up front with
-``SNAPSHOT_MISSING_PICKS_DATA``/``RIVAL_SQUAD_MISSING_PICKS_DATA``, a known,
-documented limitation rather than a silent guess at an ordering.
+``is_captain`` for the user's deterministic captain choice).
+
+For the USER's own snapshot, a missing ``raw_picks_json`` (every
+``MANUAL_ENTRY`` squad, or a ``MANAGER_SYNC`` one whose own picks fetch
+failed) falls back to ``_derive_starting_and_bench_from_solver`` -- the same
+solver ``LINEUP_OPTIMIZATION`` itself uses (Milestone 8 item 5, mirroring
+``CHIP_SIMULATION``'s identical fix) -- rather than hard-refusing. The RIVAL
+side is never solved on the rival's behalf: their starting XI is what THEY
+actually picked, so a rival snapshot with no ``raw_picks_json`` still
+hard-refuses with ``RIVAL_SQUAD_UNAVAILABLE``, unchanged.
 
 Autosub: a starting player hard-excluded from playing (``project_player_with_
 champion``'s ``is_eligible=False`` — injured/suspended/unavailable) is
@@ -117,14 +122,21 @@ from app.h2h.strategy import (
     select_low_variance_captain,
     select_recommended_candidate,
 )
+from app.jobs.handlers.lineup_optimization import _build_lineup_candidates
 from app.jobs.registry import register_handler
 from app.jobs.runner import JobContext, JobResult, JobRunner
 from app.optimization.champion_loader import LoadedChampion, load_current_champion
+from app.optimization.constraints import (
+    OptimizationConstraints,
+    RulesBlockedError,
+    load_optimization_constraints,
+)
 from app.optimization.gameweek_resolution import (
     resolve_most_recent_finished_gameweek_event,
     resolve_target_gameweek,
 )
 from app.optimization.gate import check_optimization_gate
+from app.optimization.lineup_solver import solve_lineup
 from app.optimization.projection import PlayerProjection, project_player_with_champion
 from app.optimization.residual_cache import _ResidualCache
 from packages.database.models.gameweek import Gameweek
@@ -141,7 +153,7 @@ from packages.database.models.transfer_optimization_run_scenario import Transfer
 from packages.database.session import SessionLocal
 from packages.domain.h2h import H2HSimulationRunStatus, H2HStrategyLabel
 from packages.domain.jobs import JobStatus, JobType
-from packages.domain.optimization import TargetGameweekStatus
+from packages.domain.optimization import SolverStatus, TargetGameweekStatus
 from packages.domain.transfers import TransferOptimizationRunStatus
 
 _STARTING_XI_MAX_POSITION = 11
@@ -181,6 +193,62 @@ def _split_starting_and_bench(raw_picks_json: dict | None) -> tuple[list[dict], 
         (p for p in picks if p.get("position", 0) > _STARTING_XI_MAX_POSITION),
         key=lambda p: p.get("position", 99),
     )
+    return starters, bench
+
+
+def _derive_starting_and_bench_from_solver(
+    session: Session,
+    season_id: uuid.UUID,
+    squad_player_ids: list[str],
+    target_gameweek_id: uuid.UUID | None,
+    champion: LoadedChampion | None,
+    constraints: OptimizationConstraints,
+) -> tuple[list[dict], list[dict]]:
+    """Fallback for the USER's own squad when it has no usable ``raw_picks_json`` (every
+    MANUAL_ENTRY squad, or a MANAGER_SYNC one whose own picks fetch failed) -- mirrors
+    ``app.jobs.handlers.chip_simulation``'s own private helper of the same name (duplicated, not
+    imported -- private to its own module, same precedent as this module's own
+    ``_split_starting_and_bench`` already being duplicated there). NEVER used for the rival's
+    side: a rival's starting XI is what THEY actually picked, not something to optimize on their
+    behalf, so ``rival_snapshot``/``rival_gameweek_snapshots`` without ``raw_picks_json`` still
+    hard-refuse with ``RIVAL_SQUAD_UNAVAILABLE`` above, unchanged.
+
+    A manually-entered squad was never assigned a real starting XI/bench/captain by an actual
+    human, so there is nothing in ``raw_picks_json`` to reuse verbatim -- the honest substitute is
+    the SAME solver ``LINEUP_OPTIMIZATION`` itself uses (``app.optimization.lineup_solver.
+    solve_lineup``, via the same ``app.jobs.handlers.lineup_optimization._build_lineup_candidates``
+    candidate-building reused directly rather than duplicated), reshaped into the identical
+    picks-dict shape ``_split_starting_and_bench`` produces so every downstream consumer here
+    (autosub, captain resolution, EP_OPTIMAL and every strategy candidate) is unchanged.
+    """
+    player_ids = [uuid.UUID(pid) for pid in squad_player_ids]
+    candidates = _build_lineup_candidates(session, season_id, player_ids, target_gameweek_id, champion)
+    solution = solve_lineup(candidates, constraints.position_requirements)
+    if solution.solver_status != SolverStatus.OPTIMAL:
+        return [], []
+
+    players_by_id = {
+        p.id: p for p in session.execute(select(Player).where(Player.id.in_(player_ids))).scalars()
+    }
+
+    starters = [
+        {
+            "element": players_by_id[player_id].fpl_element_id,
+            "position": index + 1,
+            "is_captain": player_id == solution.captain_player_id,
+        }
+        for index, player_id in enumerate(solution.starting_player_ids)
+        if player_id in players_by_id
+    ]
+    bench = [
+        {
+            "element": players_by_id[player_id].fpl_element_id,
+            "position": _STARTING_XI_MAX_POSITION + 1 + index,
+            "is_captain": False,
+        }
+        for index, player_id in enumerate(solution.bench_player_ids_ordered)
+        if player_id in players_by_id
+    ]
     return starters, bench
 
 
@@ -684,11 +752,12 @@ class H2HSimulationJobRunner(JobRunner):
                     )
                 season_id = snapshot.season_id
 
-                if not snapshot.raw_picks_json or not snapshot.raw_picks_json.get("picks"):
-                    raise _InputResolutionError(
-                        "SNAPSHOT_MISSING_PICKS_DATA",
-                        "manager_squad_snapshot has no raw_picks_json to resolve a starting XI from.",
-                    )
+                # No upfront raw_picks_json gate for the USER's own snapshot: one without it
+                # (every MANUAL_ENTRY squad, or a MANAGER_SYNC one whose own picks fetch failed)
+                # falls back to solving a starting XI instead, once execution reaches that point
+                # below -- see _derive_starting_and_bench_from_solver's own docstring. The RIVAL
+                # side has no such fallback and keeps its own hard gate right below: their
+                # starting XI is what THEY actually picked, not something to optimize for them.
 
                 if rival_profile.last_known_snapshot_id is None:
                     raise _InputResolutionError(
@@ -711,6 +780,11 @@ class H2HSimulationJobRunner(JobRunner):
                     raise _InputResolutionError(
                         gate.reason_code or "GATE_REFUSED", "Optimization gate refused."
                     )
+
+                try:
+                    constraints = load_optimization_constraints(session, season_id)
+                except RulesBlockedError as exc:
+                    raise _InputResolutionError("RULES_BLOCKED", str(exc)) from exc
 
                 raw_target_event = (ctx.parameters or {}).get("target_fpl_event_id")
                 explicit_event_id = int(raw_target_event) if raw_target_event is not None else None
@@ -748,7 +822,24 @@ class H2HSimulationJobRunner(JobRunner):
                 champion = load_current_champion(session)
                 residuals = _ResidualCache(session, season_id)
 
-                ep_optimal_starters, ep_optimal_bench = _split_starting_and_bench(snapshot.raw_picks_json)
+                if snapshot.raw_picks_json and snapshot.raw_picks_json.get("picks"):
+                    ep_optimal_starters, ep_optimal_bench = _split_starting_and_bench(snapshot.raw_picks_json)
+                else:
+                    ep_optimal_starters, ep_optimal_bench = _derive_starting_and_bench_from_solver(
+                        session,
+                        season_id,
+                        snapshot.squad_player_ids,
+                        target_gameweek_id,
+                        champion,
+                        constraints,
+                    )
+                if not ep_optimal_starters:
+                    raise _SimulationBuildError(
+                        "Could not resolve a starting XI for the user's own squad, neither from its "
+                        "own raw_picks_json nor by solving one -- see "
+                        "_derive_starting_and_bench_from_solver's own docstring for when this "
+                        "fallback itself can still come back empty (solver infeasibility)."
+                    )
                 ep_optimal_user_players, ep_optimal_slots = _build_user_players_from_picks(
                     session,
                     season_id,
