@@ -32,6 +32,17 @@ squad selection), the purchase price used for the selling-price calculation
 is the player's current ``now_cost`` (assumes zero unrealized profit —
 conservative, never overstates sell value), and that player's internal id is
 recorded in ``estimated_purchase_price_player_ids_json``.
+
+No-squad-yet handling (added post-review — found live, pre-season): FPL's
+own ``/entry/{id}/`` payload has ``current_event=None`` until that manager
+has a squad set for the season's first gameweek, even though the entry
+itself is a real, reachable 200. Checked explicitly right after the entry
+fetch and refused with ``NO_SQUAD_SET_YET`` before ever attempting the picks
+fetch — passing ``current_event=None`` through to
+``MANAGER_PICKS_URL_TEMPLATE`` would literally request
+``.../event/None/picks/``, which FPL 404s on, previously surfacing as a
+generic, confusing ``MANAGER_FETCH_BLOCKED: http_status_404`` that read like
+a network problem rather than "you haven't picked your team yet."
 """
 
 import logging
@@ -132,12 +143,31 @@ class ManagerSyncJobRunner(JobRunner):
                 return _blocked_result("manager entry", entry)
             assert isinstance(entry.raw_body, dict)  # entry always returns a JSON object
 
+            # FPL's own entry payload has current_event=None until the manager has a squad set
+            # for the season's first gameweek (confirmed live: a real, pre-season-only manager
+            # returns current_event=None even though /entry/{id}/ itself is a real 200). Every
+            # picks fetch needs a real event number -- MANAGER_PICKS_URL_TEMPLATE would otherwise
+            # literally request .../event/None/picks/, which FPL 404s on, surfacing as a
+            # confusing generic "MANAGER_FETCH_BLOCKED: http_status_404" that looks like a
+            # network problem rather than what it actually is. Caught explicitly, before ever
+            # attempting that fetch, with a clear and actionable message instead.
+            current_event = entry.raw_body["current_event"]
+            if current_event is None:
+                return JobResult(
+                    status=JobStatus.FAILED,
+                    output=None,
+                    error_code="NO_SQUAD_SET_YET",
+                    error_message=(
+                        "This manager has no squad set for the current season yet -- pick your "
+                        "team on the official FPL site first, then sync again."
+                    ),
+                )
+
             history = client.fetch_manager_history(fpl_manager_id)
             if history.raw_body is None:
                 return _blocked_result("manager history", history)
             assert isinstance(history.raw_body, dict)  # history always returns a JSON object
 
-            current_event = entry.raw_body["current_event"]
             picks = client.fetch_manager_picks(fpl_manager_id, current_event)
             if picks.raw_body is None:
                 return _blocked_result("manager picks", picks)

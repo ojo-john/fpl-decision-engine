@@ -13,6 +13,7 @@ import uuid
 from app.jobs.service import execute_job
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.domain.jobs import JobStatus, JobType, TriggerType
+from packages.fpl_client import FPLClient
 
 FPL_MANAGER_ID = 1
 
@@ -111,3 +112,26 @@ def test_manager_sync_missing_manager_id_fails(db_session, patched_fpl_client_op
 
     assert job.status == JobStatus.FAILED
     assert job.error_code == "MISSING_MANAGER_ID"
+
+
+def test_manager_sync_no_squad_set_yet_fails_cleanly_without_fetching_picks(
+    db_session, patched_fpl_client_optimization, patched_fpl_client_manager, monkeypatch
+):
+    """Found live, pre-season, with a real manager id: FPL's own /entry/{id}/ has
+    current_event=None until that manager has picked a squad for the season's first
+    gameweek, even though the entry itself is a real 200. Previously this fed straight into
+    the picks fetch (.../event/None/picks/), which FPL 404s on, surfacing a confusing generic
+    MANAGER_FETCH_BLOCKED. Must now fail with a clear, specific error BEFORE ever attempting
+    that fetch."""
+    _seed_players(db_session)
+    patched_fpl_client_manager["entry"]["current_event"] = None
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("picks must never be fetched when current_event is None")
+
+    monkeypatch.setattr(FPLClient, "fetch_manager_picks", _boom)
+
+    job = _run_manager_sync(db_session)
+
+    assert job.status == JobStatus.FAILED
+    assert job.error_code == "NO_SQUAD_SET_YET"
