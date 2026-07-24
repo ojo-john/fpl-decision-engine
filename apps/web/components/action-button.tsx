@@ -70,6 +70,27 @@ export function extractErrorMessage(data: unknown): string | null {
     const record = data as Record<string, unknown>;
     if (typeof record.error_message === "string") return record.error_message;
     if (typeof record.detail === "string") return record.detail;
+    // FastAPI's own 422 validation-error shape: detail is a list of
+    // {loc: ["body", "field_name"], msg: "...", type: "..."} objects, not a
+    // string -- flatten it into one readable line instead of falling
+    // through to a generic "(422)" message.
+    if (Array.isArray(record.detail)) {
+      const messages = record.detail
+        .map((entry) => extractValidationErrorMessage(entry))
+        .filter((message): message is string => message !== null);
+      if (messages.length > 0) return messages.join("; ");
+    }
   }
   return null;
+}
+
+function extractValidationErrorMessage(entry: unknown): string | null {
+  if (!entry || typeof entry !== "object") return null;
+  const record = entry as Record<string, unknown>;
+  if (typeof record.msg !== "string") return null;
+  const loc = Array.isArray(record.loc) ? record.loc : [];
+  // Drop the leading "body"/"query"/"path" location segment -- meaningful to
+  // the API, not to a user reading a form-validation message.
+  const field = loc.filter((segment) => segment !== "body" && segment !== "query").join(".");
+  return field ? `${field}: ${record.msg}` : record.msg;
 }
