@@ -2,7 +2,13 @@
 
 import { useState } from "react";
 import { browserClient } from "@/lib/browser-client";
-import { extractErrorMessage } from "@/components/action-button";
+import {
+  extractErrorMessage,
+  pendingButtonLabel,
+  STILL_WORKING_COPY,
+  STILL_WORKING_THRESHOLD_SECONDS,
+  useElapsedTimer,
+} from "@/components/action-button";
 import { Card, buttonStyle } from "@/components/ui";
 import type { components } from "@/lib/api-types";
 
@@ -27,10 +33,12 @@ export function SquadPreview() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { elapsedSeconds, start, stop } = useElapsedTimer();
 
   async function handleClick() {
     setPending(true);
     setError(null);
+    start();
     try {
       const { data, error: apiError, response } = await browserClient().POST("/optimize/preview", {});
       if (!data) {
@@ -42,6 +50,7 @@ export function SquadPreview() {
       setError("Could not reach the server.");
     } finally {
       setPending(false);
+      stop();
     }
   }
 
@@ -63,8 +72,13 @@ export function SquadPreview() {
         a recommendation you can revisit.
       </p>
       <button onClick={handleClick} disabled={pending} style={{ ...buttonStyle, opacity: pending ? 0.7 : 1 }}>
-        {pending ? "Solving..." : "Preview squad"}
+        {pending ? pendingButtonLabel("Solving...", elapsedSeconds) : "Preview squad"}
       </button>
+      {pending && elapsedSeconds >= STILL_WORKING_THRESHOLD_SECONDS && (
+        <p style={{ margin: "0.5rem 0 0", color: "var(--text-muted)", fontSize: "0.8rem" }}>
+          {STILL_WORKING_COPY}
+        </p>
+      )}
       {error && (
         <p style={{ margin: "0.75rem 0 0", color: "var(--danger)", fontSize: "0.85rem" }}>{error}</p>
       )}

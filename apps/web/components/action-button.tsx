@@ -1,8 +1,48 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { buttonStyle } from "@/components/ui";
+
+/** Solver-backed actions (squad build/preview) measured live at 10-30
+ * seconds with no server-side progress to report (execute_job is a single
+ * synchronous call, nothing to poll) -- ticks once a second while a request
+ * is in flight so a stalled-looking button reads as "still working", not
+ * hung. Deliberately started/stopped from the click handler itself, not a
+ * useEffect keyed on `pending`: an effect-based reset would either violate
+ * react-hooks/set-state-in-effect (a synchronous setState at the top of the
+ * effect body, not inside a subscription callback) or, if the reset were
+ * dropped to satisfy that rule, leave a second click resuming the counter
+ * from the previous run's stale elapsed value instead of restarting at 0. */
+export function useElapsedTimer(): { elapsedSeconds: number; start: () => void; stop: () => void } {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const intervalId = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function start() {
+    setElapsedSeconds(0);
+    const startedAt = Date.now();
+    intervalId.current = setInterval(() => {
+      setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
+    }, 1000);
+  }
+
+  function stop() {
+    if (intervalId.current !== null) {
+      clearInterval(intervalId.current);
+      intervalId.current = null;
+    }
+    setElapsedSeconds(0);
+  }
+
+  return { elapsedSeconds, start, stop };
+}
+
+export const STILL_WORKING_THRESHOLD_SECONDS = 10;
+export const STILL_WORKING_COPY = "Still working -- a full squad solve can take up to 30 seconds.";
+
+export function pendingButtonLabel(pendingLabel: string, elapsed: number): string {
+  return `${pendingLabel} ${elapsed}s`;
+}
 
 /**
  * A single no-input action (e.g. "generate a recommendation") -- POSTs
@@ -28,10 +68,12 @@ export function ActionButton({
   const router = useRouter();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { elapsedSeconds, start, stop } = useElapsedTimer();
 
   async function handleClick() {
     setPending(true);
     setError(null);
+    start();
     try {
       const response = await fetch(`/api/proxy${path}`, {
         method: "POST",
@@ -52,14 +94,18 @@ export function ActionButton({
       setError("Could not reach the server.");
     } finally {
       setPending(false);
+      stop();
     }
   }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
       <button onClick={handleClick} disabled={pending} style={{ ...buttonStyle, opacity: pending ? 0.7 : 1 }}>
-        {pending ? (pendingLabel ?? "Working...") : label}
+        {pending ? pendingButtonLabel(pendingLabel ?? "Working...", elapsedSeconds) : label}
       </button>
+      {pending && elapsedSeconds >= STILL_WORKING_THRESHOLD_SECONDS && (
+        <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>{STILL_WORKING_COPY}</span>
+      )}
       {error && <span style={{ color: "var(--danger)", fontSize: "0.85rem" }}>{error}</span>}
     </div>
   );
