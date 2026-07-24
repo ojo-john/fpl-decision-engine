@@ -284,6 +284,22 @@ new code needed, just running the existing pipeline.
   is called explicitly. The Rivals page is a tab switcher (`?league=<id>`
   search param, Server Component, same pattern as `/players`'s own
   filter/pagination state) defaulting to whichever league has the flag.
+- **Squad differentials** (added post-review): `GET /leagues/{league_id}/rivals`
+  also returns, per rival, `players_only_you_have`/`players_only_rival_has` --
+  the set-difference between the calling manager's own current squad
+  (`manager_squad_snapshots` row with `is_current=True`) and that rival's
+  last AVAILABLE picks snapshot (`RivalProfile.last_known_snapshot_id` ->
+  `rival_gameweek_snapshots.squad_player_ids`), resolved to `web_name`/
+  position. Computed by the pure `app.h2h.differential.compute_squad_differential`
+  (no I/O, unit-tested directly against `tests/unit/test_squad_differential.py`)
+  and batched into exactly 3 extra queries total regardless of rival count
+  (current squad, rival snapshots, player name/position lookup) --
+  `apps.api.routers.leagues.list_league_rivals` never queries per-rival.
+  Both fields are `null` together (never partially populated) when either
+  side is unresolvable: no current squad synced yet, or this rival has no
+  AVAILABLE picks snapshot. Rendered in `apps/web/components/squad-differential.tsx`
+  as two columns ("Only you have" / "Only they have") inside each rival's
+  card on the Rivals page.
 - **`h2h_simulation_runs`** — "H2H" throughout this codebase means **fantasy
   manager vs. fantasy manager** (this app's own H2H league mechanic), never
   real football club-vs-club history. It references `manager_squad_snapshot_id`

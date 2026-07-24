@@ -39,6 +39,14 @@ class LeagueOut(BaseModel):
     is_priority: bool
 
 
+class SquadDifferentialPlayerOut(BaseModel):
+    """One player in a squad differential -- see app.h2h.differential.compute_squad_differential."""
+
+    player_id: uuid.UUID
+    web_name: str | None
+    position: str | None
+
+
 class RivalProfileOut(BaseModel):
     """One rival's DERIVED + PREDICTED state.
 
@@ -65,6 +73,11 @@ class RivalProfileOut(BaseModel):
     evidence: dict
     overall_confidence: str
     computed_at: datetime
+    # Both None together when a differential can't be computed: no current-season
+    # MANAGER_SYNC/manual squad exists yet, or this rival has no AVAILABLE picks
+    # snapshot yet (last_known_snapshot_id is None). Never partially populated.
+    players_only_you_have: list[SquadDifferentialPlayerOut] | None
+    players_only_rival_has: list[SquadDifferentialPlayerOut] | None
 
 
 class LeagueEntryOut(BaseModel):

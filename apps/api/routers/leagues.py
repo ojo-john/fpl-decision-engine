@@ -10,12 +10,14 @@ rows -- no job execution involved.
 """
 
 import uuid
+from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.h2h.differential import SquadDifferential, compute_squad_differential
 from app.jobs.service import execute_job
 from apps.api.dependencies import get_db
 from apps.api.schemas.leagues import (
@@ -24,10 +26,15 @@ from apps.api.schemas.leagues import (
     LeagueSyncRequest,
     LeagueSyncRunOut,
     RivalProfileOut,
+    SquadDifferentialPlayerOut,
 )
 from packages.database.models.league import League
 from packages.database.models.league_entry import LeagueEntry
 from packages.database.models.league_sync_run import LeagueSyncRun
+from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
+from packages.database.models.player import Player
+from packages.database.models.position import Position
+from packages.database.models.rival_gameweek_snapshot import RivalGameweekSnapshot
 from packages.database.models.rival_profile import RivalProfile
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
@@ -58,7 +65,83 @@ def _league_not_found_response(league_id: uuid.UUID) -> JSONResponse:
     )
 
 
-def _rival_profile_out(row: RivalProfile) -> RivalProfileOut:
+def _current_squad_player_ids(db: Session) -> list[uuid.UUID] | None:
+    """The calling manager's own current squad, for the differential computation below --
+    None (not empty) when no MANAGER_SYNC squad has ever been synced, so callers can tell
+    "no differential computed" apart from "computed, and the squads happen to be identical".
+    Manual-entry snapshots are never ``is_current`` (see ManagerSquadSnapshot's own
+    docstring), so this only ever resolves a real synced squad, matching the same squad the
+    Rivals page's own H2H-simulate button already treats as "the" current squad."""
+    snapshot = db.execute(
+        select(ManagerSquadSnapshot).where(ManagerSquadSnapshot.is_current.is_(True)).limit(1)
+    ).scalar_one_or_none()
+    if snapshot is None:
+        return None
+    return [uuid.UUID(pid) for pid in snapshot.squad_player_ids]
+
+
+def _rival_squad_player_ids_by_snapshot(
+    db: Session, rows: Sequence[RivalProfile]
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """Batched lookup (one query, not N+1) of each rival's last AVAILABLE picks snapshot,
+    keyed by RivalProfile.last_known_snapshot_id -- see that column's own docstring."""
+    snapshot_ids = [row.last_known_snapshot_id for row in rows if row.last_known_snapshot_id is not None]
+    if not snapshot_ids:
+        return {}
+    snapshot_rows = (
+        db.execute(select(RivalGameweekSnapshot).where(RivalGameweekSnapshot.id.in_(snapshot_ids)))
+        .scalars()
+        .all()
+    )
+    return {
+        snap.id: [uuid.UUID(pid) for pid in snap.squad_player_ids]
+        for snap in snapshot_rows
+        if snap.squad_player_ids
+    }
+
+
+def _resolve_player_lookup(
+    db: Session, player_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, SquadDifferentialPlayerOut]:
+    """Batched name/position resolution (one query for every differential across every rival
+    in the response, not one query per rival) -- see list_league_rivals's own call site."""
+    if not player_ids:
+        return {}
+    rows = (
+        db.execute(
+            select(Player, Position)
+            .outerjoin(Position, Player.position_id == Position.id)
+            .where(Player.id.in_(player_ids))
+        )
+        .all()
+    )
+    return {
+        player.id: SquadDifferentialPlayerOut(
+            player_id=player.id,
+            web_name=player.web_name,
+            position=position.short_name if position is not None else None,
+        )
+        for player, position in rows
+    }
+
+
+def _sorted_differential_players(
+    ids: frozenset[uuid.UUID], lookup: dict[uuid.UUID, SquadDifferentialPlayerOut]
+) -> list[SquadDifferentialPlayerOut]:
+    resolved = [lookup[pid] for pid in ids if pid in lookup]
+    return sorted(resolved, key=lambda p: p.web_name or "")
+
+
+def _rival_profile_out(
+    row: RivalProfile,
+    differential: SquadDifferential | None,
+    player_lookup: dict[uuid.UUID, SquadDifferentialPlayerOut],
+) -> RivalProfileOut:
+    players_only_you_have = None
+    players_only_rival_has = None
+    if differential is not None:
+        players_only_you_have = _sorted_differential_players(differential.only_first, player_lookup)
+        players_only_rival_has = _sorted_differential_players(differential.only_second, player_lookup)
     return RivalProfileOut(
         rival_profile_id=row.id,
         fpl_manager_id=row.fpl_manager_id,
@@ -82,6 +165,8 @@ def _rival_profile_out(row: RivalProfile) -> RivalProfileOut:
         evidence=dict(row.evidence_json or {}),
         overall_confidence=row.overall_confidence.value,
         computed_at=row.computed_at,
+        players_only_you_have=players_only_you_have,
+        players_only_rival_has=players_only_rival_has,
     )
 
 
@@ -187,6 +272,13 @@ def list_league_rivals(
     alone is not enough: a real ``League`` row persists across seasons
     (upsert-in-place), so a rival synced last season and never synced again
     this season would otherwise still show up here.
+
+    Also computes, per rival, the squad differential against the calling
+    manager's own current squad (``players_only_you_have``/
+    ``players_only_rival_has`` on ``RivalProfileOut`` -- see
+    ``app.h2h.differential``). Batched into 3 extra queries total regardless
+    of rival count (current squad, rival snapshots, player name/position
+    lookup) -- never one query per rival.
     """
     if db.get(League, league_id) is None:
         return _league_not_found_response(league_id)
@@ -202,7 +294,31 @@ def list_league_rivals(
         .scalars()
         .all()
     )
-    return [_rival_profile_out(row) for row in rows]
+
+    current_squad_player_ids = _current_squad_player_ids(db)
+    rival_squad_by_snapshot = _rival_squad_player_ids_by_snapshot(db, rows)
+
+    differentials: list[SquadDifferential | None] = []
+    all_differential_ids: set[uuid.UUID] = set()
+    for row in rows:
+        rival_squad_player_ids = (
+            rival_squad_by_snapshot.get(row.last_known_snapshot_id)
+            if row.last_known_snapshot_id is not None
+            else None
+        )
+        if current_squad_player_ids is None or rival_squad_player_ids is None:
+            differentials.append(None)
+            continue
+        differential = compute_squad_differential(current_squad_player_ids, rival_squad_player_ids)
+        differentials.append(differential)
+        all_differential_ids |= differential.only_first | differential.only_second
+
+    player_lookup = _resolve_player_lookup(db, all_differential_ids)
+
+    return [
+        _rival_profile_out(row, differential, player_lookup)
+        for row, differential in zip(rows, differentials, strict=True)
+    ]
 
 
 @router.get("/{league_id}/standings", response_model=list[LeagueEntryOut])
