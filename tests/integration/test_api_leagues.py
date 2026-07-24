@@ -9,7 +9,7 @@ by ``test_rival_profile.py``.
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.jobs.service import execute_job
 from packages.database.models.league import League
@@ -23,6 +23,8 @@ from tests.integration.conftest import (
 
 FPL_LEAGUE_ID = 88894  # distinct from every other test module's own league id
 FPL_LEAGUE_ID_2 = 88895  # a second, distinct id -- used only by the name-tiebreak test below
+FPL_LEAGUE_ID_PRIORITY_A = 88896  # distinct ids for the is_priority tests below
+FPL_LEAGUE_ID_PRIORITY_B = 88897
 
 
 def _seed(db_session):
@@ -172,3 +174,78 @@ def test_list_league_standings_unknown_league_returns_404():
 
     assert response.status_code == 404
     assert response.json()["error_code"] == "LEAGUE_NOT_FOUND"
+
+
+# --- leagues.is_priority: exactly-one-at-a-time invariant + explicit switch ------------------
+
+
+def test_leagues_always_have_exactly_one_priority_once_any_exist(
+    db_session, patched_fpl_client_optimization, patched_fpl_client_league
+):
+    """This test's own sync guarantees at least one league exists by the time it checks --
+    the exact count BEFORE that (0 or more, depending on what earlier tests in this shared,
+    non-truncated Postgres already synced) is deliberately not asserted, only the invariant
+    that syncing a league never leaves the system with zero (or more than one) priority
+    league once at least one real league is present."""
+    _seed(db_session)
+    _sync(db_session, FPL_LEAGUE_ID_PRIORITY_A)
+
+    priority_count = db_session.execute(
+        select(func.count()).select_from(League).where(League.is_priority.is_(True))
+    ).scalar_one()
+    assert priority_count == 1
+
+
+def test_set_priority_league_flips_exactly_one(
+    db_session, patched_fpl_client_optimization, patched_fpl_client_league
+):
+    _seed(db_session)
+    _sync(db_session, FPL_LEAGUE_ID_PRIORITY_A)
+    _sync(db_session, FPL_LEAGUE_ID_PRIORITY_B)
+    league_a_id = _league_id(db_session, FPL_LEAGUE_ID_PRIORITY_A)
+    league_b_id = _league_id(db_session, FPL_LEAGUE_ID_PRIORITY_B)
+    client = authed_client()
+
+    response = client.post(f"/leagues/{league_b_id}/priority")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["league_id"] == str(league_b_id)
+    assert body["is_priority"] is True
+
+    db_session.expire_all()
+    league_a_row = db_session.get(League, league_a_id)
+    league_b_row = db_session.get(League, league_b_id)
+    assert league_a_row.is_priority is False
+    assert league_b_row.is_priority is True
+
+    # Exactly one league in the WHOLE shared table has the flag now -- the same
+    # "exactly one at a time" invariant seasons.is_current/model_versions.is_champion
+    # already enforce elsewhere in this codebase.
+    priority_count = db_session.execute(
+        select(func.count()).select_from(League).where(League.is_priority.is_(True))
+    ).scalar_one()
+    assert priority_count == 1
+
+
+def test_set_priority_league_unknown_id_returns_404():
+    client = authed_client()
+
+    response = client.post(f"/leagues/{uuid.uuid4()}/priority")
+
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "LEAGUE_NOT_FOUND"
+
+
+def test_list_leagues_includes_is_priority_field(
+    db_session, patched_fpl_client_optimization, patched_fpl_client_league
+):
+    _seed_and_sync(db_session, patched_fpl_client_optimization, patched_fpl_client_league)
+    league_id = _league_id(db_session)
+    client = authed_client()
+
+    response = client.get("/leagues")
+
+    assert response.status_code == 200
+    matching = next(row for row in response.json() if row["league_id"] == str(league_id))
+    assert isinstance(matching["is_priority"], bool)

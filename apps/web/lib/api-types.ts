@@ -656,6 +656,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/leagues/{league_id}/priority": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Priority League
+         * @description Mark this league as priority (the one Rivals shows by default) -- unsets every other
+         *     league's flag first, same "exactly one at a time" invariant as ``leagues.is_priority``'s
+         *     own docstring on the model.
+         */
+        post: operations["set_priority_league_leagues__league_id__priority_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/leagues/{league_id}/rivals": {
         parameters: {
             query?: never;
@@ -1136,6 +1158,8 @@ export interface components {
             fpl_league_id: number;
             /** Name */
             name: string;
+            /** Is Priority */
+            is_priority: boolean;
         };
         /** LeagueSyncRequest */
         LeagueSyncRequest: {
@@ -3114,6 +3138,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LeagueOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_priority_league_leagues__league_id__priority_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                league_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeagueOut"];
                 };
             };
             /** @description Validation Error */

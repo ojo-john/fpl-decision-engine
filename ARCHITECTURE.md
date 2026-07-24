@@ -223,6 +223,17 @@ new code needed, just running the existing pipeline.
 - **`model_versions`** is deliberately **not** season-scoped (global,
   `training_job_id` → `jobs` only) — a champion trained on historical data
   applies regardless of which season is "current".
+- **`leagues.is_priority`** (added post-review, migration `0026`): a manager
+  can sync more than one real H2H league (`POST /leagues/sync` has no cap),
+  but the Rivals page needs exactly one to show by default — same
+  application-enforced "exactly one `True` at a time, unset every other row
+  first" invariant as `seasons.is_current`/`model_versions.is_champion`. The
+  first league ever synced becomes priority automatically
+  (`app.jobs.handlers.league_sync._ensure_a_priority_league_exists`); every
+  one after that stays non-priority until `POST /leagues/{league_id}/priority`
+  is called explicitly. The Rivals page is a tab switcher (`?league=<id>`
+  search param, Server Component, same pattern as `/players`'s own
+  filter/pagination state) defaulting to whichever league has the flag.
 - **`h2h_simulation_runs`** — "H2H" throughout this codebase means **fantasy
   manager vs. fantasy manager** (this app's own H2H league mechanic), never
   real football club-vs-club history. It references `manager_squad_snapshot_id`

@@ -36,6 +36,7 @@ class LeagueOut(BaseModel):
     league_id: uuid.UUID
     fpl_league_id: int
     name: str
+    is_priority: bool
 
 
 class RivalProfileOut(BaseModel):
