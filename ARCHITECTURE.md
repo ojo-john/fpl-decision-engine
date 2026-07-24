@@ -103,10 +103,24 @@ Refuses if the most recent terminal `DATA_INGESTION` run's
 `optimization_permitted` flag is `False` (itself gated by
 `app/data_quality/scoring.py`: any CRITICAL issue, `BLOCKED` rules status,
 or `BLOCKED` overall endpoint health vetoes outright; otherwise requires
-score ≥ 70). **No override parameter exists anywhere** — a blocked gate
-creates no `optimization_runs` audit row at all. A common CRITICAL trigger:
-zero gameweeks marked `is_current` (true for the whole pre-season window
-before FPL marks GW1 live).
+score ≥ 70). **No override parameter exists on any of the four gated
+endpoints** — a blocked gate creates no `optimization_runs` audit row at
+all. A common CRITICAL trigger: zero gameweeks marked `is_current` (true
+for the whole pre-season window before FPL marks GW1 live).
+
+`POST /optimize/preview` (added post-review) is a deliberate, separate
+escape hatch for that specific pre-season window — it never calls
+`check_optimization_gate` at all, reuses the same solver/projection code
+as `SQUAD_OPTIMIZATION`, and never persists anything (no `Job`, no
+`optimization_runs` row) so it can never be confused with a real run. Its
+response includes `is_cold_start_gameweek`: when the target gameweek is
+the season's own first (zero `player_gameweek_stats` rows exist for that
+season yet), the champion model's projections are systematically too low
+in magnitude (though rankings are usually still sensible) — every
+rolling-form feature it was trained on is blank for a brand-new season's
+GW1, an input shape no training row ever had. Confirmed live: champion
+model projected Haaland at 0.43 pts for a cold-start GW1 vs. FPL's own
+`ep_next` of 4.0 for the same player.
 
 ## Two separate ingestion pipelines — don't conflate them
 
@@ -281,6 +295,17 @@ pytest-only monkeypatched client, neither CI-appropriate as-is (see
   Run the integration suite **twice** before considering backend work done
   — this repo's own established protocol, catches order-dependent flakiness
   a single run wouldn't.
+- **Tests MUST run against `fpl_decision_engine_test`, never the real
+  `fpl_decision_engine` dev database** — always `source .env.test` (never
+  `.env`) before any `pytest`/`scripts/run_job.py` invocation used for
+  testing/experimentation. This is not a style preference: it caused real
+  damage once (see the optimization-gate section above and CLAUDE.md) —
+  `DATA_INGESTION`/`HISTORICAL_DATA_INGESTION` globally unset
+  `seasons.is_current` on every row before setting their own season
+  current, so a test run against the wrong database silently demoted the
+  real current season and every live page started showing synthetic
+  ("Player1", "Player2", ...) data instead. Setup: `CREATE DATABASE
+  fpl_decision_engine_test` on the same Postgres instance, then `DATABASE_URL=...test uv run alembic upgrade head` once.
 - `tests/contract/`, `tests/e2e/` (top-level, Python): genuinely empty,
   their own READMEs honestly say "populated starting a later milestone" —
   these are the one place the "stale docs" warning does NOT apply.
