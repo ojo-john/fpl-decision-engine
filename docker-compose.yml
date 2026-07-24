@@ -23,7 +23,17 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     volumes: ["./:/app"]
-    command: ["uv", "run", "uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    # --reload-dir scopes the file watcher to actual Python source -- without
+    # it, --reload watches the ENTIRE bind-mounted repo (apps/web/node_modules,
+    # .next build output, etc.), so editing frontend files pointlessly
+    # restarts the API too. Found by hitting exactly that thrashing firsthand
+    # while developing apps/web against this same compose stack.
+    command:
+      [
+        "uv", "run", "uvicorn", "apps.api.main:app",
+        "--host", "0.0.0.0", "--port", "8000", "--reload",
+        "--reload-dir", "app", "--reload-dir", "apps/api", "--reload-dir", "packages",
+      ]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s

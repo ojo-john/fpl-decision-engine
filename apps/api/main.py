@@ -11,6 +11,7 @@ from apps.api.routers import (
     leagues,
     learning,
     managers,
+    models,
     optimization,
     players,
     recommendations,
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
     app.include_router(learning.router_jobs, dependencies=[protected])
     app.include_router(learning.router_learning, dependencies=[protected])
     app.include_router(leagues.router, dependencies=[protected])
+    app.include_router(models.router, dependencies=[protected])
     return app
 
 

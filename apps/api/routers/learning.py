@@ -213,6 +213,34 @@ def get_learning_report(
     return _assembled_report(db, report)
 
 
+@router_learning.get("/backtests/{backtest_run_id}", response_model=BacktestRunOut)
+def get_backtest_run(
+    backtest_run_id: uuid.UUID, db: Session = Depends(get_db)
+) -> BacktestRunOut | JSONResponse:
+    row = db.get(BacktestRun, backtest_run_id)
+    if row is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error_code": "BACKTEST_RUN_NOT_FOUND",
+                "detail": f"backtest_runs row {backtest_run_id} not found.",
+            },
+        )
+    return _assembled_backtest_run(db, row)
+
+
+@router_learning.get("/backtests", response_model=list[BacktestRunOut])
+def list_backtest_runs(
+    model_version_id: uuid.UUID | None = Query(None), db: Session = Depends(get_db)
+) -> list[BacktestRunOut]:
+    stmt = select(BacktestRun)
+    if model_version_id is not None:
+        stmt = stmt.where(BacktestRun.model_version_id == model_version_id)
+    stmt = stmt.order_by(BacktestRun.started_at.desc()).limit(_MAX_RESULTS)
+    rows = db.execute(stmt).scalars().all()
+    return [_assembled_backtest_run(db, row) for row in rows]
+
+
 @router_learning.get("/signals", response_model=list[LearningSignalOut])
 def list_learning_signals(
     signal_type: str | None = Query(None, description="Filter by LearningSignalType value"),

@@ -386,3 +386,42 @@ def test_run_backtest_invalid_request_body_returns_422(db_session):
     response = client.post("/jobs/backtest", json={})
 
     assert response.status_code == 422
+
+
+# --- GET /learning/backtests/{id}, GET /learning/backtests (Milestone 8) ----------------------------
+
+
+def test_get_backtest_run_returns_the_same_body_the_post_returned(
+    db_session, patched_historical_fpl_client
+):
+    model_version_id = _seed_trained_model_version_id(db_session, patched_historical_fpl_client)
+    client = authed_client()
+    created = client.post("/jobs/backtest", json={"model_version_id": str(model_version_id)}).json()
+
+    response = client.get(f"/learning/backtests/{created['backtest_run_id']}")
+
+    assert response.status_code == 200
+    assert response.json() == created
+
+
+def test_get_backtest_run_unknown_id_returns_404():
+    client = authed_client()
+
+    response = client.get(f"/learning/backtests/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "BACKTEST_RUN_NOT_FOUND"
+
+
+def test_list_backtest_runs_filters_by_model_version_id(db_session, patched_historical_fpl_client):
+    model_version_id = _seed_trained_model_version_id(db_session, patched_historical_fpl_client)
+    client = authed_client()
+    created = client.post("/jobs/backtest", json={"model_version_id": str(model_version_id)}).json()
+
+    response = client.get("/learning/backtests", params={"model_version_id": str(model_version_id)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) >= 1
+    assert created["backtest_run_id"] in {row["backtest_run_id"] for row in body}
+    assert all(row["model_version_id"] == str(model_version_id) for row in body)

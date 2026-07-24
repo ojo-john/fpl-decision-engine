@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import { backendClient } from "@/lib/api-client";
+import { BacktestButton } from "@/components/backtest-button";
 import { SingleFieldActionForm } from "@/components/single-field-action-form";
 import { Card, EmptyState, ErrorState } from "@/components/ui";
 
@@ -15,6 +16,20 @@ const reviewForm = (
   />
 );
 
+async function ChampionBacktestSection() {
+  const { data: champion } = await backendClient().GET("/models/champion");
+  if (!champion) return null;
+  return (
+    <Card>
+      <h2 style={{ margin: "0 0 0.5rem", fontSize: "0.95rem" }}>Champion model</h2>
+      <p style={{ margin: "0 0 0.75rem", color: "var(--text-muted)", fontSize: "0.9rem" }}>
+        {champion.model_name} ({champion.model_family}, feature v{champion.feature_version})
+      </p>
+      <BacktestButton modelVersionId={champion.model_version_id} />
+    </Card>
+  );
+}
+
 export default async function LearningPage() {
   const client = backendClient();
   const { data, response } = await client.GET("/learning/latest");
@@ -24,6 +39,7 @@ export default async function LearningPage() {
       <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
         <EmptyState>No gameweek review has run for the current season yet.</EmptyState>
         {reviewForm}
+        <ChampionBacktestSection />
       </div>
     );
   }
@@ -45,6 +61,7 @@ export default async function LearningPage() {
       </Card>
 
       {reviewForm}
+      <ChampionBacktestSection />
 
       {data.report_markdown ? (
         <Card>
