@@ -13,7 +13,19 @@ const CHIP_TYPES = ["wildcard", "freehit", "bboost", "3xc"];
 
 type PickedPlayer = components["schemas"]["PlayerSummary"];
 
-export function ManualSquadForm() {
+/** Prefills the form from an existing squad -- the "edit" affordance for a manual squad is
+ * duplicate-into-editor, not a PATCH endpoint (ManagerSquadSnapshot stays insert-only; see
+ * apps/api/routers/managers.py's delete_manual_squad_snapshot docstring for the same rationale).
+ */
+export function ManualSquadForm({
+  initialSquad,
+}: {
+  initialSquad?: {
+    players: PickedPlayer[];
+    bank: number;
+    freeTransfersAvailable: number;
+  };
+}) {
   const router = useRouter();
 
   const [search, setSearch] = useState("");
@@ -22,9 +34,11 @@ export function ManualSquadForm() {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  const [selected, setSelected] = useState<Map<string, PickedPlayer>>(new Map());
-  const [bank, setBank] = useState("0");
-  const [freeTransfers, setFreeTransfers] = useState("1");
+  const [selected, setSelected] = useState<Map<string, PickedPlayer>>(
+    new Map((initialSquad?.players ?? []).map((player) => [player.id, player])),
+  );
+  const [bank, setBank] = useState(String(initialSquad?.bank ?? 0));
+  const [freeTransfers, setFreeTransfers] = useState(String(initialSquad?.freeTransfersAvailable ?? 1));
   const [activeChip, setActiveChip] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);

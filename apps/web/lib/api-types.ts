@@ -316,7 +316,19 @@ export interface paths {
         get: operations["get_squad_snapshot_squads__manager_squad_snapshot_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Manual Squad Snapshot
+         * @description Delete a MANUAL_ENTRY squad (Milestone 8 item 4).
+         *
+         *     MANAGER_SYNC snapshots are never deletable here -- they're an insert-only
+         *     audit trail (see ``ManagerSquadSnapshot``'s own docstring), the same
+         *     invariant ``is_current`` already protects for that source. A snapshot
+         *     with runs still referencing it (transfer/chip/H2H optimization each carry
+         *     a ``manager_squad_snapshot_id`` FK with no ON DELETE CASCADE) is refused
+         *     with a clear error rather than left to surface as an opaque 500 from a
+         *     database-level FK violation.
+         */
+        delete: operations["delete_manual_squad_snapshot_squads__manager_squad_snapshot_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2408,6 +2420,37 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ManagerSquadSnapshotOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_manual_squad_snapshot_squads__manager_squad_snapshot_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                manager_squad_snapshot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

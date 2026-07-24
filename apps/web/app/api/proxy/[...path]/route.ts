@@ -13,8 +13,9 @@ import { NextRequest, NextResponse } from "next/server";
  * in PUBLIC_PATHS), so no separate auth check is duplicated here.
  *
  * GET is read-only passthrough (used by the player-search picker); POST
- * forwards a JSON body (used by every action button/form). Neither is a
- * generic passthrough beyond that -- there's no PUT/PATCH/DELETE need yet.
+ * forwards a JSON body (used by every action button/form); DELETE forwards
+ * with no body (used by the manual-squad delete button). Not a generic
+ * passthrough beyond that -- there's no PUT/PATCH need yet.
  */
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -35,6 +36,11 @@ async function forward(request: NextRequest, path: string[], init: RequestInit) 
     },
   });
 
+  // A 204 must not carry a body -- passing one through (even an empty string) is invalid
+  // per the HTTP spec and NextResponse enforces that.
+  if (backendResponse.status === 204) {
+    return new NextResponse(null, { status: 204 });
+  }
   const responseBody = await backendResponse.text();
   return new NextResponse(responseBody, {
     status: backendResponse.status,
@@ -55,4 +61,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     headers: { "Content-Type": "application/json" },
     body,
   });
+}
+
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
+  const { path } = await params;
+  return forward(request, path, { method: "DELETE" });
 }

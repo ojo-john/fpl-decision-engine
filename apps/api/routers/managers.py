@@ -15,7 +15,7 @@ this codebase for lightweight operations.
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -28,12 +28,19 @@ from apps.api.schemas.managers import (
     ManualSquadRequest,
     SquadPlayerOut,
 )
+from packages.database.models.chip_optimization_run import ChipOptimizationRun
+from packages.database.models.h2h_simulation_run import H2HSimulationRun
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
 from packages.database.models.position import Position
 from packages.database.models.season import Season
+from packages.database.models.transfer_optimization_run import TransferOptimizationRun
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.transfers import ManagerSquadSnapshotSource
+
+# Every table that references manager_squad_snapshots.id -- OptimizationRun (squad/lineup
+# runs) is deliberately NOT here, it has no such column (see that model's own docstring).
+_DEPENDENT_RUN_MODELS = (TransferOptimizationRun, ChipOptimizationRun, H2HSimulationRun)
 
 router_managers = APIRouter(prefix="/managers", tags=["managers"])
 router_squads = APIRouter(prefix="/squads", tags=["squads"])
@@ -218,6 +225,54 @@ def get_squad_snapshot(
     if db.get(ManagerSquadSnapshot, manager_squad_snapshot_id) is None:
         return _not_found_response(manager_squad_snapshot_id)
     return _load_snapshot_response(db, manager_squad_snapshot_id)
+
+
+@router_squads.delete("/{manager_squad_snapshot_id}", status_code=204, response_model=None)
+def delete_manual_squad_snapshot(
+    manager_squad_snapshot_id: uuid.UUID, db: Session = Depends(get_db)
+) -> Response | JSONResponse:
+    """Delete a MANUAL_ENTRY squad (Milestone 8 item 4).
+
+    MANAGER_SYNC snapshots are never deletable here -- they're an insert-only
+    audit trail (see ``ManagerSquadSnapshot``'s own docstring), the same
+    invariant ``is_current`` already protects for that source. A snapshot
+    with runs still referencing it (transfer/chip/H2H optimization each carry
+    a ``manager_squad_snapshot_id`` FK with no ON DELETE CASCADE) is refused
+    with a clear error rather than left to surface as an opaque 500 from a
+    database-level FK violation.
+    """
+    snapshot = db.get(ManagerSquadSnapshot, manager_squad_snapshot_id)
+    if snapshot is None:
+        return _not_found_response(manager_squad_snapshot_id)
+    if snapshot.source != ManagerSquadSnapshotSource.MANUAL_ENTRY:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error_code": "SNAPSHOT_NOT_DELETABLE",
+                "detail": "Only manually-entered squads can be deleted.",
+            },
+        )
+    has_dependent_runs = any(
+        db.execute(
+            select(model.id).where(model.manager_squad_snapshot_id == manager_squad_snapshot_id).limit(1)
+        ).first()
+        is not None
+        for model in _DEPENDENT_RUN_MODELS
+    )
+    if has_dependent_runs:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error_code": "SNAPSHOT_HAS_DEPENDENT_RUNS",
+                "detail": (
+                    f"manager_squad_snapshots row {manager_squad_snapshot_id} has "
+                    "transfer/chip/H2H runs referencing it and cannot be deleted."
+                ),
+            },
+        )
+    db.delete(snapshot)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router_squads.get("", response_model=list[ManagerSquadSnapshotOut])

@@ -139,6 +139,65 @@ def test_list_squad_snapshots_includes_a_newly_created_manual_entry(
     assert created["manager_squad_snapshot_id"] in ids
 
 
+def test_delete_manual_squad_snapshot_happy_path(db_session, patched_fpl_client_optimization):
+    _seed_players(db_session)
+    client = authed_client()
+    created = client.post(
+        "/squads/manual",
+        json={"fpl_element_ids": _VALID_ELEMENT_IDS, "bank": 5, "free_transfers_available": 1},
+    ).json()
+    snapshot_id = created["manager_squad_snapshot_id"]
+
+    response = client.delete(f"/squads/{snapshot_id}")
+
+    assert response.status_code == 204
+    assert client.get(f"/squads/{snapshot_id}").status_code == 404
+
+
+def test_delete_manual_squad_snapshot_unknown_id_returns_404():
+    client = authed_client()
+
+    response = client.delete(f"/squads/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "MANAGER_SQUAD_SNAPSHOT_NOT_FOUND"
+
+
+def test_delete_manager_sync_snapshot_returns_409(
+    db_session, patched_fpl_client_optimization, patched_fpl_client_manager
+):
+    _seed_players(db_session)
+    client = authed_client()
+    sync_response = client.post("/managers/sync", json={"fpl_manager_id": 1})
+    assert sync_response.status_code == 200, sync_response.json()
+    snapshot_id = sync_response.json()["manager_squad_snapshot_id"]
+
+    response = client.delete(f"/squads/{snapshot_id}")
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "SNAPSHOT_NOT_DELETABLE"
+
+
+def test_delete_manual_squad_with_dependent_run_returns_409(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    _seed_players(db_session)
+    client = authed_client()
+    created = client.post(
+        "/squads/manual",
+        json={"fpl_element_ids": _VALID_ELEMENT_IDS, "bank": 5, "free_transfers_available": 1},
+    ).json()
+    snapshot_id = created["manager_squad_snapshot_id"]
+    transfer_response = client.post("/optimize/transfers", json={"manager_squad_snapshot_id": snapshot_id})
+    assert transfer_response.status_code == 200, transfer_response.json()
+
+    response = client.delete(f"/squads/{snapshot_id}")
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "SNAPSHOT_HAS_DEPENDENT_RUNS"
+    assert client.get(f"/squads/{snapshot_id}").status_code == 200  # not actually deleted
+
+
 def test_list_squad_snapshots_filters_by_is_current(db_session, patched_fpl_client_optimization):
     _seed_players(db_session)
     client = authed_client()

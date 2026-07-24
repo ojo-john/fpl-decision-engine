@@ -1,4 +1,6 @@
+import Link from "next/link";
 import { backendClient } from "@/lib/api-client";
+import { DeleteSquadButton } from "@/components/delete-squad-button";
 import { SquadActions } from "@/components/squad-actions";
 import { Card, ErrorState } from "@/components/ui";
 
@@ -35,6 +37,14 @@ export default async function TeamSnapshotPage({
               Created {new Date(data.created_at).toLocaleString()}
             </p>
           </div>
+          {data.source === "manual_entry" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", alignItems: "flex-end" }}>
+              <Link href={`/team/new?from=${data.manager_squad_snapshot_id}`} style={{ fontSize: "0.85rem" }}>
+                Duplicate &amp; edit
+              </Link>
+              <DeleteSquadButton snapshotId={data.manager_squad_snapshot_id} />
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", gap: "1.5rem", marginTop: "0.75rem", fontSize: "0.9rem", color: "var(--text-muted)" }}>
           <span>Bank: {(data.bank / 10).toFixed(1)}</span>
