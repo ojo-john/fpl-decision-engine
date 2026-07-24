@@ -37,12 +37,37 @@ import uuid
 from sqlalchemy import delete, select, update
 
 from app.jobs.service import execute_job
+from packages.database.models.gameweek import Gameweek
 from packages.database.models.model_version import ModelVersion
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
+from packages.database.models.player import Player
 from packages.database.models.player_features import PlayerFeatures
+from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.optimization import TargetGameweekStatus
+
+
+def _seed_one_gameweek_stat_row_so_this_is_not_a_cold_start(db_session, season_id):
+    """project_player_with_champion refuses to trust the champion at all for a cold-start
+    season (zero player_gameweek_stats rows -- see app.optimization.projection's own
+    _is_cold_start_season). This test is specifically about the champion BEING consulted, so
+    it needs to look like a season with at least one gameweek already played, not literal GW1."""
+    player = db_session.execute(select(Player).where(Player.season_id == season_id).limit(1)).scalar_one()
+    gameweek = db_session.execute(
+        select(Gameweek).where(Gameweek.season_id == season_id).limit(1)
+    ).scalar_one()
+    db_session.add(
+        PlayerGameweekStats(
+            player_id=player.id,
+            season_id=season_id,
+            gameweek_id=gameweek.id,
+            total_points=2,
+            xp_estimate=2.0,
+            data_source="test",
+        )
+    )
+    db_session.commit()
 
 
 def _seed_historical_champion(db_session):
@@ -89,6 +114,10 @@ def test_squad_optimization_uses_champion_projection_when_present(
     ingestion_job = execute_job(db_session, job_type=JobType.DATA_INGESTION, trigger_type=TriggerType.LOCAL)
     assert ingestion_job.status == JobStatus.SUCCEEDED
     season_label = ingestion_job.output_json["season_label"]
+    current_season_id = db_session.execute(
+        select(Season.id).where(Season.label == season_label)
+    ).scalar_one()
+    _seed_one_gameweek_stat_row_so_this_is_not_a_cold_start(db_session, current_season_id)
 
     # Not strictly required by project_player_with_champion (it computes a
     # live feature row on the fly via app.features.service, never reads a

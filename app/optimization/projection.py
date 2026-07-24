@@ -15,6 +15,7 @@ import math
 import uuid
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.features.service import compute_features_for_player_gameweek
@@ -22,11 +23,16 @@ from app.modeling import baselines
 from app.modeling.candidates import align_columns, build_feature_row
 from app.optimization.champion_loader import LoadedChampion
 from packages.database.models.player import Player
+from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.domain.modeling import BASELINE_MODEL_FAMILIES, ModelFamily
 
 logger = logging.getLogger(__name__)
 
-PROJECTION_FORMULA_VERSION = 1
+# v2: project_player_with_champion now falls back to project_player (FPL's own ep_next) for a
+# cold-start season (see _is_cold_start_season) instead of trusting the champion model's raw
+# prediction, which is systematically too low for that specific input shape -- a real behavior
+# change to the formula's output, not an internal refactor.
+PROJECTION_FORMULA_VERSION = 2
 
 # Baseline families whose prediction is a direct, one-argument lookup against
 # an already-computed feature row. BASELINE_RULES_EP_NEXT is deliberately
@@ -116,6 +122,75 @@ def _predict_from_champion(
     return float(prediction)
 
 
+def _is_cold_start_season(session: Session, season_id: uuid.UUID) -> bool:
+    """True when literally zero ``player_gameweek_stats`` rows exist for this season yet.
+
+    Every rolling/within-season feature (``rolling_avg_points_*``,
+    ``season_avg_points_to_date``, ``form_weighted_avg_points``, ...) is
+    unconditionally ``None`` in this state (see
+    ``app.features.engineering`` — each one returns ``None`` given an empty
+    input, and a brand-new season's own gameweek 1 has no prior rows for
+    ANY player to feed them). Confirmed live: for a real player with a
+    strong ``career_avg_points_prior_seasons`` (a genuine cross-season
+    signal, correctly populated), the champion model still predicted
+    0.43 points — FPL's own ``ep_next`` for the same player was 4.0. The
+    model was trained on rows where a null rolling-form feature is
+    overwhelmingly a "this specific player isn't playing much" signal
+    (mid-season churn/injury/rotation), not "it's literally the first
+    gameweek of the season for everyone" — a real, structural blind spot,
+    not a data or feature-engineering bug. See ``project_player_with_champion``.
+    """
+    return (
+        session.execute(
+            select(PlayerGameweekStats.id).where(PlayerGameweekStats.season_id == season_id).limit(1)
+        ).first()
+        is None
+    )
+
+
+def _cold_start_projection(
+    session: Session, player: Player, target_gameweek_id: uuid.UUID
+) -> PlayerProjection:
+    """The cold-start fallback: blends ``project_player``'s own ``ep_next``-first estimate with
+    ``career_avg_points_prior_seasons`` (a real, per-gameweek average computed from every
+    earlier season this player has a record for, resolved cross-season via ``fpl_code`` — see
+    ``app.features.engineering.career_avg_points_prior_seasons``), rather than using ``ep_next``
+    alone.
+
+    Both are genuinely informative and genuinely different: ``ep_next`` is FPL's own current,
+    fixture/price-aware estimate; the career average is our own real historical record, with no
+    such adjustment. Averaging them is more data-driven than picking one — confirmed on a real
+    player: FPL's ep_next=4.0 for a striker whose real last-season average was 6.36 (both
+    plausible, genuinely different signals; the blend is 5.18, not an arbitrary pick of either).
+
+    Falls back to the plain ``project_player`` estimate alone when no earlier-season history
+    exists for this player at all (a brand-new-to-FPL signing — nothing to blend with) or when
+    the feature row can't be computed for any reason (never allowed to fail the caller).
+    """
+    baseline = project_player(player)
+    if not baseline.is_eligible:
+        return baseline
+
+    try:
+        feature_row = compute_features_for_player_gameweek(session, player.id, target_gameweek_id)
+    except Exception:  # noqa: BLE001 - this fallback must never itself fail the optimizer
+        logger.warning(
+            "Cold-start feature computation failed for player_id=%s target_gameweek_id=%s; "
+            "using project_player() alone.",
+            player.id,
+            target_gameweek_id,
+            exc_info=True,
+        )
+        return baseline
+
+    career_avg = feature_row.career_avg_points_prior_seasons
+    if career_avg is None:
+        return baseline
+
+    blended = (baseline.projected_points + float(career_avg)) / 2
+    return PlayerProjection(player.id, blended, "cold_start_blend_ep_next_and_career_avg", is_eligible=True)
+
+
 def project_player_with_champion(
     session: Session,
     player: Player,
@@ -131,17 +206,25 @@ def project_player_with_champion(
        resurrect a player ``project_player`` would exclude.
     2. If ``champion`` is ``None`` (no trained model exists yet): falls back
        to ``project_player(player)`` entirely, unchanged.
-    3. If a champion exists: attempts to compute this player's live feature
-       row for ``target_gameweek_id`` and get a prediction from it. If no
-       feature row can be computed (e.g. a brand-new player with zero
-       history/fixture context) or any step raises for any reason, catches
-       it, logs a warning, and falls back to ``project_player(player)``.
-    4. If the champion's prediction is itself unusable (``None`` or NaN —
+    3. If this is a cold-start season (see ``_is_cold_start_season``): the
+       champion's own rolling-form-driven predictions are systematically,
+       substantially too low for this specific input shape — falls back to
+       ``_cold_start_projection(player)`` (a blend of FPL's own ``ep_next``
+       and this player's real prior-season per-gameweek average) rather
+       than trust a number the model was never meaningfully trained to
+       produce.
+    4. If a champion exists and it's not a cold-start season: attempts to
+       compute this player's live feature row for ``target_gameweek_id``
+       and get a prediction from it. If no feature row can be computed
+       (e.g. a brand-new player with zero history/fixture context) or any
+       step raises for any reason, catches it, logs a warning, and falls
+       back to ``project_player(player)``.
+    5. If the champion's prediction is itself unusable (``None`` or NaN —
        e.g. a baseline lookup with no season/career average to fall back on
        for a brand-new player), falls back to ``project_player(player)`` for
        this player individually — graceful degradation per-player, not
        all-or-nothing for the whole optimization run.
-    5. On success, returns a ``PlayerProjection`` sourced as
+    6. On success, returns a ``PlayerProjection`` sourced as
        ``f"ml_champion_{champion.model_family.value}"`` so it's always
        possible to tell, after the fact, which players in a recommendation
        used the trained model versus the fallback formula.
@@ -151,6 +234,9 @@ def project_player_with_champion(
 
     if champion is None:
         return project_player(player)
+
+    if _is_cold_start_season(session, player.season_id):
+        return _cold_start_projection(session, player, target_gameweek_id)
 
     try:
         prediction = _predict_from_champion(session, player, target_gameweek_id, champion)

@@ -77,14 +77,15 @@ export function SquadPreview() {
                 margin: "0 0 0.75rem",
                 padding: "0.6rem 0.75rem",
                 borderRadius: "6px",
-                border: "1px solid var(--danger)",
-                color: "var(--danger)",
+                border: "1px solid var(--accent)",
+                color: "var(--accent)",
                 fontSize: "0.85rem",
               }}
             >
-              This is the season&rsquo;s first gameweek -- the trained model has no current-season
-              form to work from, so player rankings are usually still sensible but the exact point
-              values below are not trustworthy. This will get better once real gameweeks are played.
+              This is the season&rsquo;s first gameweek, so there&rsquo;s no current-season form
+              yet -- projections below blend FPL&rsquo;s own pre-season estimate with each
+              player&rsquo;s real prior-season average instead. A solid starting point; it&rsquo;ll
+              sharpen further once real gameweeks are played.
             </p>
           )}
           <p style={{ margin: "0 0 0.5rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>

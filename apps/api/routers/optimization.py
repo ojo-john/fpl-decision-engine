@@ -151,14 +151,16 @@ def preview_squad(db: Session = Depends(get_db)) -> SquadPreviewOut | JSONRespon
     marks a gameweek ``is_current``). Nothing is persisted -- rerunning this produces a fresh
     computation every time, never a cached/stored result to revisit later.
 
-    ``is_cold_start_gameweek`` flags the specific, real failure mode this surfaces: the
-    trained champion model's features are almost entirely rolling within-season form -- for
-    the season's own first gameweek, that's uniformly blank for every player (an input shape
-    the model never saw in training, since every training row had SOME real recent history by
-    construction), so its point *magnitudes* are not trustworthy even though the underlying
-    player *rankings* are usually still sensible. The caller should show this prominently, not
-    bury it -- confirmed via a real run this session: champion model said Haaland was worth
-    0.43 points for a cold-start gameweek 1, versus FPL's own ep_next of 4.0 for the same player.
+    ``is_cold_start_gameweek`` tells the caller this is the season's own first gameweek --
+    see ``app.optimization.projection._is_cold_start_season``/``_cold_start_projection`` for
+    why every player's projection source becomes ``cold_start_blend_ep_next_and_career_avg``
+    in that state rather than the champion model directly (a real, discovered failure mode:
+    the trained model's features are almost entirely rolling within-season form, uniformly
+    blank at literal kickoff -- an input shape it was never meaningfully trained on -- so its
+    raw predictions were systematically far too low; confirmed live: 0.43 points for Haaland
+    versus a sane ~5 once blended with his real prior-season average). The caller should still
+    surface this flag (it's informational -- "no current-season signal yet" -- not a data-
+    quality warning anymore now that the blend fixes the magnitude problem).
     """
     season_id = db.execute(select(Season.id).where(Season.is_current.is_(True))).scalar_one_or_none()
     if season_id is None:
