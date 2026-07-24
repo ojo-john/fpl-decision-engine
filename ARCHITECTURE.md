@@ -5,9 +5,10 @@ reading the actual code, not the existing docs — **README.md,
 docs/operations.md, docs/learning-loop.md, docs/architecture/README.md, and
 nearly every `app/*/__init__.py` docstring are stale**, frozen at
 "Milestone 0/1" language ("placeholder", "empty as of Milestone 0") while
-the real code has moved through roughly 8 milestones. Concretely: 16 of 18
+the real code has moved through roughly 8 milestones. Concretely: 17 of 18
 `JobType` values have real, tested handlers; only `PROJECTION_GENERATION`
-and `FULL_PIPELINE` are genuinely unbuilt. **Do not infer capability from a
+is genuinely unbuilt (deliberately -- no defined consumer/table to write
+to, see below). **Do not infer capability from a
 docstring's claim or a package's `__init__.py` — check `app/jobs/registry.py`
 and grep for the actual code.** This file will itself go stale; when in
 doubt, re-verify against the code the way this file was built (see
@@ -89,9 +90,26 @@ the job types that have an HTTP trigger.
 | `RECOMMENDATION_GENERATION` | `recommendation_generation.py` | ✅ | `POST /recommendations/generate` | |
 | `GAMEWEEK_REVIEW` | `gameweek_review.py` | ✅ | `POST /jobs/review-gameweek` | |
 | `BACKTEST` | `backtest.py` | ✅ | `POST /jobs/backtest` | |
-| `FULL_PIPELINE` | — | ❌ | — | genuinely unbuilt |
+| `FULL_PIPELINE` | `full_pipeline.py` | ✅ | — | `make full-pipeline` |
 
 All optimization/simulation/recommendation jobs are **synchronous request/response** — `execute_job` blocks until done and the HTTP endpoint returns the full result in one call. No job-id polling exists anywhere in the API.
+
+`FULL_PIPELINE` (`full_pipeline.py`) is a pure convenience orchestrator, not
+a new capability: chains `DATA_INGESTION` -> `FEATURE_GENERATION` (scoped to
+just the season `DATA_INGESTION` touched, not `"all"` -- `MODEL_TRAINING`
+auto-discovers every season that already has features from any prior run,
+so re-processing historical seasons on every routine call would be pure
+waste) -> `MODEL_TRAINING`, each via `execute_job` on its own dedicated
+session (mirrors `GameweekReviewJobRunner`'s own established precedent for
+one job type triggering another). Fails fast at the first failing step;
+`output_json["steps"]` records every step attempted, including on failure.
+Deliberately excludes `RECOMMENDATION_GENERATION` -- that job only
+correlates the 5 recommendation-producing jobs' already-persisted runs, and
+`FULL_PIPELINE` never produces any of those, so appending it would just
+correlate whatever (if anything) already exists, not a meaningful pipeline
+step. CLI/`make full-pipeline` only, no HTTP trigger (matches
+`FEATURE_GENERATION`/`MODEL_TRAINING`'s own precedent of being
+CLI/workflow-triggered, not API-triggered).
 
 ### The optimization gate
 
@@ -315,10 +333,17 @@ pytest-only monkeypatched client, neither CI-appropriate as-is (see
 
 ## Known real gaps (as of this doc)
 
-- `PROJECTION_GENERATION` and `FULL_PIPELINE` job types: enum members only, no handler.
+- `PROJECTION_GENERATION` job type: enum member only, no handler, deliberately -- no defined
+  consumer/table for it to write to (`project_player`/`project_player_with_champion` are
+  already called directly by every job that needs a projection, computed live, never cached).
 - No price-change history — `players.now_cost` is a single current value, overwritten every `DATA_INGESTION` run; FPL's own `cost_change_event`/`cost_change_start` fields aren't captured at all.
 - No official-API season-aggregate history (`element-summary/{id}/history_past`) ingestion — moot in practice since `HISTORICAL_DATA_INGESTION` already provides strictly richer (gameweek-level, not just season-total) historical data from a different source.
-- The Makefile's `recommend review-gameweek backtest full-pipeline:` target prints "not yet implemented" for all four — false for 3 of them (`RECOMMENDATION_GENERATION`, `GAMEWEEK_REVIEW`, `BACKTEST` are all real); only `FULL_PIPELINE` genuinely is.
+
+`FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and
+the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`
+targets are now real, individual targets (previously combined into one
+stub target printing "not yet implemented" for all four, even though 3 of
+them already had working handlers).
 
 ## Methodology (how this doc was produced, and how to keep it honest)
 
