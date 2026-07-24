@@ -217,6 +217,16 @@ def _upsert_league(session: Session, fpl_league_id: int, league_json: dict, now:
     return session.execute(select(League).where(League.fpl_league_id == fpl_league_id)).scalar_one()
 
 
+def _ensure_a_priority_league_exists(session: Session, league: League) -> None:
+    """Bootstrap ``leagues.is_priority``: if no league anywhere has it set yet, this one becomes
+    priority -- mirrors ``app.ingestion.service.get_or_create_current_season``'s own "first one
+    wins by default" bootstrap for ``seasons.is_current``, but simpler (no unset-others step is
+    needed here since this only ever fires when literally none are set)."""
+    any_priority_exists = session.execute(select(League.id).where(League.is_priority.is_(True))).first()
+    if any_priority_exists is None:
+        league.is_priority = True
+
+
 def _upsert_league_entries(
     session: Session, league_id: uuid.UUID, standings_results: list[dict], now: datetime
 ) -> None:
@@ -759,6 +769,7 @@ class LeagueSyncJobRunner(JobRunner):
             try:
                 now = datetime.now(UTC)
                 league = _upsert_league(session, fpl_league_id, league_json, now)
+                _ensure_a_priority_league_exists(session, league)
                 _upsert_league_entries(session, league.id, standings_results, now)
                 session.commit()
 

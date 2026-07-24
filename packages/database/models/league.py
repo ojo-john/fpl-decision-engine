@@ -42,6 +42,14 @@ class League(Base):
     ko_rounds: Mapped[int | None] = mapped_column(Integer)
     closed: Mapped[bool] = mapped_column(SABoolean, nullable=False)
     has_cup: Mapped[bool] = mapped_column(SABoolean, nullable=False)
+    # Exactly one row should have this True at a time -- same application-enforced (no DB
+    # constraint), "unset every other row before setting the new one" invariant this codebase
+    # already uses for seasons.is_current/model_versions.is_champion. The Rivals page defaults
+    # to whichever league has this flag; a manager can sync several leagues but only one is
+    # "the" one shown without an explicit tab switch. The first league ever synced becomes
+    # priority automatically (see app.jobs.handlers.league_sync); every one after that stays
+    # non-priority until POST /leagues/{league_id}/priority is called explicitly.
+    is_priority: Mapped[bool] = mapped_column(SABoolean, nullable=False, default=False)
     raw_league_json: Mapped[dict | None] = mapped_column(JSONB)
     last_synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

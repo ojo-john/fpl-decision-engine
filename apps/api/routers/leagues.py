@@ -13,7 +13,7 @@ import uuid
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.jobs.service import execute_job
@@ -85,6 +85,12 @@ def _rival_profile_out(row: RivalProfile) -> RivalProfileOut:
     )
 
 
+def _league_out(row: League) -> LeagueOut:
+    return LeagueOut(
+        league_id=row.id, fpl_league_id=row.fpl_league_id, name=row.name, is_priority=row.is_priority
+    )
+
+
 def _league_entry_out(row: LeagueEntry) -> LeagueEntryOut:
     return LeagueEntryOut(
         fpl_manager_id=row.fpl_manager_id,
@@ -147,7 +153,23 @@ def list_leagues(db: Session = Depends(get_db)) -> list[LeagueOut]:
         .scalars()
         .all()
     )
-    return [LeagueOut(league_id=row.id, fpl_league_id=row.fpl_league_id, name=row.name) for row in rows]
+    return [_league_out(row) for row in rows]
+
+
+@router.post("/{league_id}/priority", response_model=LeagueOut)
+def set_priority_league(league_id: uuid.UUID, db: Session = Depends(get_db)) -> LeagueOut | JSONResponse:
+    """Mark this league as priority (the one Rivals shows by default) -- unsets every other
+    league's flag first, same "exactly one at a time" invariant as ``leagues.is_priority``'s
+    own docstring on the model."""
+    league = db.get(League, league_id)
+    if league is None:
+        return _league_not_found_response(league_id)
+
+    db.execute(update(League).where(League.is_priority.is_(True)).values(is_priority=False))
+    league.is_priority = True
+    db.commit()
+    db.refresh(league)
+    return _league_out(league)
 
 
 @router.get("/{league_id}/rivals", response_model=list[RivalProfileOut])
