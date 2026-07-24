@@ -1411,8 +1411,12 @@ export interface components {
             season_id: string;
             /** Team Id */
             team_id: string | null;
+            /** Team Short Name */
+            team_short_name?: string | null;
             /** Position Id */
             position_id: string | null;
+            /** Position */
+            position?: string | null;
             /** First Name */
             first_name: string | null;
             /** Second Name */

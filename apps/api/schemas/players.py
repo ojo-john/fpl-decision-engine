@@ -51,7 +51,9 @@ class PlayerDetail(BaseModel):
     fpl_code: int | None
     season_id: uuid.UUID
     team_id: uuid.UUID | None
+    team_short_name: str | None = None
     position_id: uuid.UUID | None
+    position: str | None = None
     first_name: str | None
     second_name: str | None
     web_name: str | None

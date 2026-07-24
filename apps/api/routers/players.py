@@ -115,7 +115,17 @@ def get_player(player_id: uuid.UUID, db: Session = Depends(get_db)) -> PlayerDet
     player = db.get(Player, player_id)
     if player is None:
         raise HTTPException(status_code=404, detail=f"Player {player_id} not found.")
-    return PlayerDetail.model_validate(player)
+
+    detail = PlayerDetail.model_validate(player)
+    # Same enrichment list_players already does for PlayerSummary -- a bare team_id/position_id
+    # forces every caller to look the name up separately for something this common.
+    if player.team_id is not None:
+        team = db.get(Team, player.team_id)
+        detail.team_short_name = team.short_name if team is not None else None
+    if player.position_id is not None:
+        position = db.get(Position, player.position_id)
+        detail.position = position.short_name if position is not None else None
+    return detail
 
 
 @router.get("/{player_id}/projection", response_model=PlayerProjectionResponse)

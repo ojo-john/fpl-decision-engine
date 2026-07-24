@@ -76,6 +76,10 @@ def test_get_player_detail_returns_full_row(db_session, patched_fpl_client_optim
     assert body["id"] == listed["id"]
     assert "is_quarantined" in body
     assert "quarantine_reason" in body
+    # Same team/position enrichment PlayerSummary already does for the list view -- a detail
+    # page needs readable names too, not just team_id/position_id.
+    assert body["team_short_name"] == listed["team_short_name"]
+    assert body["position"] == listed["position"]
 
 
 def test_get_player_detail_404_for_unknown_id(db_session, patched_fpl_client_optimization):
