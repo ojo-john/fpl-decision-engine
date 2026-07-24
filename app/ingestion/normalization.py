@@ -36,6 +36,7 @@ from app.data_quality import checks
 from packages.database.models.fixture import Fixture
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.player import Player
+from packages.database.models.player_price_history import PlayerPriceHistory
 from packages.database.models.position import Position
 from packages.database.models.team import Team
 
@@ -256,6 +257,15 @@ def upsert_players(
         (season_id, fpl_id)
         for (fpl_id,) in session.execute(select(Player.fpl_element_id).where(Player.season_id == season_id))
     }
+    # (player_id, now_cost) for every already-stored player this season, so a real price change
+    # can be detected below -- keyed separately from existing_keys since that set only proves
+    # "this fpl_element_id already has a row", not what its stored now_cost/id actually are.
+    existing_player_id_and_cost_by_fpl_id = {
+        fpl_id: (player_id, now_cost)
+        for fpl_id, player_id, now_cost in session.execute(
+            select(Player.fpl_element_id, Player.id, Player.now_cost).where(Player.season_id == season_id)
+        )
+    }
 
     # A single INSERT ... ON CONFLICT statement cannot affect the same
     # conflict target twice (Postgres raises "ON CONFLICT DO UPDATE command
@@ -272,10 +282,28 @@ def upsert_players(
         deduped_rows.append(row)
 
     values = []
+    price_history_values = []
     for row in deduped_rows:
         fpl_id = row["id"]
         is_quarantined = fpl_id in quarantined_ids
         selected_by_percent = row.get("selected_by_percent")
+        new_cost = row["now_cost"]
+
+        existing = existing_player_id_and_cost_by_fpl_id.get(fpl_id)
+        if existing is not None:
+            existing_player_id, old_cost = existing
+            if old_cost != new_cost:
+                price_history_values.append(
+                    {
+                        "id": uuid.uuid4(),
+                        "player_id": existing_player_id,
+                        "season_id": season_id,
+                        "old_cost": old_cost,
+                        "new_cost": new_cost,
+                        "observed_at": last_synced_at,
+                    }
+                )
+
         values.append(
             {
                 "id": uuid.uuid4(),
@@ -326,6 +354,12 @@ def upsert_players(
         existing_keys=existing_keys,
         key_fields=["season_id", "fpl_element_id"],
     )
+
+    # Insert-only, no conflict target possible (id is always fresh) -- every genuine price
+    # change detected above becomes its own permanent row, never upserted/overwritten.
+    if price_history_values:
+        session.execute(insert(PlayerPriceHistory).values(price_history_values))
+
     return NormalizationCounts(inserted=inserted, updated=updated, quarantined=len(quarantined_ids)), issues
 
 

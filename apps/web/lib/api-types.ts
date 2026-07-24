@@ -82,6 +82,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/players/{player_id}/price-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Player Price History
+         * @description Most-recent-first list of every OBSERVED price change for this player, this season.
+         *
+         *     Empty (not a 404) for a player with no recorded changes yet -- a
+         *     perfectly normal state for most of the season, not an error (see
+         *     ``packages.database.models.player_price_history``'s own docstring: a
+         *     row only exists when ``app.ingestion.normalization.upsert_players``
+         *     actually observed ``now_cost`` differ between two ingestion runs).
+         */
+        get: operations["get_player_price_history_players__player_id__price_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/players/{player_id}/projection": {
         parameters: {
             query?: never;
@@ -185,14 +211,16 @@ export interface paths {
          *     marks a gameweek ``is_current``). Nothing is persisted -- rerunning this produces a fresh
          *     computation every time, never a cached/stored result to revisit later.
          *
-         *     ``is_cold_start_gameweek`` flags the specific, real failure mode this surfaces: the
-         *     trained champion model's features are almost entirely rolling within-season form -- for
-         *     the season's own first gameweek, that's uniformly blank for every player (an input shape
-         *     the model never saw in training, since every training row had SOME real recent history by
-         *     construction), so its point *magnitudes* are not trustworthy even though the underlying
-         *     player *rankings* are usually still sensible. The caller should show this prominently, not
-         *     bury it -- confirmed via a real run this session: champion model said Haaland was worth
-         *     0.43 points for a cold-start gameweek 1, versus FPL's own ep_next of 4.0 for the same player.
+         *     ``is_cold_start_gameweek`` tells the caller this is the season's own first gameweek --
+         *     see ``app.optimization.projection._is_cold_start_season``/``_cold_start_projection`` for
+         *     why every player's projection source becomes ``cold_start_blend_ep_next_and_career_avg``
+         *     in that state rather than the champion model directly (a real, discovered failure mode:
+         *     the trained model's features are almost entirely rolling within-season form, uniformly
+         *     blank at literal kickoff -- an input shape it was never meaningfully trained on -- so its
+         *     raw predictions were systematically far too low; confirmed live: 0.43 points for Haaland
+         *     versus a sane ~5 once blended with his real prior-season average). The caller should still
+         *     surface this flag (it's informational -- "no current-season signal yet" -- not a data-
+         *     quality warning anymore now that the blend fixes the magnitude problem).
          */
         post: operations["preview_squad_optimize_preview_post"];
         delete?: never;
@@ -1536,6 +1564,21 @@ export interface components {
             total: number;
         };
         /**
+         * PlayerPriceChangeOut
+         * @description One OBSERVED ``now_cost`` change -- see ``packages.database.models.player_price_history``.
+         */
+        PlayerPriceChangeOut: {
+            /** Old Cost */
+            old_cost: number;
+            /** New Cost */
+            new_cost: number;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+        };
+        /**
          * PlayerProjectionResponse
          * @description The live output of ``app.optimization.projection.project_player`` for one player.
          */
@@ -2007,6 +2050,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlayerDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_player_price_history_players__player_id__price_history_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                player_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlayerPriceChangeOut"][];
                 };
             };
             /** @description Validation Error */

@@ -110,3 +110,50 @@ def test_get_player_projection_shape(db_session, patched_fpl_client_optimization
     assert isinstance(body["projected_points"], float)
     assert body["is_eligible"] is True
     assert body["projection_formula_version"] >= 1
+
+
+# --- GET /players/{id}/price-history ---------------------------------------------------------
+
+
+def test_get_player_price_history_404_for_unknown_id(db_session, patched_fpl_client_optimization):
+    _seed(db_session)
+    client = authed_client()
+
+    response = client.get(f"/players/{uuid.uuid4()}/price-history")
+
+    assert response.status_code == 404
+
+
+def test_get_player_price_history_empty_when_no_change_yet(db_session, patched_fpl_client_optimization):
+    _seed(db_session)
+    client = authed_client()
+    listed = client.get("/players", params={"page_size": 1}).json()["items"][0]
+
+    response = client.get(f"/players/{listed['id']}/price-history")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_get_player_price_history_returns_a_real_observed_change(
+    db_session, patched_fpl_client_optimization
+):
+    _seed(db_session)
+    client = authed_client()
+    listed = client.get("/players", params={"page_size": 1}).json()["items"][0]
+    original_cost = listed["now_cost"]
+
+    elements = patched_fpl_client_optimization["bootstrap"]["elements"]
+    element = next(e for e in elements if e["id"] == listed["fpl_element_id"])
+    element["now_cost"] = original_cost + 3
+
+    second = execute_job(db_session, job_type=JobType.DATA_INGESTION, trigger_type=TriggerType.LOCAL)
+    assert second.status == JobStatus.SUCCEEDED
+
+    response = client.get(f"/players/{listed['id']}/price-history")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["old_cost"] == original_cost
+    assert body[0]["new_cost"] == original_cost + 3
