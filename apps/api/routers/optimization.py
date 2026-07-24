@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
-from app.jobs.handlers.squad_optimization import _build_candidates
+from app.jobs.handlers.squad_optimization import SQUAD_BUILD_HORIZON_LENGTH, _build_candidates
 from app.jobs.service import execute_job
 from app.optimization.champion_loader import load_current_champion
 from app.optimization.constraints import (
@@ -22,7 +22,7 @@ from app.optimization.constraints import (
     get_captain_multiplier,
     load_optimization_constraints,
 )
-from app.optimization.gameweek_resolution import resolve_target_gameweek
+from app.optimization.gameweek_resolution import resolve_horizon_gameweeks, resolve_target_gameweek
 from app.optimization.joint_squad_solver import solve_joint_squad_and_xi
 from apps.api.dependencies import get_db
 from apps.api.schemas.optimization import (
@@ -151,6 +151,12 @@ def preview_squad(db: Session = Depends(get_db)) -> SquadPreviewOut | JSONRespon
     marks a gameweek ``is_current``). Nothing is persisted -- rerunning this produces a fresh
     computation every time, never a cached/stored result to revisit later.
 
+    Candidates are ranked by points summed across the next
+    ``app.jobs.handlers.squad_optimization.SQUAD_BUILD_HORIZON_LENGTH`` gameweeks (the same
+    ``compute_horizon_points`` ``TRANSFER_OPTIMIZATION`` already uses), not just the immediate
+    next one -- a fresh squad is a multi-week commitment, so a player with a brutal opening
+    run of fixtures is correctly ranked below one with an easier run.
+
     ``is_cold_start_gameweek`` tells the caller this is the season's own first gameweek --
     see ``app.optimization.projection._is_cold_start_season``/``_cold_start_projection`` for
     why every player's projection source becomes ``cold_start_blend_ep_next_and_career_avg``
@@ -197,7 +203,8 @@ def preview_squad(db: Session = Depends(get_db)) -> SquadPreviewOut | JSONRespon
 
     champion = load_current_champion(db)
     captain_multiplier = get_captain_multiplier(db, constraints.rules_config_id)
-    candidates = _build_candidates(db, season_id, target_gameweek_id, champion)
+    horizon_gameweek_ids = resolve_horizon_gameweeks(db, season_id, SQUAD_BUILD_HORIZON_LENGTH)
+    candidates = _build_candidates(db, season_id, horizon_gameweek_ids, champion)
     solution = solve_joint_squad_and_xi(candidates, constraints, captain_multiplier)
 
     candidates_by_id = {c.player_id: c for c in candidates}

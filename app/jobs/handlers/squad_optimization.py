@@ -5,6 +5,23 @@ Refuses outright (no ``optimization_runs`` row at all) when
 row up front and keeps it in sync with the run's outcome — including the
 INFEASIBLE case, which is a real, informative outcome worth persisting, not
 a "never ran" state.
+
+Candidate ranking (added post-review): a fresh 15-player squad is a
+multi-gameweek commitment, not a single-week decision (unlike
+``LINEUP_OPTIMIZATION``'s own ``_build_lineup_candidates``, which
+deliberately stays single-gameweek — picking a starting XI from an
+existing squad genuinely is re-decided every week). ``_build_candidates``
+therefore ranks every candidate by points summed across a
+``SQUAD_BUILD_HORIZON_LENGTH``-gameweek horizon
+(``app.transfers.horizon_projection.compute_horizon_points`` — the exact
+function ``TRANSFER_OPTIMIZATION`` already uses for the identical "value
+over the next several fixtures" question, not reimplemented here), so a
+player with a brutal opening run of fixtures is correctly ranked below one
+with an easier run even if their single-gameweek-1 projections are similar.
+``target_gameweek_id``/``target_gameweek_status`` on the persisted
+``OptimizationRun`` row keep their existing meaning (the immediate next
+gameweek this run nominally targets, used for display/the optimization
+gate) — only the projection ranking candidates are fed is horizon-based.
 """
 
 import uuid
@@ -19,16 +36,12 @@ from app.jobs.runner import JobContext, JobResult, JobRunner
 from app.optimization.candidates import OptimizationCandidate
 from app.optimization.champion_loader import LoadedChampion, load_current_champion
 from app.optimization.constraints import get_captain_multiplier, load_optimization_constraints
-from app.optimization.gameweek_resolution import resolve_target_gameweek
+from app.optimization.gameweek_resolution import resolve_horizon_gameweeks, resolve_target_gameweek
 from app.optimization.gate import check_optimization_gate
 from app.optimization.joint_squad_solver import solve_joint_squad_and_xi
 from app.optimization.persistence import build_run_player_rows_and_xi_points
-from app.optimization.projection import (
-    PROJECTION_FORMULA_VERSION,
-    PlayerProjection,
-    project_player,
-    project_player_with_champion,
-)
+from app.optimization.projection import PROJECTION_FORMULA_VERSION, project_player
+from app.transfers.horizon_projection import compute_horizon_points
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.player import Player
 from packages.database.models.position import Position
@@ -37,37 +50,29 @@ from packages.database.session import SessionLocal
 from packages.domain.jobs import JobStatus, JobType
 from packages.domain.optimization import OptimizationRunStatus, RecommendationType, SolverStatus
 
+# Matches TRANSFER_OPTIMIZATION's own default horizon (TransferOptimizationRequest.horizon_gameweeks,
+# bounded 4-8) -- same "next several fixtures" question, same reasonable default.
+SQUAD_BUILD_HORIZON_LENGTH = 6
+
 
 def _resolve_current_season_id(session: Session) -> uuid.UUID | None:
     return session.execute(select(Season.id).where(Season.is_current.is_(True))).scalar_one_or_none()
 
 
-def _project(
-    session: Session,
-    player: Player,
-    target_gameweek_id: uuid.UUID | None,
-    champion: LoadedChampion | None,
-) -> PlayerProjection:
-    """Champion-aware projection when a target gameweek is resolved, else the plain formula.
-
-    ``project_player_with_champion`` needs a concrete target gameweek to
-    compute a live feature row against — when none is resolved (e.g. the
-    close-season gap, see ``app.optimization.gameweek_resolution``), there is
-    nothing for a champion model to project against, so every candidate
-    falls back to ``project_player`` exactly as it did before this layer.
-    """
-    if target_gameweek_id is None:
-        return project_player(player)
-    return project_player_with_champion(session, player, target_gameweek_id, champion)
-
-
 def _build_candidates(
     session: Session,
     season_id: uuid.UUID,
-    target_gameweek_id: uuid.UUID | None,
+    horizon_gameweek_ids: list[uuid.UUID],
     champion: LoadedChampion | None,
 ) -> list[OptimizationCandidate]:
-    """Build the eligible candidate pool: non-quarantined players with a resolved position/team."""
+    """Build the eligible candidate pool: non-quarantined players with a resolved position/team,
+    ranked by points projected across ``horizon_gameweek_ids`` (see module docstring for why a
+    fresh squad build is a multi-gameweek decision). An empty horizon (the real off-season
+    state — see ``app.optimization.gameweek_resolution.resolve_horizon_gameweeks``) falls back
+    to the same single, DB-free ``project_player`` estimate every candidate always used before
+    this layer, rather than a horizon sum of zero for everyone (which would carry no ranking
+    signal at all).
+    """
     players = (
         session.execute(select(Player).where(Player.season_id == season_id, Player.is_quarantined.is_(False)))
         .scalars()
@@ -84,14 +89,34 @@ def _build_candidates(
         position = positions_by_id.get(player.position_id)
         if position is None:
             continue
-        projection = _project(session, player, target_gameweek_id, champion)
-        if not projection.is_eligible:
+        # Hard-exclusion (i/s/u) is a static property of player.status alone -- identical for
+        # every gameweek project_player_with_champion would ever check inside
+        # compute_horizon_points. The cheap, DB-free project_player() here is exact, not an
+        # approximation, and avoids paying for a champion-aware call per horizon gameweek just
+        # to throw the result away -- mirrors app.transfers.candidates.build_in_shortlists'
+        # own established precedent for this exact tradeoff.
+        fallback_projection = project_player(player)
+        if not fallback_projection.is_eligible:
             continue
+
+        if horizon_gameweek_ids:
+            points = compute_horizon_points(session, player, horizon_gameweek_ids, champion)
+            # Whether the champion was actually usable for every one of those gameweeks (vs.
+            # falling back per-gameweek, e.g. a cold-start season) isn't tracked at this
+            # granularity -- "was a champion object even passed in" is still a meaningfully
+            # informative, simple label, and lets a test (or a human) confirm at a glance
+            # whether this run had a champion available at all.
+            champion_label = champion.model_family.value if champion is not None else "heuristic"
+            source = f"horizon_{len(horizon_gameweek_ids)}gw_{champion_label}"
+        else:
+            points = fallback_projection.projected_points
+            source = fallback_projection.source
+
         candidates.append(
             OptimizationCandidate(
                 player_id=player.id,
-                projected_points=projection.projected_points,
-                projection_source=projection.source,
+                projected_points=points,
+                projection_source=source,
                 position_short_name=position.short_name,
                 team_id=player.team_id,
                 now_cost=player.now_cost,
@@ -168,7 +193,10 @@ class SquadOptimizationJobRunner(JobRunner):
                 # Loaded ONCE per job run, never per-player — see
                 # app.optimization.champion_loader's own docstring.
                 champion = load_current_champion(session)
-                candidates = _build_candidates(session, season_id, target_gameweek_id, champion)
+                horizon_gameweek_ids = resolve_horizon_gameweeks(
+                    session, season_id, SQUAD_BUILD_HORIZON_LENGTH
+                )
+                candidates = _build_candidates(session, season_id, horizon_gameweek_ids, champion)
                 solution = solve_joint_squad_and_xi(candidates, constraints, captain_multiplier)
 
                 if solution.solver_status != SolverStatus.OPTIMAL:

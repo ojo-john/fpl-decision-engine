@@ -129,16 +129,48 @@ for the whole pre-season window before FPL marks GW1 live).
 `POST /optimize/preview` (added post-review) is a deliberate, separate
 escape hatch for that specific pre-season window — it never calls
 `check_optimization_gate` at all, reuses the same solver/projection code
-as `SQUAD_OPTIMIZATION`, and never persists anything (no `Job`, no
-`optimization_runs` row) so it can never be confused with a real run. Its
-response includes `is_cold_start_gameweek`: when the target gameweek is
-the season's own first (zero `player_gameweek_stats` rows exist for that
-season yet), the champion model's projections are systematically too low
-in magnitude (though rankings are usually still sensible) — every
-rolling-form feature it was trained on is blank for a brand-new season's
-GW1, an input shape no training row ever had. Confirmed live: champion
-model projected Haaland at 0.43 pts for a cold-start GW1 vs. FPL's own
-`ep_next` of 4.0 for the same player.
+as `SQUAD_OPTIMIZATION` (`app.jobs.handlers.squad_optimization._build_candidates`),
+and never persists anything (no `Job`, no `optimization_runs` row) so it
+can never be confused with a real run. Its response includes
+`is_cold_start_gameweek`: when the target gameweek is the season's own
+first (zero `player_gameweek_stats` rows exist for that season yet), the
+champion model's raw prediction is untrustworthy in magnitude (though
+rankings are usually still sensible) — every rolling-form feature it was
+trained on is blank for a brand-new season's GW1, an input shape no
+training row ever had. Confirmed live: champion model projected Haaland
+at 0.43 pts for a cold-start GW1 vs. FPL's own `ep_next` of 4.0 for the
+same player.
+
+For a cold-start season, `app/optimization/projection.py`'s
+`_cold_start_projection` replaces the raw champion prediction with a
+blend: `(project_player(player).projected_points +
+career_avg_points_prior_seasons) / 2` — a 50/50 average of FPL's own
+pre-season estimate and that specific player's real cross-season scoring
+average (`career_avg_points_prior_seasons`, resolved via the
+season-independent `fpl_code`, populated by `HISTORICAL_DATA_INGESTION`
++ `FEATURE_GENERATION`; falls back to the bare `project_player` estimate
+if no career history exists, e.g. a debutant). That blend is then
+adjusted by `next_fixture_difficulty` (FPL's own 1=easiest..5=hardest
+rating for the specific target gameweek): `blended *= 1 + (3 -
+difficulty) * 0.075`, i.e. a neutral fixture (3) leaves it unchanged, the
+easiest (1) is +15%, the hardest (5) is -15%. This exists because neither
+`ep_next` nor `career_avg_points_prior_seasons` vary per gameweek, so
+without it every gameweek in a horizon summed to identical values
+regardless of the actual fixture list.
+
+Both `SQUAD_OPTIMIZATION` and `/optimize/preview` rank candidates by
+points summed across the next `SQUAD_BUILD_HORIZON_LENGTH` (6) unfinished
+gameweeks (`app.optimization.gameweek_resolution.resolve_horizon_gameweeks`
++ `app.transfers.horizon_projection.compute_horizon_points` — the same
+horizon machinery `TRANSFER_OPTIMIZATION` already used), not just the
+immediate next gameweek — a fresh pre-season squad is a multi-week
+commitment, so ranking should reflect each player's run of fixtures, not
+a single gameweek snapshot. (`LINEUP_OPTIMIZATION` deliberately stays
+single-gameweek — picking a starting XI for one specific gameweek is a
+different question.) Candidate `projection_source` is labeled
+`horizon_{N}gw_{champion_family}` when a champion model exists, or
+`horizon_{N}gw_heuristic` when it doesn't (no champion ever
+promoted/selected).
 
 ## Two separate ingestion pipelines — don't conflate them
 

@@ -147,11 +147,13 @@ def test_squad_optimization_uses_champion_projection_when_present(
     run_players = _run_players_for(db_session, optimization_run_id)
     assert len(run_players) == 15
 
-    champion_sourced = [rp for rp in run_players if rp.projection_source.startswith("ml_champion_")]
+    champion_sourced = [rp for rp in run_players if "_heuristic" not in rp.projection_source]
     assert len(champion_sourced) > 0, (
         "expected at least one squad candidate to use the champion-sourced projection path; "
         f"sources seen: {sorted({rp.projection_source for rp in run_players})}"
     )
+    for rp in champion_sourced:
+        assert rp.projection_source.startswith("horizon_")
 
 
 def test_squad_optimization_falls_back_to_formula_when_no_champion_exists(
@@ -176,15 +178,9 @@ def test_squad_optimization_falls_back_to_formula_when_no_champion_exists(
     run_players = _run_players_for(db_session, optimization_run_id)
     assert len(run_players) == 15
 
-    # Every candidate must fall back to project_player's own source strings --
-    # never a champion-sourced one -- when no champion has ever been selected.
-    allowed_fallback_sources = {
-        "ep_next",
-        "ep_next_availability_scaled",
-        "points_per_game",
-        "points_per_game_availability_scaled",
-        "no_data_zero",
-    }
+    # Every candidate's horizon-summed source must be labeled "heuristic" -- never a real
+    # champion family name -- when no champion has ever been selected (see
+    # app.jobs.handlers.squad_optimization._build_candidates's own champion_label logic).
     for rp in run_players:
-        assert not rp.projection_source.startswith("ml_champion_")
-        assert rp.projection_source in allowed_fallback_sources
+        assert rp.projection_source.endswith("_heuristic")
+        assert "ml_champion_" not in rp.projection_source

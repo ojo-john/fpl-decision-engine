@@ -154,14 +154,28 @@ def _cold_start_projection(
     """The cold-start fallback: blends ``project_player``'s own ``ep_next``-first estimate with
     ``career_avg_points_prior_seasons`` (a real, per-gameweek average computed from every
     earlier season this player has a record for, resolved cross-season via ``fpl_code`` — see
-    ``app.features.engineering.career_avg_points_prior_seasons``), rather than using ``ep_next``
-    alone.
+    ``app.features.engineering.career_avg_points_prior_seasons``), then adjusts by
+    ``next_fixture_difficulty`` for THIS specific ``target_gameweek_id``, rather than using
+    ``ep_next`` alone.
 
-    Both are genuinely informative and genuinely different: ``ep_next`` is FPL's own current,
-    fixture/price-aware estimate; the career average is our own real historical record, with no
-    such adjustment. Averaging them is more data-driven than picking one — confirmed on a real
-    player: FPL's ep_next=4.0 for a striker whose real last-season average was 6.36 (both
-    plausible, genuinely different signals; the blend is 5.18, not an arbitrary pick of either).
+    Both ``ep_next`` and the career average are genuinely informative and genuinely different:
+    ``ep_next`` is FPL's own current estimate; the career average is our own real historical
+    record. Averaging them is more data-driven than picking one — confirmed on a real player:
+    FPL's ep_next=4.0 for a striker whose real last-season average was 6.36 (both plausible,
+    genuinely different signals; the blend is 5.18, not an arbitrary pick of either).
+
+    Neither of those two inputs varies by ``target_gameweek_id`` at all, though (``ep_next`` is
+    a single static field on ``player``; the career average is a season-spanning constant) —
+    so summing this projection across a multi-gameweek horizon (see
+    ``app.transfers.horizon_projection.compute_horizon_points``, used by
+    ``app.jobs.handlers.squad_optimization`` for exactly this) would otherwise just be "N times
+    the same number" for every player uniformly, never differentiating a player with an easy
+    opening run of fixtures from one with a brutal one — the entire point of a horizon in the
+    first place. ``next_fixture_difficulty`` (FPL's own 1=easiest..5=hardest rating for THIS
+    target gameweek's specific fixture, already resolved home/away-aware by
+    ``app.features.service``) is the one signal this fallback can compute that genuinely does
+    vary per gameweek even with zero current-season history, so it's applied as a modest
+    (±15% across the full 1-5 range, neutral at difficulty 3) multiplier on the blend.
 
     Falls back to the plain ``project_player`` estimate alone when no earlier-season history
     exists for this player at all (a brand-new-to-FPL signing — nothing to blend with) or when
@@ -188,6 +202,11 @@ def _cold_start_projection(
         return baseline
 
     blended = (baseline.projected_points + float(career_avg)) / 2
+
+    difficulty = feature_row.next_fixture_difficulty
+    if difficulty is not None:
+        blended *= 1 + (3 - difficulty) * 0.075
+
     return PlayerProjection(player.id, blended, "cold_start_blend_ep_next_and_career_avg", is_eligible=True)
 
 
