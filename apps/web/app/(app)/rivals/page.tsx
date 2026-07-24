@@ -3,6 +3,7 @@ import { backendClient } from "@/lib/api-client";
 import { ActionButton } from "@/components/action-button";
 import { H2HSimulateButton } from "@/components/h2h-simulate-button";
 import { SingleFieldActionForm } from "@/components/single-field-action-form";
+import { SquadDifferential } from "@/components/squad-differential";
 import { Card, ConfidenceBadge, EmptyState, ErrorState } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -202,6 +203,11 @@ export default async function RivalsPage({
                 {rival.unknowns.join(" ")}
               </p>
             )}
+            <SquadDifferential
+              currentSquadId={currentSquadId}
+              onlyYouHave={rival.players_only_you_have}
+              onlyRivalHas={rival.players_only_rival_has}
+            />
             {currentSquadId && (
               <div style={{ marginTop: "0.75rem" }}>
                 <H2HSimulateButton

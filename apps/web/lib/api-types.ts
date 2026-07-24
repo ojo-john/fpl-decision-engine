@@ -211,6 +211,12 @@ export interface paths {
          *     marks a gameweek ``is_current``). Nothing is persisted -- rerunning this produces a fresh
          *     computation every time, never a cached/stored result to revisit later.
          *
+         *     Candidates are ranked by points summed across the next
+         *     ``app.jobs.handlers.squad_optimization.SQUAD_BUILD_HORIZON_LENGTH`` gameweeks (the same
+         *     ``compute_horizon_points`` ``TRANSFER_OPTIMIZATION`` already uses), not just the immediate
+         *     next one -- a fresh squad is a multi-week commitment, so a player with a brutal opening
+         *     run of fixtures is correctly ranked below one with an easier run.
+         *
          *     ``is_cold_start_gameweek`` tells the caller this is the season's own first gameweek --
          *     see ``app.optimization.projection._is_cold_start_season``/``_cold_start_projection`` for
          *     why every player's projection source becomes ``cold_start_blend_ep_next_and_career_avg``
@@ -726,6 +732,13 @@ export interface paths {
          *     alone is not enough: a real ``League`` row persists across seasons
          *     (upsert-in-place), so a rival synced last season and never synced again
          *     this season would otherwise still show up here.
+         *
+         *     Also computes, per rival, the squad differential against the calling
+         *     manager's own current squad (``players_only_you_have``/
+         *     ``players_only_rival_has`` on ``RivalProfileOut`` -- see
+         *     ``app.h2h.differential``). Batched into 3 extra queries total regardless
+         *     of rival count (current squad, rival snapshots, player name/position
+         *     lookup) -- never one query per rival.
          */
         get: operations["list_league_rivals_leagues__league_id__rivals_get"];
         put?: never;
@@ -1790,6 +1803,25 @@ export interface components {
              * Format: date-time
              */
             computed_at: string;
+            /** Players Only You Have */
+            players_only_you_have: components["schemas"]["SquadDifferentialPlayerOut"][] | null;
+            /** Players Only Rival Has */
+            players_only_rival_has: components["schemas"]["SquadDifferentialPlayerOut"][] | null;
+        };
+        /**
+         * SquadDifferentialPlayerOut
+         * @description One player in a squad differential -- see app.h2h.differential.compute_squad_differential.
+         */
+        SquadDifferentialPlayerOut: {
+            /**
+             * Player Id
+             * Format: uuid
+             */
+            player_id: string;
+            /** Web Name */
+            web_name: string | null;
+            /** Position */
+            position: string | null;
         };
         /**
          * SquadPlayerOut
