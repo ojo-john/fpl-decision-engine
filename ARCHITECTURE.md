@@ -341,6 +341,30 @@ new code needed, just running the existing pipeline.
   `GET /players/{id}/price-history` (most-recent-first, capped at 200,
   empty list — not a 404 — when nothing's changed yet) and shown on the
   player detail page.
+- **`seasons.total_players`** (migration `0028`) — bootstrap-static's own
+  top-level `total_players` (total registered FPL manager accounts),
+  refreshed on every `DATA_INGESTION` run by
+  `app.ingestion.service.get_or_create_current_season`. Exists solely to
+  convert a player's `selected_by_percent` into an estimated absolute
+  owner count (2% of 100k managers vs. 2% of 11m are very different
+  signals) — see the next bullet.
+- **`app.players.price_signal`** (migration `0028` adds
+  `players.transfers_in_event`/`transfers_out_event`/`cost_change_event`,
+  captured from bootstrap-static's per-player, per-gameweek transfer
+  counts — FPL resets both to 0 at the start of every gameweek, so this is
+  a "since the last price update" signal, distinct from
+  `player_gameweek_stats.transfers_in`/`transfers_out`, which are
+  season-cumulative totals from the historical/`element-summary`
+  pipeline). `classify_price_momentum` is a deliberately simple,
+  explainable heuristic — **not** FPL's real (undisclosed) price-change
+  algorithm — that flags `likely_rise`/`likely_fall` when net transfer
+  activity crosses both a ratio threshold (2% of the player's own
+  estimated owner base) and an absolute floor (1000 net transfers, to
+  avoid false positives on tiny-owned differentials where a handful of
+  transfers is a huge percentage of a tiny owner base). Exposed as
+  `PlayerDetail.price_momentum` on `GET /players/{id}` (computed in the
+  router, not a stored column) and shown as a badge on the player detail
+  page.
 
 ## API (`apps/api`)
 

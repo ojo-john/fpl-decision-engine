@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Index, String, func, text
+from sqlalchemy import Boolean, DateTime, Index, Integer, String, func, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,6 +16,12 @@ class Season(Base):
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     label: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # bootstrap-static's own top-level "total_players" (total registered FPL manager
+    # accounts) -- refreshed on every DATA_INGESTION run. Used to convert a player's
+    # selected_by_percent into an estimated absolute owner count for price-momentum
+    # heuristics (see app.players.price_signal), since selected_by_percent alone can't
+    # distinguish "2% of 100k managers" from "2% of 11m".
+    total_players: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -62,6 +62,43 @@ export function ConfidenceBadge({ confidence }: { confidence: string }) {
   );
 }
 
+const PRICE_MOMENTUM_LABELS: Record<string, string> = {
+  likely_rise: "Likely to rise",
+  likely_fall: "Likely to fall",
+  stable: "Stable",
+  unknown: "Unknown",
+};
+
+const PRICE_MOMENTUM_COLORS: Record<string, string> = {
+  likely_rise: "var(--success)",
+  likely_fall: "var(--danger)",
+  stable: "var(--text-muted)",
+  unknown: "var(--text-muted)",
+};
+
+/** See app.players.price_signal -- an explainable heuristic, not FPL's real (undisclosed)
+ * price-change algorithm. */
+export function PriceMomentumBadge({ momentum }: { momentum: string }) {
+  const color = PRICE_MOMENTUM_COLORS[momentum] ?? "var(--text-muted)";
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "0.15rem 0.55rem",
+        borderRadius: "999px",
+        fontSize: "0.75rem",
+        fontWeight: 600,
+        textTransform: "uppercase",
+        letterSpacing: "0.03em",
+        color,
+        border: `1px solid ${color}`,
+      }}
+    >
+      {PRICE_MOMENTUM_LABELS[momentum] ?? momentum}
+    </span>
+  );
+}
+
 /** Wraps a <table> so it scrolls horizontally within its own box on a narrow viewport instead
  * of blowing out the page's width -- see the ".table-scroll" rule in app/globals.css. */
 export function TableScroll({ children }: { children: ReactNode }) {

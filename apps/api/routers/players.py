@@ -17,11 +17,13 @@ from app.optimization.projection import (
     project_player,
     project_player_with_champion,
 )
+from app.players.price_signal import classify_price_momentum
 from apps.api.dependencies import get_db
 from apps.api.schemas.players import (
     PlayerDetail,
     PlayerListResponse,
     PlayerPriceChangeOut,
+    PlayerPriceMomentumOut,
     PlayerProjectionResponse,
     PlayerSummary,
 )
@@ -138,6 +140,20 @@ def get_player(player_id: uuid.UUID, db: Session = Depends(get_db)) -> PlayerDet
     if player.position_id is not None:
         position = db.get(Position, player.position_id)
         detail.position = position.short_name if position is not None else None
+
+    season = db.get(Season, player.season_id)
+    signal = classify_price_momentum(
+        transfers_in_event=player.transfers_in_event,
+        transfers_out_event=player.transfers_out_event,
+        selected_by_percent=player.selected_by_percent,
+        total_players=season.total_players if season is not None else None,
+    )
+    detail.price_momentum = PlayerPriceMomentumOut(
+        momentum=signal.momentum,
+        net_transfers_event=signal.net_transfers_event,
+        estimated_owners=signal.estimated_owners,
+        momentum_ratio=signal.momentum_ratio,
+    )
     return detail
 
 

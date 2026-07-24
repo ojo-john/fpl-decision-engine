@@ -6,6 +6,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
 
+from app.players.price_signal import PriceMomentum
+
 
 class PlayerSummary(BaseModel):
     """One row in a /players list response.
@@ -35,6 +37,15 @@ class PlayerListResponse(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class PlayerPriceMomentumOut(BaseModel):
+    """See ``app.players.price_signal`` -- an explainable heuristic, not FPL's real algorithm."""
+
+    momentum: PriceMomentum
+    net_transfers_event: int | None
+    estimated_owners: int | None
+    momentum_ratio: Decimal | None
 
 
 class PlayerDetail(BaseModel):
@@ -75,6 +86,9 @@ class PlayerDetail(BaseModel):
     bonus: int
     bps: int
     selected_by_percent: Decimal | None
+    transfers_in_event: int | None
+    transfers_out_event: int | None
+    cost_change_event: int | None
     chance_of_playing_next_round: int | None
     chance_of_playing_this_round: int | None
     points_per_game: Decimal | None
@@ -85,6 +99,10 @@ class PlayerDetail(BaseModel):
     news: str | None
     is_quarantined: bool
     quarantine_reason: str | None
+    # Not a Player column -- computed by the router via app.players.price_signal and attached
+    # after model_validate (same pattern as team_short_name/position above), since it depends on
+    # the season's total_players, not anything on the player row alone.
+    price_momentum: PlayerPriceMomentumOut | None = None
 
 
 class PlayerPriceChangeOut(BaseModel):

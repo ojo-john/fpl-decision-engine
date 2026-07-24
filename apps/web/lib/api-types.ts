@@ -1578,6 +1578,12 @@ export interface components {
             bps: number;
             /** Selected By Percent */
             selected_by_percent: string | null;
+            /** Transfers In Event */
+            transfers_in_event: number | null;
+            /** Transfers Out Event */
+            transfers_out_event: number | null;
+            /** Cost Change Event */
+            cost_change_event: number | null;
             /** Chance Of Playing Next Round */
             chance_of_playing_next_round: number | null;
             /** Chance Of Playing This Round */
@@ -1598,6 +1604,7 @@ export interface components {
             is_quarantined: boolean;
             /** Quarantine Reason */
             quarantine_reason: string | null;
+            price_momentum?: components["schemas"]["PlayerPriceMomentumOut"] | null;
         };
         /** PlayerListResponse */
         PlayerListResponse: {
@@ -1624,6 +1631,19 @@ export interface components {
              * Format: date-time
              */
             observed_at: string;
+        };
+        /**
+         * PlayerPriceMomentumOut
+         * @description See ``app.players.price_signal`` -- an explainable heuristic, not FPL's real algorithm.
+         */
+        PlayerPriceMomentumOut: {
+            momentum: components["schemas"]["PriceMomentum"];
+            /** Net Transfers Event */
+            net_transfers_event: number | null;
+            /** Estimated Owners */
+            estimated_owners: number | null;
+            /** Momentum Ratio */
+            momentum_ratio: string | null;
         };
         /**
          * PlayerProjectionResponse
@@ -1706,6 +1726,11 @@ export interface components {
             /** Is Quarantined */
             is_quarantined: boolean;
         };
+        /**
+         * PriceMomentum
+         * @enum {string}
+         */
+        PriceMomentum: "likely_rise" | "likely_fall" | "stable" | "unknown";
         /** RecommendationAuditOut */
         RecommendationAuditOut: {
             /**
