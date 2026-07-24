@@ -62,19 +62,23 @@ def derive_season_label(bootstrap_json: dict[str, Any]) -> str:
 def get_or_create_current_season(session: Session, bootstrap_json: dict[str, Any]) -> Season:
     """Get (or create) the Season row matching this bootstrap payload, and mark it current."""
     label = derive_season_label(bootstrap_json)
+    total_players = bootstrap_json.get("total_players")
     existing = session.execute(select(Season).where(Season.label == label)).scalar_one_or_none()
 
     if existing is not None and existing.is_current:
+        existing.total_players = total_players
+        session.flush()
         return existing
 
     session.execute(update(Season).where(Season.is_current.is_(True)).values(is_current=False))
     session.flush()
 
     if existing is None:
-        existing = Season(label=label, is_current=True)
+        existing = Season(label=label, is_current=True, total_players=total_players)
         session.add(existing)
     else:
         existing.is_current = True
+        existing.total_players = total_players
     session.flush()
     return existing
 

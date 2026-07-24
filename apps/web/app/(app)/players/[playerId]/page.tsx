@@ -1,5 +1,5 @@
 import { backendClient } from "@/lib/api-client";
-import { Card, ErrorState, TableScroll } from "@/components/ui";
+import { Card, ErrorState, PriceMomentumBadge, TableScroll } from "@/components/ui";
 import type { components } from "@/lib/api-types";
 
 export const dynamic = "force-dynamic";
@@ -105,6 +105,31 @@ export default async function PlayerDetailPage({
           ))}
         </div>
       </Card>
+
+      {player.price_momentum && (
+        <Card>
+          <h2 style={{ margin: "0 0 0.5rem", fontSize: "0.95rem" }}>Price momentum</h2>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+            <PriceMomentumBadge momentum={player.price_momentum.momentum} />
+            {player.price_momentum.net_transfers_event !== null && (
+              <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
+                {player.price_momentum.net_transfers_event >= 0 ? "+" : ""}
+                {player.price_momentum.net_transfers_event.toLocaleString()} net transfers this gameweek
+              </span>
+            )}
+            {player.price_momentum.estimated_owners !== null && (
+              <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
+                ~{player.price_momentum.estimated_owners.toLocaleString()} estimated owners
+                {player.selected_by_percent !== null ? ` (${player.selected_by_percent}%)` : ""}
+              </span>
+            )}
+          </div>
+          <p style={{ margin: "0.5rem 0 0", fontSize: "0.8rem", color: "var(--text-muted)" }}>
+            An unofficial heuristic based on this gameweek&apos;s transfer activity relative to
+            ownership -- not FPL&apos;s real price-change algorithm, which is undisclosed.
+          </p>
+        </Card>
+      )}
 
       <Card>
         <h2 style={{ margin: "0 0 0.5rem", fontSize: "0.95rem" }}>Price history</h2>

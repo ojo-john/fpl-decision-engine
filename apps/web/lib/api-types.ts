@@ -211,6 +211,12 @@ export interface paths {
          *     marks a gameweek ``is_current``). Nothing is persisted -- rerunning this produces a fresh
          *     computation every time, never a cached/stored result to revisit later.
          *
+         *     Candidates are ranked by points summed across the next
+         *     ``app.jobs.handlers.squad_optimization.SQUAD_BUILD_HORIZON_LENGTH`` gameweeks (the same
+         *     ``compute_horizon_points`` ``TRANSFER_OPTIMIZATION`` already uses), not just the immediate
+         *     next one -- a fresh squad is a multi-week commitment, so a player with a brutal opening
+         *     run of fixtures is correctly ranked below one with an easier run.
+         *
          *     ``is_cold_start_gameweek`` tells the caller this is the season's own first gameweek --
          *     see ``app.optimization.projection._is_cold_start_season``/``_cold_start_projection`` for
          *     why every player's projection source becomes ``cold_start_blend_ep_next_and_career_avg``
@@ -1555,6 +1561,12 @@ export interface components {
             bps: number;
             /** Selected By Percent */
             selected_by_percent: string | null;
+            /** Transfers In Event */
+            transfers_in_event: number | null;
+            /** Transfers Out Event */
+            transfers_out_event: number | null;
+            /** Cost Change Event */
+            cost_change_event: number | null;
             /** Chance Of Playing Next Round */
             chance_of_playing_next_round: number | null;
             /** Chance Of Playing This Round */
@@ -1575,6 +1587,7 @@ export interface components {
             is_quarantined: boolean;
             /** Quarantine Reason */
             quarantine_reason: string | null;
+            price_momentum?: components["schemas"]["PlayerPriceMomentumOut"] | null;
         };
         /** PlayerListResponse */
         PlayerListResponse: {
@@ -1601,6 +1614,19 @@ export interface components {
              * Format: date-time
              */
             observed_at: string;
+        };
+        /**
+         * PlayerPriceMomentumOut
+         * @description See ``app.players.price_signal`` -- an explainable heuristic, not FPL's real algorithm.
+         */
+        PlayerPriceMomentumOut: {
+            momentum: components["schemas"]["PriceMomentum"];
+            /** Net Transfers Event */
+            net_transfers_event: number | null;
+            /** Estimated Owners */
+            estimated_owners: number | null;
+            /** Momentum Ratio */
+            momentum_ratio: string | null;
         };
         /**
          * PlayerProjectionResponse
@@ -1664,6 +1690,11 @@ export interface components {
             /** Is Quarantined */
             is_quarantined: boolean;
         };
+        /**
+         * PriceMomentum
+         * @enum {string}
+         */
+        PriceMomentum: "likely_rise" | "likely_fall" | "stable" | "unknown";
         /** RecommendationAuditOut */
         RecommendationAuditOut: {
             /**

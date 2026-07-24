@@ -51,6 +51,13 @@ class Player(Base):
     bonus: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     bps: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     selected_by_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
+    # This gameweek's live transfer momentum (FPL resets both to 0 at the start of each
+    # gameweek) -- distinct from player_gameweek_stats.transfers_in/transfers_out, which are
+    # season-cumulative totals sourced from the historical/element-summary pipeline, not a
+    # live in-gameweek signal. Used by app.players.price_signal for price-change heuristics.
+    transfers_in_event: Mapped[int | None] = mapped_column(Integer)
+    transfers_out_event: Mapped[int | None] = mapped_column(Integer)
+    cost_change_event: Mapped[int | None] = mapped_column(Integer)
     chance_of_playing_next_round: Mapped[int | None] = mapped_column(Integer)
     chance_of_playing_this_round: Mapped[int | None] = mapped_column(Integer)
     points_per_game: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
