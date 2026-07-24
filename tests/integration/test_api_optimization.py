@@ -336,3 +336,60 @@ def test_get_transfer_optimization_run_unknown_id_returns_404():
 
     assert response.status_code == 404
     assert response.json()["error_code"] == "TRANSFER_OPTIMIZATION_RUN_NOT_FOUND"
+
+
+# --- GET /optimize, GET /optimize/transfers (list/history, Milestone 8 item 1) --------------
+
+
+def test_list_optimization_runs_includes_created_run(db_session, patched_fpl_client_optimization):
+    _seed(db_session)
+    client = authed_client()
+    created = client.post("/optimize/initial-squad", json={}).json()
+    # POST /optimize/initial-squad names the endpoint after its INPUT (start from nothing),
+    # but the run it produces recommends a squad AND its starting XI/captain together in one
+    # shot -- so its own recommendation_type is "joint_squad_and_xi", not "initial_squad" (that
+    # value is reserved for a recommendation_type this job never actually sets; see
+    # packages.domain.optimization.RecommendationType).
+    assert created["recommendation_type"] == "joint_squad_and_xi"
+
+    response = client.get("/optimize", params={"recommendation_type": "joint_squad_and_xi"})
+
+    assert response.status_code == 200
+    body = response.json()
+    # Filtered by recommendation_type only (not manager_squad_snapshot_id -- OptimizationRun
+    # has no such column), so other tests' runs of the SAME type may legitimately also be
+    # present in this shared, non-truncated database; find this test's own row rather than
+    # asserting exact list equality/length.
+    matching = next(r for r in body if r["optimization_run_id"] == created["optimization_run_id"])
+    assert matching["recommendation_type"] == "joint_squad_and_xi"
+    assert matching["run_status"] == "succeeded"
+    assert matching["squad_total_cost"] == created["squad_total_cost"]
+    assert matching["squad_projected_points"] == created["squad_projected_points"]
+    assert "players" not in matching
+
+
+def test_list_transfer_optimization_runs_filters_by_snapshot(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    season_id = _seed_with_active_gameweek(db_session)
+    snapshot = _create_manual_snapshot(db_session, season_id)
+    client = authed_client()
+    created = client.post("/optimize/transfers", json={"manager_squad_snapshot_id": str(snapshot.id)}).json()
+
+    response = client.get("/optimize/transfers", params={"manager_squad_snapshot_id": str(snapshot.id)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["transfer_optimization_run_id"] == created["transfer_optimization_run_id"]
+    assert body[0]["recommended_action"] == created["recommended_action"]
+    assert "scenarios" not in body[0]
+
+
+def test_list_transfer_optimization_runs_empty_for_unknown_snapshot():
+    client = authed_client()
+
+    response = client.get("/optimize/transfers", params={"manager_squad_snapshot_id": str(uuid.uuid4())})
+
+    assert response.status_code == 200
+    assert response.json() == []

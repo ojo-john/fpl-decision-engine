@@ -68,6 +68,21 @@ class H2HSimulationRunOut(BaseModel):
     completed_at: datetime | None
 
 
+class H2HSimulationRunSummaryOut(BaseModel):
+    """Slim per-row shape for GET /h2h/simulate list -- omits ``strategy_candidates``."""
+
+    h2h_simulation_run_id: uuid.UUID
+    manager_squad_snapshot_id: uuid.UUID
+    rival_profile_id: uuid.UUID
+    run_status: str
+    target_fpl_event_id: int
+    win_probability: Decimal | None
+    draw_probability: Decimal | None
+    loss_probability: Decimal | None
+    started_at: datetime
+    completed_at: datetime | None
+
+
 class H2HSimulationErrorResponse(BaseModel):
     error_code: str | None
     error_message: str | None

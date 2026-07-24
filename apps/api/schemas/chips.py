@@ -53,6 +53,18 @@ class ChipOptimizationRunOut(BaseModel):
     completed_at: datetime | None
 
 
+class ChipOptimizationRunSummaryOut(BaseModel):
+    """Slim per-row shape for GET /optimize/chips list -- omits ``recommendations``/
+    ``candidates`` (a two-level join per row)."""
+
+    chip_optimization_run_id: uuid.UUID
+    manager_squad_snapshot_id: uuid.UUID
+    run_status: str
+    target_fpl_event_id: int
+    started_at: datetime
+    completed_at: datetime | None
+
+
 class ChipSimulationErrorResponse(BaseModel):
     error_code: str | None
     error_message: str | None

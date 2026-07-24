@@ -223,3 +223,42 @@ def test_get_h2h_simulation_run_unknown_id_returns_404():
 
     assert response.status_code == 404
     assert response.json()["error_code"] == "H2H_SIMULATION_RUN_NOT_FOUND"
+
+
+# --- GET /h2h/simulate (list/history, Milestone 8 item 1) -----------------------------------
+
+
+def test_list_h2h_simulation_runs_filters_by_snapshot(
+    db_session, patched_fpl_client_optimization_with_active_gameweek, patched_fpl_client_league
+):
+    season_id = _seed(db_session)
+    _run_league_sync(db_session)
+    rival_profile = db_session.execute(
+        select(RivalProfile).where(
+            RivalProfile.season_id == season_id, RivalProfile.fpl_manager_id == LEAGUE_RIVAL_B_FPL_MANAGER_ID
+        )
+    ).scalar_one()
+    snapshot = _create_manual_snapshot(db_session, season_id)
+    client = authed_client()
+    created = client.post(
+        "/h2h/simulate",
+        json={"manager_squad_snapshot_id": str(snapshot.id), "rival_profile_id": str(rival_profile.id)},
+    ).json()
+
+    response = client.get("/h2h/simulate", params={"manager_squad_snapshot_id": str(snapshot.id)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["h2h_simulation_run_id"] == created["h2h_simulation_run_id"]
+    assert body[0]["win_probability"] == created["win_probability"]
+    assert "strategy_candidates" not in body[0]
+
+
+def test_list_h2h_simulation_runs_empty_for_unknown_snapshot():
+    client = authed_client()
+
+    response = client.get("/h2h/simulate", params={"manager_squad_snapshot_id": str(uuid.uuid4())})
+
+    assert response.status_code == 200
+    assert response.json() == []

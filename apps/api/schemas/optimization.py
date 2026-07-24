@@ -62,6 +62,21 @@ class OptimizationRunOut(BaseModel):
     completed_at: datetime | None
 
 
+class OptimizationRunSummaryOut(BaseModel):
+    """Slim per-row shape for GET "" list endpoints -- omits ``players`` (an N+1 join per
+    row) since a history list only needs enough to pick a run to open, not its full XI.
+    """
+
+    optimization_run_id: uuid.UUID
+    recommendation_type: str
+    run_status: str
+    squad_total_cost: int | None
+    squad_projected_points: Decimal | None
+    xi_projected_points: Decimal | None
+    started_at: datetime
+    completed_at: datetime | None
+
+
 class OptimizationErrorResponse(BaseModel):
     error_code: str | None
     error_message: str | None
@@ -102,5 +117,16 @@ class TransferOptimizationRunOut(BaseModel):
     bank: int
     recommended_action: str  # "roll" | "one_transfer" | "two_transfers"
     scenarios: list[TransferScenarioOut]  # always 3, for transparency/comparison
+    started_at: datetime
+    completed_at: datetime | None
+
+
+class TransferOptimizationRunSummaryOut(BaseModel):
+    """Slim per-row shape for GET /transfers list -- omits ``scenarios``/``moves``."""
+
+    transfer_optimization_run_id: uuid.UUID
+    manager_squad_snapshot_id: uuid.UUID
+    run_status: str
+    recommended_action: str | None  # None for a run that never reached a recommendation
     started_at: datetime
     completed_at: datetime | None

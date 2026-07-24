@@ -205,3 +205,33 @@ def test_get_chip_optimization_run_unknown_id_returns_404():
 
     assert response.status_code == 404
     assert response.json()["error_code"] == "CHIP_OPTIMIZATION_RUN_NOT_FOUND"
+
+
+# --- GET /optimize/chips (list/history, Milestone 8 item 1) ---------------------------------
+
+
+def test_list_chip_optimization_runs_filters_by_snapshot(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    season_id = _seed(db_session)
+    snapshot = _create_manual_snapshot(db_session, season_id, _raw_picks_json())
+    client = authed_client()
+    created = client.post("/optimize/chips", json={"manager_squad_snapshot_id": str(snapshot.id)}).json()
+
+    response = client.get("/optimize/chips", params={"manager_squad_snapshot_id": str(snapshot.id)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["chip_optimization_run_id"] == created["chip_optimization_run_id"]
+    assert body[0]["target_fpl_event_id"] == created["target_fpl_event_id"]
+    assert "recommendations" not in body[0]
+
+
+def test_list_chip_optimization_runs_empty_for_unknown_snapshot():
+    client = authed_client()
+
+    response = client.get("/optimize/chips", params={"manager_squad_snapshot_id": str(uuid.uuid4())})
+
+    assert response.status_code == 200
+    assert response.json() == []

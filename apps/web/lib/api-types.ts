@@ -109,6 +109,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/optimize/chips": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Chip Optimization Runs
+         * @description Most-recent-first history of chip-optimization runs (Milestone 8 item 1).
+         */
+        get: operations["list_chip_optimization_runs_optimize_chips_get"];
+        put?: never;
+        /** Simulate Chip Optimization */
+        post: operations["simulate_chip_optimization_optimize_chips_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/optimize/chips/{chip_optimization_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Chip Optimization Run
+         * @description Fetch an already-completed chip-optimization run by id (Milestone 8 Layer 1).
+         */
+        get: operations["get_chip_optimization_run_optimize_chips__chip_optimization_run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/optimize/initial-squad": {
         parameters: {
             query?: never;
@@ -120,6 +161,69 @@ export interface paths {
         put?: never;
         /** Optimize Initial Squad */
         post: operations["optimize_initial_squad_optimize_initial_squad_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/optimize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Optimization Runs
+         * @description Most-recent-first history of squad/lineup runs (Milestone 8 item 1) -- both
+         *     ``RecommendationType`` variants live in the same table, mirrors ``_load_run_response``'s
+         *     own reuse across them.
+         */
+        get: operations["list_optimization_runs_optimize_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/optimize/transfers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Transfer Optimization Runs
+         * @description Most-recent-first history of transfer-optimization runs (Milestone 8 item 1).
+         */
+        get: operations["list_transfer_optimization_runs_optimize_transfers_get"];
+        put?: never;
+        /** Optimize Transfers */
+        post: operations["optimize_transfers_optimize_transfers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/optimize/transfers/{transfer_optimization_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Transfer Optimization Run
+         * @description Fetch an already-completed transfer-optimization run by id (Milestone 8 Layer 1).
+         */
+        get: operations["get_transfer_optimization_run_optimize_transfers__transfer_optimization_run_id__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -142,43 +246,6 @@ export interface paths {
          *     reuse across ``/initial-squad`` and ``/lineup`` above.
          */
         get: operations["get_optimization_run_optimize__optimization_run_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/optimize/transfers": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Optimize Transfers */
-        post: operations["optimize_transfers_optimize_transfers_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/optimize/transfers/{transfer_optimization_run_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Transfer Optimization Run
-         * @description Fetch an already-completed transfer-optimization run by id (Milestone 8 Layer 1).
-         */
-        get: operations["get_transfer_optimization_run_optimize_transfers__transfer_optimization_run_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -283,7 +350,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List H2H Simulation Runs
+         * @description Most-recent-first history of H2H simulation runs (Milestone 8 item 1).
+         */
+        get: operations["list_h2h_simulation_runs_h2h_simulate_get"];
         put?: never;
         /** Simulate H2H Matchup */
         post: operations["simulate_h2h_matchup_h2h_simulate_post"];
@@ -305,43 +376,6 @@ export interface paths {
          * @description Fetch an already-completed H2H simulation run by id (Milestone 8 Layer 1).
          */
         get: operations["get_h2h_simulation_run_h2h_simulate__h2h_simulation_run_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/optimize/chips": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Simulate Chip Optimization */
-        post: operations["simulate_chip_optimization_optimize_chips_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/optimize/chips/{chip_optimization_run_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Chip Optimization Run
-         * @description Fetch an already-completed chip-optimization run by id (Milestone 8 Layer 1).
-         */
-        get: operations["get_chip_optimization_run_optimize_chips__chip_optimization_run_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -748,6 +782,34 @@ export interface components {
             /** Completed At */
             completed_at: string | null;
         };
+        /**
+         * ChipOptimizationRunSummaryOut
+         * @description Slim per-row shape for GET /optimize/chips list -- omits ``recommendations``/
+         *     ``candidates`` (a two-level join per row).
+         */
+        ChipOptimizationRunSummaryOut: {
+            /**
+             * Chip Optimization Run Id
+             * Format: uuid
+             */
+            chip_optimization_run_id: string;
+            /**
+             * Manager Squad Snapshot Id
+             * Format: uuid
+             */
+            manager_squad_snapshot_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Target Fpl Event Id */
+            target_fpl_event_id: number;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Completed At */
+            completed_at: string | null;
+        };
         /** ChipRecommendationOut */
         ChipRecommendationOut: {
             /** Chip Type */
@@ -899,6 +961,44 @@ export interface components {
             h2h_adjustment_materially_changed: boolean | null;
             /** Strategy Candidates */
             strategy_candidates: components["schemas"]["H2HStrategyCandidateOut"][];
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Completed At */
+            completed_at: string | null;
+        };
+        /**
+         * H2HSimulationRunSummaryOut
+         * @description Slim per-row shape for GET /h2h/simulate list -- omits ``strategy_candidates``.
+         */
+        H2HSimulationRunSummaryOut: {
+            /**
+             * H2H Simulation Run Id
+             * Format: uuid
+             */
+            h2h_simulation_run_id: string;
+            /**
+             * Manager Squad Snapshot Id
+             * Format: uuid
+             */
+            manager_squad_snapshot_id: string;
+            /**
+             * Rival Profile Id
+             * Format: uuid
+             */
+            rival_profile_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Target Fpl Event Id */
+            target_fpl_event_id: number;
+            /** Win Probability */
+            win_probability: string | null;
+            /** Draw Probability */
+            draw_probability: string | null;
+            /** Loss Probability */
+            loss_probability: string | null;
             /**
              * Started At
              * Format: date-time
@@ -1256,6 +1356,35 @@ export interface components {
             projection_source: string;
             /** Now Cost Snapshot */
             now_cost_snapshot: number;
+        };
+        /**
+         * OptimizationRunSummaryOut
+         * @description Slim per-row shape for GET "" list endpoints -- omits ``players`` (an N+1 join per
+         *     row) since a history list only needs enough to pick a run to open, not its full XI.
+         */
+        OptimizationRunSummaryOut: {
+            /**
+             * Optimization Run Id
+             * Format: uuid
+             */
+            optimization_run_id: string;
+            /** Recommendation Type */
+            recommendation_type: string;
+            /** Run Status */
+            run_status: string;
+            /** Squad Total Cost */
+            squad_total_cost: number | null;
+            /** Squad Projected Points */
+            squad_projected_points: string | null;
+            /** Xi Projected Points */
+            xi_projected_points: string | null;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Completed At */
+            completed_at: string | null;
         };
         /**
          * PlayerDetail
@@ -1632,6 +1761,33 @@ export interface components {
             /** Completed At */
             completed_at: string | null;
         };
+        /**
+         * TransferOptimizationRunSummaryOut
+         * @description Slim per-row shape for GET /transfers list -- omits ``scenarios``/``moves``.
+         */
+        TransferOptimizationRunSummaryOut: {
+            /**
+             * Transfer Optimization Run Id
+             * Format: uuid
+             */
+            transfer_optimization_run_id: string;
+            /**
+             * Manager Squad Snapshot Id
+             * Format: uuid
+             */
+            manager_squad_snapshot_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Recommended Action */
+            recommended_action: string | null;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Completed At */
+            completed_at: string | null;
+        };
         /** TransferScenarioOut */
         TransferScenarioOut: {
             /** Transfers Count */
@@ -1819,6 +1975,107 @@ export interface operations {
             };
         };
     };
+    list_chip_optimization_runs_optimize_chips_get: {
+        parameters: {
+            query?: {
+                manager_squad_snapshot_id?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChipOptimizationRunSummaryOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    simulate_chip_optimization_optimize_chips_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChipSimulationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChipOptimizationRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_chip_optimization_run_optimize_chips__chip_optimization_run_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                chip_optimization_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChipOptimizationRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     optimize_initial_squad_optimize_initial_squad_post: {
         parameters: {
             query?: never;
@@ -1854,15 +2111,15 @@ export interface operations {
             };
         };
     };
-    get_optimization_run_optimize__optimization_run_id__get: {
+    list_optimization_runs_optimize_get: {
         parameters: {
-            query?: never;
+            query?: {
+                recommendation_type?: string | null;
+            };
             header?: {
                 authorization?: string | null;
             };
-            path: {
-                optimization_run_id: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -1873,7 +2130,40 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OptimizationRunOut"];
+                    "application/json": components["schemas"]["OptimizationRunSummaryOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_transfer_optimization_runs_optimize_transfers_get: {
+        parameters: {
+            query?: {
+                manager_squad_snapshot_id?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferOptimizationRunSummaryOut"][];
                 };
             };
             /** @description Validation Error */
@@ -1942,6 +2232,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TransferOptimizationRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_optimization_run_optimize__optimization_run_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                optimization_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OptimizationRunOut"];
                 };
             };
             /** @description Validation Error */
@@ -2127,6 +2450,40 @@ export interface operations {
             };
         };
     };
+    list_h2h_simulation_runs_h2h_simulate_get: {
+        parameters: {
+            query?: {
+                manager_squad_snapshot_id?: string | null;
+                rival_profile_id?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["H2HSimulationRunSummaryOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     simulate_h2h_matchup_h2h_simulate_post: {
         parameters: {
             query?: never;
@@ -2182,74 +2539,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["H2HSimulationRunOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    simulate_chip_optimization_optimize_chips_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChipSimulationRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChipOptimizationRunOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_chip_optimization_run_optimize_chips__chip_optimization_run_id__get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                chip_optimization_run_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChipOptimizationRunOut"];
                 };
             };
             /** @description Validation Error */

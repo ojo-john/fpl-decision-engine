@@ -1,4 +1,4 @@
-"""POST /h2h/simulate endpoint.
+"""POST /h2h/simulate endpoint, plus GET-by-id and GET list (history).
 
 Uses the request's own DB session for the outer ``Job`` bookkeeping via
 ``execute_job`` — the job handler internally opens its own session for
@@ -6,32 +6,35 @@ Uses the request's own DB session for the outer ``Job`` bookkeeping via
 already do (see ``apps.api.routers.optimization``/``managers``); this is an
 established pattern, not a new one.
 
-Milestone 5 Layer 3 exposes H2H_SIMULATION only through this single
-synchronous endpoint (mirrors ``/optimize/transfers``'s own shape) — a
-run-listing/history endpoint is a natural follow-up, not built here.
-
-Milestone 5 Layer 4 (risk-adjusted strategy comparison) extends this SAME
+Milestone 5 Layer 4 (risk-adjusted strategy comparison) extends the by-id
 response with a nested ``strategy_candidates`` list rather than adding a new
 ``GET /h2h/simulations/{run_id}`` endpoint — every strategy candidate is
 already fully computed by the time this endpoint's one synchronous
 ``H2H_SIMULATION`` job finishes, so there is no separate resource to fetch
-later; a listing/history endpoint (across MULTIPLE runs) remains the natural
-follow-up this module already called out, unchanged by this layer.
+later.
 """
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.jobs.service import execute_job
 from apps.api.dependencies import get_db
-from apps.api.schemas.h2h import H2HSimulationRequest, H2HSimulationRunOut, H2HStrategyCandidateOut
+from apps.api.schemas.h2h import (
+    H2HSimulationRequest,
+    H2HSimulationRunOut,
+    H2HSimulationRunSummaryOut,
+    H2HStrategyCandidateOut,
+)
 from packages.database.models.h2h_simulation_run import H2HSimulationRun
 from packages.database.models.h2h_strategy_candidate import H2HStrategyCandidate
 from packages.domain.jobs import JobStatus, JobType, TriggerType
+
+# Same "capped read, not full pagination" convention as apps.api.routers.optimization/managers.
+_MAX_RESULTS = 200
 
 router = APIRouter(prefix="/h2h", tags=["h2h"])
 
@@ -140,6 +143,38 @@ def simulate_h2h_matchup(
     assert job.output_json is not None  # a SUCCEEDED job always has output_json
     h2h_simulation_run_id = uuid.UUID(job.output_json["h2h_simulation_run_id"])
     return _load_run_response(db, h2h_simulation_run_id)
+
+
+@router.get("/simulate", response_model=list[H2HSimulationRunSummaryOut])
+def list_h2h_simulation_runs(
+    manager_squad_snapshot_id: uuid.UUID | None = Query(None),
+    rival_profile_id: uuid.UUID | None = Query(None),
+    db: Session = Depends(get_db),
+) -> list[H2HSimulationRunSummaryOut]:
+    """Most-recent-first history of H2H simulation runs (Milestone 8 item 1)."""
+    stmt = select(H2HSimulationRun)
+    if manager_squad_snapshot_id is not None:
+        stmt = stmt.where(H2HSimulationRun.manager_squad_snapshot_id == manager_squad_snapshot_id)
+    if rival_profile_id is not None:
+        stmt = stmt.where(H2HSimulationRun.rival_profile_id == rival_profile_id)
+    stmt = stmt.order_by(H2HSimulationRun.started_at.desc()).limit(_MAX_RESULTS)
+
+    rows = db.execute(stmt).scalars().all()
+    return [
+        H2HSimulationRunSummaryOut(
+            h2h_simulation_run_id=row.id,
+            manager_squad_snapshot_id=row.manager_squad_snapshot_id,
+            rival_profile_id=row.rival_profile_id,
+            run_status=row.run_status.value,
+            target_fpl_event_id=row.target_fpl_event_id,
+            win_probability=row.win_probability,
+            draw_probability=row.draw_probability,
+            loss_probability=row.loss_probability,
+            started_at=row.started_at,
+            completed_at=row.completed_at,
+        )
+        for row in rows
+    ]
 
 
 @router.get("/simulate/{h2h_simulation_run_id}", response_model=H2HSimulationRunOut)

@@ -39,11 +39,15 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     protected = Depends(require_shared_token)
     app.include_router(players.router, dependencies=[protected])
+    # chips.router shares optimization.router's "/optimize" prefix and must be included
+    # FIRST: Starlette matches routes in registration order, and optimization.router's
+    # catch-all "GET /optimize/{optimization_run_id}" would otherwise swallow
+    # "GET /optimize/chips" (same one-segment shape), trying to parse "chips" as a UUID.
+    app.include_router(chips.router, dependencies=[protected])
     app.include_router(optimization.router, dependencies=[protected])
     app.include_router(managers.router_managers, dependencies=[protected])
     app.include_router(managers.router_squads, dependencies=[protected])
     app.include_router(h2h.router, dependencies=[protected])
-    app.include_router(chips.router, dependencies=[protected])
     app.include_router(recommendations.router, dependencies=[protected])
     app.include_router(learning.router_jobs, dependencies=[protected])
     app.include_router(learning.router_learning, dependencies=[protected])

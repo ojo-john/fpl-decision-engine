@@ -9,7 +9,7 @@ pattern, not a new one.
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased
@@ -21,9 +21,11 @@ from apps.api.schemas.optimization import (
     LineupRequest,
     OptimizationRunOut,
     OptimizationRunPlayerOut,
+    OptimizationRunSummaryOut,
     TransferMoveOut,
     TransferOptimizationRequest,
     TransferOptimizationRunOut,
+    TransferOptimizationRunSummaryOut,
     TransferScenarioOut,
 )
 from packages.database.models.optimization_run import OptimizationRun
@@ -36,6 +38,11 @@ from packages.database.models.transfer_optimization_run_scenario import Transfer
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 
 _RECOMMENDED_ACTION_BY_TRANSFERS_COUNT = {0: "roll", 1: "one_transfer", 2: "two_transfers"}
+
+# Same "capped read, not full pagination" convention as apps.api.routers.managers/learning/
+# leagues -- this system's own run volume (one manager, on-demand triggers) never approaches
+# a size where offset/limit paging is actually needed.
+_MAX_RESULTS = 200
 
 router = APIRouter(prefix="/optimize", tags=["optimization"])
 
@@ -121,19 +128,33 @@ def optimize_initial_squad(
     return _load_run_response(db, optimization_run_id)
 
 
-@router.get("/{optimization_run_id}", response_model=OptimizationRunOut)
-def get_optimization_run(
-    optimization_run_id: uuid.UUID, db: Session = Depends(get_db)
-) -> OptimizationRunOut | JSONResponse:
-    """Fetch an already-completed initial-squad or lineup run by id (Milestone 8 Layer 1).
+@router.get("", response_model=list[OptimizationRunSummaryOut])
+def list_optimization_runs(
+    recommendation_type: str | None = Query(None),
+    db: Session = Depends(get_db),
+) -> list[OptimizationRunSummaryOut]:
+    """Most-recent-first history of squad/lineup runs (Milestone 8 item 1) -- both
+    ``RecommendationType`` variants live in the same table, mirrors ``_load_run_response``'s
+    own reuse across them."""
+    stmt = select(OptimizationRun)
+    if recommendation_type is not None:
+        stmt = stmt.where(OptimizationRun.recommendation_type == recommendation_type)
+    stmt = stmt.order_by(OptimizationRun.started_at.desc()).limit(_MAX_RESULTS)
 
-    Both ``recommendation_type`` variants live in the same ``optimization_runs``
-    table, so one endpoint covers both -- mirrors ``_load_run_response``'s own
-    reuse across ``/initial-squad`` and ``/lineup`` above.
-    """
-    if db.get(OptimizationRun, optimization_run_id) is None:
-        return _not_found_response("OPTIMIZATION_RUN", optimization_run_id)
-    return _load_run_response(db, optimization_run_id)
+    rows = db.execute(stmt).scalars().all()
+    return [
+        OptimizationRunSummaryOut(
+            optimization_run_id=row.id,
+            recommendation_type=row.recommendation_type.value,
+            run_status=row.run_status.value,
+            squad_total_cost=row.squad_total_cost,
+            squad_projected_points=row.squad_projected_points,
+            xi_projected_points=row.xi_projected_points,
+            started_at=row.started_at,
+            completed_at=row.completed_at,
+        )
+        for row in rows
+    ]
 
 
 def _load_transfer_run_response(
@@ -238,6 +259,55 @@ def get_transfer_optimization_run(
     if db.get(TransferOptimizationRun, transfer_optimization_run_id) is None:
         return _not_found_response("TRANSFER_OPTIMIZATION_RUN", transfer_optimization_run_id)
     return _load_transfer_run_response(db, transfer_optimization_run_id)
+
+
+@router.get("/transfers", response_model=list[TransferOptimizationRunSummaryOut])
+def list_transfer_optimization_runs(
+    manager_squad_snapshot_id: uuid.UUID | None = Query(None),
+    db: Session = Depends(get_db),
+) -> list[TransferOptimizationRunSummaryOut]:
+    """Most-recent-first history of transfer-optimization runs (Milestone 8 item 1)."""
+    stmt = select(TransferOptimizationRun)
+    if manager_squad_snapshot_id is not None:
+        stmt = stmt.where(TransferOptimizationRun.manager_squad_snapshot_id == manager_squad_snapshot_id)
+    stmt = stmt.order_by(TransferOptimizationRun.started_at.desc()).limit(_MAX_RESULTS)
+
+    rows = db.execute(stmt).scalars().all()
+    return [
+        TransferOptimizationRunSummaryOut(
+            transfer_optimization_run_id=row.id,
+            manager_squad_snapshot_id=row.manager_squad_snapshot_id,
+            run_status=row.run_status.value,
+            recommended_action=(
+                _RECOMMENDED_ACTION_BY_TRANSFERS_COUNT[row.recommended_transfers_count]
+                if row.recommended_transfers_count is not None
+                else None
+            ),
+            started_at=row.started_at,
+            completed_at=row.completed_at,
+        )
+        for row in rows
+    ]
+
+
+# Registered AFTER every static single-segment GET above ("", "/transfers") -- Starlette
+# matches routes in registration order, and this catch-all's pattern ("/{optimization_run_id}")
+# is structurally identical (one path segment under /optimize) to "/transfers", so if it were
+# registered first it would swallow "GET /optimize/transfers" too, trying (and failing) to
+# parse "transfers" as a UUID.
+@router.get("/{optimization_run_id}", response_model=OptimizationRunOut)
+def get_optimization_run(
+    optimization_run_id: uuid.UUID, db: Session = Depends(get_db)
+) -> OptimizationRunOut | JSONResponse:
+    """Fetch an already-completed initial-squad or lineup run by id (Milestone 8 Layer 1).
+
+    Both ``recommendation_type`` variants live in the same ``optimization_runs``
+    table, so one endpoint covers both -- mirrors ``_load_run_response``'s own
+    reuse across ``/initial-squad`` and ``/lineup`` above.
+    """
+    if db.get(OptimizationRun, optimization_run_id) is None:
+        return _not_found_response("OPTIMIZATION_RUN", optimization_run_id)
+    return _load_run_response(db, optimization_run_id)
 
 
 @router.post("/lineup", response_model=OptimizationRunOut)

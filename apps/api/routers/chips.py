@@ -1,19 +1,15 @@
-"""POST /optimize/chips endpoint.
+"""POST /optimize/chips endpoint, plus GET-by-id and GET list (history).
 
 Uses the request's own DB session for the outer ``Job`` bookkeeping via
 ``execute_job`` — the job handler internally opens its own session for
 ``chip_optimization_runs``, exactly like ``apps.api.routers.h2h``/
 ``apps.api.routers.optimization`` already do; an established pattern, not a
 new one.
-
-Milestone 6 Layer 3 exposes CHIP_SIMULATION only through this single
-synchronous endpoint (mirrors ``/h2h/simulate``'s own shape) — a
-run-listing/history endpoint is a natural follow-up, not built here.
 """
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,6 +18,7 @@ from app.jobs.service import execute_job
 from apps.api.dependencies import get_db
 from apps.api.schemas.chips import (
     ChipOptimizationRunOut,
+    ChipOptimizationRunSummaryOut,
     ChipRecommendationOut,
     ChipSimulationRequest,
     ChipWindowCandidateOut,
@@ -30,6 +27,9 @@ from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.chip_recommendation import ChipRecommendation
 from packages.database.models.chip_window_candidate import ChipWindowCandidate
 from packages.domain.jobs import JobStatus, JobType, TriggerType
+
+# Same "capped read, not full pagination" convention as apps.api.routers.optimization/managers.
+_MAX_RESULTS = 200
 
 router = APIRouter(prefix="/optimize", tags=["chips"])
 
@@ -155,6 +155,31 @@ def simulate_chip_optimization(
     assert job.output_json is not None  # a SUCCEEDED job always has output_json
     chip_optimization_run_id = uuid.UUID(job.output_json["chip_optimization_run_id"])
     return _load_run_response(db, chip_optimization_run_id)
+
+
+@router.get("/chips", response_model=list[ChipOptimizationRunSummaryOut])
+def list_chip_optimization_runs(
+    manager_squad_snapshot_id: uuid.UUID | None = Query(None),
+    db: Session = Depends(get_db),
+) -> list[ChipOptimizationRunSummaryOut]:
+    """Most-recent-first history of chip-optimization runs (Milestone 8 item 1)."""
+    stmt = select(ChipOptimizationRun)
+    if manager_squad_snapshot_id is not None:
+        stmt = stmt.where(ChipOptimizationRun.manager_squad_snapshot_id == manager_squad_snapshot_id)
+    stmt = stmt.order_by(ChipOptimizationRun.started_at.desc()).limit(_MAX_RESULTS)
+
+    rows = db.execute(stmt).scalars().all()
+    return [
+        ChipOptimizationRunSummaryOut(
+            chip_optimization_run_id=row.id,
+            manager_squad_snapshot_id=row.manager_squad_snapshot_id,
+            run_status=row.run_status.value,
+            target_fpl_event_id=row.target_fpl_event_id,
+            started_at=row.started_at,
+            completed_at=row.completed_at,
+        )
+        for row in rows
+    ]
 
 
 @router.get("/chips/{chip_optimization_run_id}", response_model=ChipOptimizationRunOut)
