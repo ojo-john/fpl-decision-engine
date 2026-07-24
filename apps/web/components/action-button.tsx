@@ -18,12 +18,18 @@ export function ActionButton({
   label,
   pendingLabel,
   onSuccess,
+  mapError,
 }: {
   path: string;
   body?: Record<string, unknown>;
   label: string;
   pendingLabel?: string;
   onSuccess?: (data: unknown) => void;
+  /** Checked before the generic extractErrorMessage fallback -- lets a
+   * specific action recognize a known error_code (e.g. the optimization
+   * gate refusing pre-season) and explain it in context, rather than
+   * surfacing the raw backend error string. Return null to fall through. */
+  mapError?: (data: unknown) => string | null;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
@@ -40,7 +46,7 @@ export function ActionButton({
       });
       const data: unknown = await response.json().catch(() => null);
       if (!response.ok) {
-        setError(extractErrorMessage(data) ?? `Request failed (${response.status}).`);
+        setError(mapError?.(data) ?? extractErrorMessage(data) ?? `Request failed (${response.status}).`);
         return;
       }
       if (onSuccess) {
