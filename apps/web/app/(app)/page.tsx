@@ -25,6 +25,37 @@ export default async function DashboardPage() {
     return <ErrorState>Could not load the latest recommendation ({response.status}).</ErrorState>;
   }
 
+  // A recommendation-generation attempt can succeed with all 4 correlated components (squad/
+  // lineup, transfers, H2H, chips) still unresolved -- e.g. the very first attempt for a
+  // season, before anything else has run yet. Showing the full card in that state looks like a
+  // real, if sparse, recommendation; it isn't one -- there's nothing underneath it to view. See
+  // app/jobs/handlers/recommendation_generation.py's own resolved_components/_TOTAL_COMPONENTS.
+  const resolvedComponentCount = [
+    data.optimization,
+    data.transfer_optimization,
+    data.h2h_simulation,
+    data.chip_optimization,
+  ].filter((component) => component !== null).length;
+
+  if (resolvedComponentCount === 0) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        <EmptyState>
+          A recommendation was generated for gameweek {data.target_fpl_event_id} (
+          {new Date(data.generated_at).toLocaleString()}), but none of the squad, transfer, H2H,
+          or chip components had a result to correlate yet -- there&rsquo;s nothing to show.
+          Trigger squad/transfer/chip/H2H runs (or sync your team and try one from its own page),
+          then regenerate.
+        </EmptyState>
+        <ActionButton
+          path="/recommendations/generate"
+          label="Regenerate recommendation"
+          pendingLabel="Generating..."
+        />
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <Card>
