@@ -96,7 +96,13 @@ class PlayerPriceChangeOut(BaseModel):
 
 
 class PlayerProjectionResponse(BaseModel):
-    """The live output of ``app.optimization.projection.project_player`` for one player."""
+    """The live output of ``app.optimization.projection.project_player`` for one player.
+
+    The fields from ``is_cold_start_season`` onward are the "why this
+    projection" breakdown (added post-review) -- the real inputs already
+    computed behind ``projected_points``, not a new explainability system.
+    See ``apps.api.routers.players.get_player_projection``.
+    """
 
     player_id: uuid.UUID
     projected_points: float
@@ -105,3 +111,16 @@ class PlayerProjectionResponse(BaseModel):
     projection_formula_version: int
     chance_of_playing_next_round: int | None
     status: str | None
+
+    is_cold_start_season: bool
+    # Echoes the two raw inputs app.optimization.projection._cold_start_projection blends when
+    # is_cold_start_season is True -- None when not applicable (warm season, or no prior-season
+    # history for a brand-new player) rather than a stale/misleading number.
+    ep_next: Decimal | None
+    career_avg_points_prior_seasons: Decimal | None
+    next_fixture_difficulty: int | None
+    # Set only when projected_points actually came from a champion model prediction (source
+    # starts with "ml_champion_") -- None for every fallback/cold-start/no-champion path.
+    champion_model_family: str | None
+    champion_model_version_id: uuid.UUID | None
+    explanation: str

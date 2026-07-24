@@ -172,6 +172,25 @@ different question.) Candidate `projection_source` is labeled
 `horizon_{N}gw_heuristic` when it doesn't (no champion ever
 promoted/selected).
 
+**`GET /players/{player_id}/projection`'s "why this projection" breakdown**
+(added post-review): the response includes `is_cold_start_season`,
+`ep_next`, `career_avg_points_prior_seasons`, `next_fixture_difficulty`,
+`champion_model_family`/`champion_model_version_id`, and a one-line
+`explanation` string. These are display-only surfacing of numbers already
+computed by `project_player_with_champion`/`_cold_start_projection` and a
+best-effort extra `compute_features_for_player_gameweek` call for display
+purposes — not a new explainability system (no SHAP, no per-feature
+attribution). `champion_model_family` is set ONLY when `projected_points`
+actually came from a live champion-model prediction (`source` starts with
+`ml_champion_`) — during a cold-start season, a champion may exist and be
+the reason `_cold_start_projection` engaged at all, but the fields shown
+are the blend's own inputs, not the (unused, untrustworthy-for-this-input-
+shape) champion prediction, so `champion_model_family` correctly stays
+`None` in that case. See `apps.api.routers.players._explain_projection` for
+the exact source-string-to-sentence mapping and
+`app.optimization.projection.is_cold_start_season` (a thin public wrapper
+around the module's own `_is_cold_start_season`, added for this endpoint).
+
 ## Two separate ingestion pipelines — don't conflate them
 
 This is the single most likely thing to get missed (it was, this session,

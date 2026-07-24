@@ -125,6 +125,16 @@ export interface paths {
          *     ``project_player_with_champion``; falls back to the plain
          *     ``project_player`` formula otherwise (no active gameweek, or no
          *     champion yet) — identical fallback behavior to the optimizer jobs.
+         *
+         *     Also returns the "why this projection" breakdown (added post-review): the
+         *     real inputs already computed behind ``projected_points`` -- for a
+         *     cold-start season, the ``ep_next``/``career_avg_points_prior_seasons``/
+         *     ``next_fixture_difficulty`` values ``_cold_start_projection`` actually
+         *     blended; for a warm season with a champion-sourced prediction, which
+         *     model family/version produced it. Deliberately NOT full feature-level
+         *     attribution (no SHAP, no per-feature contribution breakdown) -- these are
+         *     the same few numbers the projection formula itself already computes, just
+         *     surfaced rather than recomputed or approximated.
          */
         get: operations["get_player_projection_players__player_id__projection_get"];
         put?: never;
@@ -1618,6 +1628,11 @@ export interface components {
         /**
          * PlayerProjectionResponse
          * @description The live output of ``app.optimization.projection.project_player`` for one player.
+         *
+         *     The fields from ``is_cold_start_season`` onward are the "why this
+         *     projection" breakdown (added post-review) -- the real inputs already
+         *     computed behind ``projected_points``, not a new explainability system.
+         *     See ``apps.api.routers.players.get_player_projection``.
          */
         PlayerProjectionResponse: {
             /**
@@ -1637,6 +1652,20 @@ export interface components {
             chance_of_playing_next_round: number | null;
             /** Status */
             status: string | null;
+            /** Is Cold Start Season */
+            is_cold_start_season: boolean;
+            /** Ep Next */
+            ep_next: string | null;
+            /** Career Avg Points Prior Seasons */
+            career_avg_points_prior_seasons: string | null;
+            /** Next Fixture Difficulty */
+            next_fixture_difficulty: number | null;
+            /** Champion Model Family */
+            champion_model_family: string | null;
+            /** Champion Model Version Id */
+            champion_model_version_id: string | null;
+            /** Explanation */
+            explanation: string;
         };
         /**
          * PlayerSummary
