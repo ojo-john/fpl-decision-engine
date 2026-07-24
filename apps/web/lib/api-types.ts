@@ -167,6 +167,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/optimize/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Squad
+         * @description Unofficial, throwaway squad preview -- deliberately bypasses
+         *     ``app.optimization.gate.check_optimization_gate`` entirely (never calls it, never touches
+         *     ``execute_job``/``Job``/``optimization_runs``) so a manager can see "what would this
+         *     recommend" during a window the real gate refuses (most commonly: pre-season, before FPL
+         *     marks a gameweek ``is_current``). Nothing is persisted -- rerunning this produces a fresh
+         *     computation every time, never a cached/stored result to revisit later.
+         *
+         *     ``is_cold_start_gameweek`` flags the specific, real failure mode this surfaces: the
+         *     trained champion model's features are almost entirely rolling within-season form -- for
+         *     the season's own first gameweek, that's uniformly blank for every player (an input shape
+         *     the model never saw in training, since every training row had SOME real recent history by
+         *     construction), so its point *magnitudes* are not trustworthy even though the underlying
+         *     player *rankings* are usually still sensible. The caller should show this prominently, not
+         *     bury it -- confirmed via a real run this session: champion model said Haaland was worth
+         *     0.43 points for a cold-start gameweek 1, versus FPL's own ep_next of 4.0 for the same player.
+         */
+        post: operations["preview_squad_optimize_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/optimize": {
         parameters: {
             query?: never;
@@ -1707,6 +1741,34 @@ export interface components {
             /** Now Cost */
             now_cost: number;
         };
+        /**
+         * SquadPreviewOut
+         * @description A throwaway, unofficial squad preview -- see apps/api/routers/optimization.py's
+         *     ``preview_squad`` docstring for why this deliberately skips the optimization gate and is
+         *     never persisted (no ``optimization_runs`` row, no ``Job`` row -- nothing written at all).
+         */
+        SquadPreviewOut: {
+            /** Solver Status */
+            solver_status: string;
+            /** Target Fpl Event Id */
+            target_fpl_event_id: number;
+            /** Is Cold Start Gameweek */
+            is_cold_start_gameweek: boolean;
+            /** Champion Model Family */
+            champion_model_family: string | null;
+            /** Squad Total Cost */
+            squad_total_cost: number | null;
+            /** Squad Projected Points */
+            squad_projected_points: string | null;
+            /** Xi Projected Points */
+            xi_projected_points: string | null;
+            /** Captain Player Id */
+            captain_player_id: string | null;
+            /** Vice Captain Player Id */
+            vice_captain_player_id: string | null;
+            /** Players */
+            players: components["schemas"]["OptimizationRunPlayerOut"][];
+        };
         /** TransferMoveOut */
         TransferMoveOut: {
             /**
@@ -2114,6 +2176,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OptimizationRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_squad_optimize_preview_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SquadPreviewOut"];
                 };
             };
             /** @description Validation Error */

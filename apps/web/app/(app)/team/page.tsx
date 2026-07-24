@@ -2,6 +2,7 @@ import Link from "next/link";
 import { backendClient } from "@/lib/api-client";
 import { BuildSquadButton } from "@/components/build-squad-button";
 import { SingleFieldActionForm } from "@/components/single-field-action-form";
+import { SquadPreview } from "@/components/squad-preview";
 import { Card, EmptyState, ErrorState } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -37,6 +38,8 @@ export default async function TeamPage() {
         </p>
         <BuildSquadButton />
       </Card>
+
+      <SquadPreview />
 
       {snapshots.length === 0 ? (
         <EmptyState>No squad has been synced or entered yet.</EmptyState>

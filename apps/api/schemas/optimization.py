@@ -77,6 +77,24 @@ class OptimizationRunSummaryOut(BaseModel):
     completed_at: datetime | None
 
 
+class SquadPreviewOut(BaseModel):
+    """A throwaway, unofficial squad preview -- see apps/api/routers/optimization.py's
+    ``preview_squad`` docstring for why this deliberately skips the optimization gate and is
+    never persisted (no ``optimization_runs`` row, no ``Job`` row -- nothing written at all).
+    """
+
+    solver_status: str
+    target_fpl_event_id: int
+    is_cold_start_gameweek: bool
+    champion_model_family: str | None
+    squad_total_cost: int | None
+    squad_projected_points: Decimal | None
+    xi_projected_points: Decimal | None
+    captain_player_id: uuid.UUID | None
+    vice_captain_player_id: uuid.UUID | None
+    players: list[OptimizationRunPlayerOut]
+
+
 class OptimizationErrorResponse(BaseModel):
     error_code: str | None
     error_message: str | None

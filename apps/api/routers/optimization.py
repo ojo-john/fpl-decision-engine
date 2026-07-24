@@ -11,10 +11,19 @@ import uuid
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
+from app.jobs.handlers.squad_optimization import _build_candidates
 from app.jobs.service import execute_job
+from app.optimization.champion_loader import load_current_champion
+from app.optimization.constraints import (
+    RulesBlockedError,
+    get_captain_multiplier,
+    load_optimization_constraints,
+)
+from app.optimization.gameweek_resolution import resolve_target_gameweek
+from app.optimization.joint_squad_solver import solve_joint_squad_and_xi
 from apps.api.dependencies import get_db
 from apps.api.schemas.optimization import (
     InitialSquadRequest,
@@ -22,20 +31,25 @@ from apps.api.schemas.optimization import (
     OptimizationRunOut,
     OptimizationRunPlayerOut,
     OptimizationRunSummaryOut,
+    SquadPreviewOut,
     TransferMoveOut,
     TransferOptimizationRequest,
     TransferOptimizationRunOut,
     TransferOptimizationRunSummaryOut,
     TransferScenarioOut,
 )
+from packages.database.models.gameweek import Gameweek
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
+from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.position import Position
+from packages.database.models.season import Season
 from packages.database.models.transfer_optimization_run import TransferOptimizationRun
 from packages.database.models.transfer_optimization_run_move import TransferOptimizationRunMove
 from packages.database.models.transfer_optimization_run_scenario import TransferOptimizationRunScenario
 from packages.domain.jobs import JobStatus, JobType, TriggerType
+from packages.domain.optimization import TargetGameweekStatus
 
 _RECOMMENDED_ACTION_BY_TRANSFERS_COUNT = {0: "roll", 1: "one_transfer", 2: "two_transfers"}
 
@@ -126,6 +140,110 @@ def optimize_initial_squad(
     assert job.output_json is not None  # a SUCCEEDED job always has output_json
     optimization_run_id = uuid.UUID(job.output_json["optimization_run_id"])
     return _load_run_response(db, optimization_run_id)
+
+
+@router.post("/preview", response_model=SquadPreviewOut)
+def preview_squad(db: Session = Depends(get_db)) -> SquadPreviewOut | JSONResponse:
+    """Unofficial, throwaway squad preview -- deliberately bypasses
+    ``app.optimization.gate.check_optimization_gate`` entirely (never calls it, never touches
+    ``execute_job``/``Job``/``optimization_runs``) so a manager can see "what would this
+    recommend" during a window the real gate refuses (most commonly: pre-season, before FPL
+    marks a gameweek ``is_current``). Nothing is persisted -- rerunning this produces a fresh
+    computation every time, never a cached/stored result to revisit later.
+
+    ``is_cold_start_gameweek`` flags the specific, real failure mode this surfaces: the
+    trained champion model's features are almost entirely rolling within-season form -- for
+    the season's own first gameweek, that's uniformly blank for every player (an input shape
+    the model never saw in training, since every training row had SOME real recent history by
+    construction), so its point *magnitudes* are not trustworthy even though the underlying
+    player *rankings* are usually still sensible. The caller should show this prominently, not
+    bury it -- confirmed via a real run this session: champion model said Haaland was worth
+    0.43 points for a cold-start gameweek 1, versus FPL's own ep_next of 4.0 for the same player.
+    """
+    season_id = db.execute(select(Season.id).where(Season.is_current.is_(True))).scalar_one_or_none()
+    if season_id is None:
+        return JSONResponse(
+            status_code=404, content={"error_code": "NO_CURRENT_SEASON", "detail": "No current season found."}
+        )
+
+    target_gameweek_id, status = resolve_target_gameweek(db, season_id)
+    if status == TargetGameweekStatus.NO_ACTIVE_GAMEWEEK:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error_code": "NO_ACTIVE_GAMEWEEK",
+                "detail": "No unfinished gameweek exists to preview a squad against (off-season).",
+            },
+        )
+    assert target_gameweek_id is not None
+    target_gameweek = db.get(Gameweek, target_gameweek_id)
+    assert target_gameweek is not None
+
+    try:
+        constraints = load_optimization_constraints(db, season_id)
+    except RulesBlockedError as exc:
+        return JSONResponse(status_code=409, content={"error_code": "RULES_BLOCKED", "detail": str(exc)})
+
+    is_cold_start_gameweek = (
+        db.execute(
+            select(func.count())
+            .select_from(PlayerGameweekStats)
+            .where(PlayerGameweekStats.season_id == season_id)
+        ).scalar_one()
+        == 0
+    )
+
+    champion = load_current_champion(db)
+    captain_multiplier = get_captain_multiplier(db, constraints.rules_config_id)
+    candidates = _build_candidates(db, season_id, target_gameweek_id, champion)
+    solution = solve_joint_squad_and_xi(candidates, constraints, captain_multiplier)
+
+    candidates_by_id = {c.player_id: c for c in candidates}
+    squad_player_ids = solution.starting_player_ids + solution.bench_player_ids_ordered
+    players_by_id = {
+        p.id: p for p in db.execute(select(Player).where(Player.id.in_(squad_player_ids))).scalars()
+    }
+    positions_by_id = {
+        p.id: p for p in db.execute(select(Position).where(Position.season_id == season_id)).scalars()
+    }
+
+    starter_id_set = set(solution.starting_player_ids)
+    bench_order_by_id = {pid: 12 + index for index, pid in enumerate(solution.bench_player_ids_ordered)}
+
+    players_out = []
+    for pid in squad_player_ids:
+        player = players_by_id.get(pid)
+        if player is None:
+            continue
+        position = positions_by_id.get(player.position_id) if player.position_id is not None else None
+        players_out.append(
+            OptimizationRunPlayerOut(
+                player_id=pid,
+                web_name=player.web_name,
+                position=position.short_name if position is not None else None,
+                team_id=player.team_id,
+                is_starting=pid in starter_id_set,
+                bench_order=bench_order_by_id.get(pid),
+                is_captain=pid == solution.captain_player_id,
+                is_vice_captain=pid == solution.vice_captain_player_id,
+                projected_points=candidates_by_id[pid].projected_points,
+                projection_source=candidates_by_id[pid].projection_source,
+                now_cost_snapshot=player.now_cost,
+            )
+        )
+
+    return SquadPreviewOut(
+        solver_status=solution.solver_status.value,
+        target_fpl_event_id=target_gameweek.fpl_event_id,
+        is_cold_start_gameweek=is_cold_start_gameweek,
+        champion_model_family=champion.model_family.value if champion is not None else None,
+        squad_total_cost=solution.squad_total_cost,
+        squad_projected_points=solution.squad_projected_points,
+        xi_projected_points=solution.xi_projected_points,
+        captain_player_id=solution.captain_player_id,
+        vice_captain_player_id=solution.vice_captain_player_id,
+        players=players_out,
+    )
 
 
 @router.get("", response_model=list[OptimizationRunSummaryOut])

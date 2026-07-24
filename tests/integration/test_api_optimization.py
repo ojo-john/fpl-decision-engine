@@ -11,7 +11,9 @@ from sqlalchemy import select
 
 from app.jobs.service import execute_job
 from packages.database.models.ingestion_run import IngestionRun
+from packages.database.models.job import Job
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
+from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.player import Player
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
@@ -154,6 +156,57 @@ def test_optimize_initial_squad_refused_returns_409(db_session, patched_fpl_clie
     body = response.json()
     assert body["error_code"] == "OPTIMIZATION_NOT_PERMITTED"
     assert "job_id" in body
+
+
+# --- POST /optimize/preview (unofficial, gate-bypassing squad preview) ---------------------
+
+
+def test_preview_squad_works_even_when_the_real_gate_is_refused(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """The whole point of /optimize/preview: unlike /optimize/initial-squad, it must still
+    solve successfully even when optimization_permitted is False."""
+    ingestion_job = _seed(db_session)
+    ingestion_run_id = uuid.UUID(ingestion_job.output_json["ingestion_run_id"])
+    ingestion_run = db_session.get(IngestionRun, ingestion_run_id)
+    ingestion_run.optimization_permitted = False
+    db_session.commit()
+
+    client = authed_client()
+    jobs_before = db_session.execute(select(Job.id)).scalars().all()
+    runs_before = db_session.execute(select(OptimizationRun.id)).scalars().all()
+
+    response = client.post("/optimize/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["solver_status"] == "optimal"
+    assert len(body["players"]) == 15
+    assert body["squad_total_cost"] is not None
+    assert body["captain_player_id"] is not None
+    assert body["vice_captain_player_id"] is not None
+
+    # Never persisted: not a Job, not an optimization_runs row.
+    db_session.expire_all()
+    jobs_after = db_session.execute(select(Job.id)).scalars().all()
+    runs_after = db_session.execute(select(OptimizationRun.id)).scalars().all()
+    assert set(jobs_after) == set(jobs_before)
+    assert set(runs_after) == set(runs_before)
+
+
+def test_preview_squad_flags_a_cold_start_gameweek(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """No player_gameweek_stats exist yet for a freshly-ingested season (the _seed fixture only
+    ingests players/teams/fixtures, never any gameweek stats) -- is_cold_start_gameweek must be
+    True so the caller knows to show the "point values aren't trustworthy yet" warning."""
+    _seed(db_session)
+    client = authed_client()
+
+    response = client.post("/optimize/preview")
+
+    assert response.status_code == 200
+    assert response.json()["is_cold_start_gameweek"] is True
 
 
 def test_optimize_lineup_chained_from_squad_run(db_session, patched_fpl_client_optimization):
