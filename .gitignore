@@ -21,6 +21,8 @@ build/
 .next/
 apps/web/.env.local
 apps/web/tsconfig.tsbuildinfo
+apps/web/test-results/
+apps/web/playwright-report/
 
 # Generated OpenAPI schema dump -- transient input to `npm run generate-api-types`
 # (see apps/web/package.json); the generated apps/web/lib/api-types.ts IS committed.
