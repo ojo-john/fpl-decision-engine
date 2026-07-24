@@ -220,7 +220,7 @@ new code needed, just running the existing pipeline.
 
 ## Data model — key relationships
 
-44 ORM models under `packages/database/models/`. The load-bearing shape:
+45 ORM models under `packages/database/models/`. The load-bearing shape:
 
 - **`seasons`** is the root scope for almost everything (`players`, `teams`,
   `positions`, `gameweeks`, `fixtures`, `rules_config`, `player_gameweek_stats`,
@@ -252,6 +252,17 @@ new code needed, just running the existing pipeline.
   explicit, manually-ordered multi-table delete, or `session_replication_role
   = replica` to bypass FK-order requirements for a single controlled cleanup
   transaction (done once already this session).
+- **`player_price_history`** (added post-review, migration `0026`):
+  insert-only, one row per OBSERVED `players.now_cost` change.
+  `app.ingestion.normalization.upsert_players` compares each incoming
+  `now_cost` against what's already stored for that
+  `(season_id, fpl_element_id)` *before* the bulk upsert runs, and appends a
+  row only on a real difference — never once per `DATA_INGESTION` run. Not
+  wired into `HISTORICAL_DATA_INGESTION` (a past season's price is static,
+  there's nothing to observe changing). Exposed via
+  `GET /players/{id}/price-history` (most-recent-first, capped at 200,
+  empty list — not a 404 — when nothing's changed yet) and shown on the
+  player detail page.
 
 ## API (`apps/api`)
 
@@ -336,7 +347,6 @@ pytest-only monkeypatched client, neither CI-appropriate as-is (see
 - `PROJECTION_GENERATION` job type: enum member only, no handler, deliberately -- no defined
   consumer/table for it to write to (`project_player`/`project_player_with_champion` are
   already called directly by every job that needs a projection, computed live, never cached).
-- No price-change history — `players.now_cost` is a single current value, overwritten every `DATA_INGESTION` run; FPL's own `cost_change_event`/`cost_change_start` fields aren't captured at all.
 - No official-API season-aggregate history (`element-summary/{id}/history_past`) ingestion — moot in practice since `HISTORICAL_DATA_INGESTION` already provides strictly richer (gameweek-level, not just season-total) historical data from a different source.
 
 `FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and

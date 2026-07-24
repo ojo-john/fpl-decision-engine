@@ -1,5 +1,5 @@
 import { backendClient } from "@/lib/api-client";
-import { Card, ErrorState } from "@/components/ui";
+import { Card, ErrorState, TableScroll } from "@/components/ui";
 import type { components } from "@/lib/api-types";
 
 export const dynamic = "force-dynamic";
@@ -27,10 +27,12 @@ export default async function PlayerDetailPage({
   const { playerId } = await params;
   const client = backendClient();
 
-  const [{ data: player, response: playerResponse }, { data: projection }] = await Promise.all([
-    client.GET("/players/{player_id}", { params: { path: { player_id: playerId } } }),
-    client.GET("/players/{player_id}/projection", { params: { path: { player_id: playerId } } }),
-  ]);
+  const [{ data: player, response: playerResponse }, { data: projection }, { data: priceHistory }] =
+    await Promise.all([
+      client.GET("/players/{player_id}", { params: { path: { player_id: playerId } } }),
+      client.GET("/players/{player_id}/projection", { params: { path: { player_id: playerId } } }),
+      client.GET("/players/{player_id}/price-history", { params: { path: { player_id: playerId } } }),
+    ]);
 
   if (playerResponse.status === 404) {
     return <ErrorState>No player found for id {playerId}.</ErrorState>;
@@ -102,6 +104,40 @@ export default async function PlayerDetailPage({
             </div>
           ))}
         </div>
+      </Card>
+
+      <Card>
+        <h2 style={{ margin: "0 0 0.5rem", fontSize: "0.95rem" }}>Price history</h2>
+        {!priceHistory || priceHistory.length === 0 ? (
+          <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "0.9rem" }}>
+            No price changes observed yet this season.
+          </p>
+        ) : (
+          <TableScroll>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
+                  <th style={{ padding: "0.3rem 0" }}>Date</th>
+                  <th>Change</th>
+                </tr>
+              </thead>
+              <tbody>
+                {priceHistory.map((change) => (
+                  <tr key={change.observed_at} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "0.4rem 0" }}>{new Date(change.observed_at).toLocaleDateString()}</td>
+                    <td
+                      style={{
+                        color: change.new_cost > change.old_cost ? "var(--success)" : "var(--danger)",
+                      }}
+                    >
+                      {(change.old_cost / 10).toFixed(1)} -&gt; {(change.new_cost / 10).toFixed(1)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroll>
+        )}
       </Card>
     </div>
   );

@@ -1,6 +1,7 @@
 """Pydantic response schemas for the /players endpoints."""
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
@@ -84,6 +85,14 @@ class PlayerDetail(BaseModel):
     news: str | None
     is_quarantined: bool
     quarantine_reason: str | None
+
+
+class PlayerPriceChangeOut(BaseModel):
+    """One OBSERVED ``now_cost`` change -- see ``packages.database.models.player_price_history``."""
+
+    old_cost: int
+    new_cost: int
+    observed_at: datetime
 
 
 class PlayerProjectionResponse(BaseModel):

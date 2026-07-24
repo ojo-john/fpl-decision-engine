@@ -17,10 +17,12 @@ from apps.api.dependencies import get_db
 from apps.api.schemas.players import (
     PlayerDetail,
     PlayerListResponse,
+    PlayerPriceChangeOut,
     PlayerProjectionResponse,
     PlayerSummary,
 )
 from packages.database.models.player import Player
+from packages.database.models.player_price_history import PlayerPriceHistory
 from packages.database.models.position import Position
 from packages.database.models.season import Season
 from packages.database.models.team import Team
@@ -28,6 +30,11 @@ from packages.database.models.team import Team
 router = APIRouter(prefix="/players", tags=["players"])
 
 MAX_PAGE_SIZE = 200
+
+# Same "capped read, not full pagination" convention as apps.api.routers.managers/optimization --
+# a single player's own real price-change history never approaches a size where offset/limit
+# paging is actually needed.
+_MAX_PRICE_HISTORY_RESULTS = 200
 
 
 def _current_season_id(db: Session) -> uuid.UUID:
@@ -126,6 +133,37 @@ def get_player(player_id: uuid.UUID, db: Session = Depends(get_db)) -> PlayerDet
         position = db.get(Position, player.position_id)
         detail.position = position.short_name if position is not None else None
     return detail
+
+
+@router.get("/{player_id}/price-history", response_model=list[PlayerPriceChangeOut])
+def get_player_price_history(
+    player_id: uuid.UUID, db: Session = Depends(get_db)
+) -> list[PlayerPriceChangeOut]:
+    """Most-recent-first list of every OBSERVED price change for this player, this season.
+
+    Empty (not a 404) for a player with no recorded changes yet -- a
+    perfectly normal state for most of the season, not an error (see
+    ``packages.database.models.player_price_history``'s own docstring: a
+    row only exists when ``app.ingestion.normalization.upsert_players``
+    actually observed ``now_cost`` differ between two ingestion runs).
+    """
+    if db.get(Player, player_id) is None:
+        raise HTTPException(status_code=404, detail=f"Player {player_id} not found.")
+
+    rows = (
+        db.execute(
+            select(PlayerPriceHistory)
+            .where(PlayerPriceHistory.player_id == player_id)
+            .order_by(PlayerPriceHistory.observed_at.desc())
+            .limit(_MAX_PRICE_HISTORY_RESULTS)
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        PlayerPriceChangeOut(old_cost=row.old_cost, new_cost=row.new_cost, observed_at=row.observed_at)
+        for row in rows
+    ]
 
 
 @router.get("/{player_id}/projection", response_model=PlayerProjectionResponse)
