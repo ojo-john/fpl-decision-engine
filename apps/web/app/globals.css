@@ -9,6 +9,24 @@
   --success: #3ecf8e;
 }
 
+/* System-preference-only light variant -- no manual toggle, this app has no
+   theme-switch UI/state anywhere. Every component reads these same custom
+   properties (var(--text), var(--surface), etc.) via inline styles rather
+   than hardcoding colors, so overriding them here is enough to re-theme the
+   whole app without touching a single component file. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --border: #d7dbe1;
+    --text: #1a1d21;
+    --text-muted: #5b6470;
+    --accent: #2f6fe0;
+    --danger: #d63838;
+    --success: #1f9d68;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -62,4 +80,37 @@ button {
   border-radius: 4px;
   padding: 0.1rem 0.3rem;
   font-size: 0.85em;
+}
+
+/* Wraps every <table> in the app (Squad/Transfers/Chips/H2H/Backtest/Team/
+   Players/manual-squad-picker) -- data tables aren't going to reflow their
+   columns on a narrow viewport, so make them scroll horizontally within
+   their own box instead of blowing out the page's own width. Works at every
+   viewport size unconditionally (no-op when content already fits), so it
+   needs no media query. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.app-main {
+  padding: 1.5rem;
+}
+
+/* Nav: inline flex styles already have flexWrap set (see components/nav.tsx)
+   so it never overflows, but the wrapped layout looks cramped at full size
+   -- tighten spacing/type size once there isn't room for a single row. */
+@media (max-width: 640px) {
+  .app-nav {
+    padding: 0.65rem 1rem;
+    row-gap: 0.5rem;
+  }
+
+  .app-nav a {
+    font-size: 0.82rem;
+  }
+
+  .app-main {
+    padding: 1rem;
+  }
 }

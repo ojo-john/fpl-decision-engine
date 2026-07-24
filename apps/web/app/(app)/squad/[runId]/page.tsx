@@ -1,5 +1,5 @@
 import { backendClient } from "@/lib/api-client";
-import { Card, ErrorState } from "@/components/ui";
+import { Card, ErrorState, TableScroll } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -77,29 +77,31 @@ function PlayerTable({
   viceCaptainId: string | null;
 }) {
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
-      <thead>
-        <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
-          <th style={{ padding: "0.25rem 0" }}>Pos</th>
-          <th>Player</th>
-          <th>Price</th>
-          <th>Projected</th>
-        </tr>
-      </thead>
-      <tbody>
-        {players.map((p) => (
-          <tr key={p.player_id} style={{ borderTop: "1px solid var(--border)" }}>
-            <td style={{ padding: "0.4rem 0", color: "var(--text-muted)" }}>{p.position ?? "-"}</td>
-            <td>
-              {p.web_name ?? "Unknown"}
-              {p.player_id === captainId && " (C)"}
-              {p.player_id === viceCaptainId && " (VC)"}
-            </td>
-            <td>{(p.now_cost_snapshot / 10).toFixed(1)}</td>
-            <td>{Number(p.projected_points).toFixed(1)}</td>
+    <TableScroll>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
+        <thead>
+          <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
+            <th style={{ padding: "0.25rem 0" }}>Pos</th>
+            <th>Player</th>
+            <th>Price</th>
+            <th>Projected</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {players.map((p) => (
+            <tr key={p.player_id} style={{ borderTop: "1px solid var(--border)" }}>
+              <td style={{ padding: "0.4rem 0", color: "var(--text-muted)" }}>{p.position ?? "-"}</td>
+              <td>
+                {p.web_name ?? "Unknown"}
+                {p.player_id === captainId && " (C)"}
+                {p.player_id === viceCaptainId && " (VC)"}
+              </td>
+              <td>{(p.now_cost_snapshot / 10).toFixed(1)}</td>
+              <td>{Number(p.projected_points).toFixed(1)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </TableScroll>
   );
 }

@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { browserClient } from "@/lib/browser-client";
 import { extractErrorMessage } from "@/components/action-button";
-import { buttonStyle, inputStyle } from "@/components/ui";
+import { buttonStyle, inputStyle, TableScroll } from "@/components/ui";
 import type { components } from "@/lib/api-types";
 
 const SQUAD_SIZE = 15;
@@ -135,37 +135,41 @@ export function ManualSquadForm({
       {searchError && <span style={{ color: "var(--danger)", fontSize: "0.85rem" }}>{searchError}</span>}
 
       {results.length > 0 && (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
-          <thead>
-            <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
-              <th style={{ padding: "0.25rem 0" }}>Pos</th>
-              <th>Player</th>
-              <th>Team</th>
-              <th>Price</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {results.map((player) => (
-              <tr key={player.id} style={{ borderTop: "1px solid var(--border)" }}>
-                <td style={{ padding: "0.35rem 0", color: "var(--text-muted)" }}>{player.position ?? "-"}</td>
-                <td>{player.web_name}</td>
-                <td>{player.team_short_name ?? ""}</td>
-                <td>{(player.now_cost / 10).toFixed(1)}</td>
-                <td>
-                  <button
-                    type="button"
-                    onClick={() => addPlayer(player)}
-                    disabled={selected.has(player.id) || selected.size >= SQUAD_SIZE}
-                    style={{ ...buttonStyle, padding: "0.2rem 0.6rem", fontSize: "0.8rem" }}
-                  >
-                    {selected.has(player.id) ? "Added" : "Add"}
-                  </button>
-                </td>
+        <TableScroll>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
+                <th style={{ padding: "0.25rem 0" }}>Pos</th>
+                <th>Player</th>
+                <th>Team</th>
+                <th>Price</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {results.map((player) => (
+                <tr key={player.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ padding: "0.35rem 0", color: "var(--text-muted)" }}>
+                    {player.position ?? "-"}
+                  </td>
+                  <td>{player.web_name}</td>
+                  <td>{player.team_short_name ?? ""}</td>
+                  <td>{(player.now_cost / 10).toFixed(1)}</td>
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => addPlayer(player)}
+                      disabled={selected.has(player.id) || selected.size >= SQUAD_SIZE}
+                      style={{ ...buttonStyle, padding: "0.2rem 0.6rem", fontSize: "0.8rem" }}
+                    >
+                      {selected.has(player.id) ? "Added" : "Add"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
 
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: "1rem" }}>

@@ -1,5 +1,5 @@
 import { backendClient } from "@/lib/api-client";
-import { Card, ConfidenceBadge, ErrorState } from "@/components/ui";
+import { Card, ConfidenceBadge, ErrorState, TableScroll } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -61,37 +61,39 @@ export default async function H2HPage({ params }: { params: Promise<{ runId: str
       {data.strategy_candidates.length > 0 && (
         <Card>
           <h2 style={{ margin: "0 0 0.75rem", fontSize: "0.95rem" }}>Strategy candidates</h2>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
-            <thead>
-              <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
-                <th style={{ padding: "0.25rem 0" }}>Strategy</th>
-                <th>Win</th>
-                <th>Draw</th>
-                <th>Loss</th>
-                <th>Margin</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.strategy_candidates.map((candidate) => (
-                <tr
-                  key={candidate.strategy_label}
-                  style={{
-                    borderTop: "1px solid var(--border)",
-                    color: candidate.is_recommended ? "var(--accent)" : undefined,
-                  }}
-                >
-                  <td style={{ padding: "0.35rem 0" }}>
-                    {candidate.strategy_label}
-                    {candidate.is_recommended && " (recommended)"}
-                  </td>
-                  <td>{(Number(candidate.win_probability) * 100).toFixed(0)}%</td>
-                  <td>{(Number(candidate.draw_probability) * 100).toFixed(0)}%</td>
-                  <td>{(Number(candidate.loss_probability) * 100).toFixed(0)}%</td>
-                  <td>{Number(candidate.expected_margin).toFixed(1)}</td>
+          <TableScroll>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
+                  <th style={{ padding: "0.25rem 0" }}>Strategy</th>
+                  <th>Win</th>
+                  <th>Draw</th>
+                  <th>Loss</th>
+                  <th>Margin</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data.strategy_candidates.map((candidate) => (
+                  <tr
+                    key={candidate.strategy_label}
+                    style={{
+                      borderTop: "1px solid var(--border)",
+                      color: candidate.is_recommended ? "var(--accent)" : undefined,
+                    }}
+                  >
+                    <td style={{ padding: "0.35rem 0" }}>
+                      {candidate.strategy_label}
+                      {candidate.is_recommended && " (recommended)"}
+                    </td>
+                    <td>{(Number(candidate.win_probability) * 100).toFixed(0)}%</td>
+                    <td>{(Number(candidate.draw_probability) * 100).toFixed(0)}%</td>
+                    <td>{(Number(candidate.loss_probability) * 100).toFixed(0)}%</td>
+                    <td>{Number(candidate.expected_margin).toFixed(1)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroll>
         </Card>
       )}
     </div>

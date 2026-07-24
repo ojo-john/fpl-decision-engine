@@ -62,6 +62,12 @@ export function ConfidenceBadge({ confidence }: { confidence: string }) {
   );
 }
 
+/** Wraps a <table> so it scrolls horizontally within its own box on a narrow viewport instead
+ * of blowing out the page's width -- see the ".table-scroll" rule in app/globals.css. */
+export function TableScroll({ children }: { children: ReactNode }) {
+  return <div className="table-scroll">{children}</div>;
+}
+
 export function EmptyState({ children }: { children: ReactNode }) {
   return (
     <Card>

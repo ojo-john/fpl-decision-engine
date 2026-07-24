@@ -2,7 +2,7 @@ import Link from "next/link";
 import { backendClient } from "@/lib/api-client";
 import { DeleteSquadButton } from "@/components/delete-squad-button";
 import { SquadActions } from "@/components/squad-actions";
-import { Card, ErrorState } from "@/components/ui";
+import { Card, ErrorState, TableScroll } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -67,24 +67,28 @@ export default async function TeamSnapshotPage({
 
       <Card>
         <h2 style={{ margin: "0 0 0.75rem", fontSize: "0.95rem" }}>Squad ({data.players.length})</h2>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
-          <thead>
-            <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
-              <th style={{ padding: "0.25rem 0" }}>Pos</th>
-              <th>Player</th>
-              <th>Price</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.players.map((player) => (
-              <tr key={player.player_id} style={{ borderTop: "1px solid var(--border)" }}>
-                <td style={{ padding: "0.4rem 0", color: "var(--text-muted)" }}>{player.position ?? "-"}</td>
-                <td>{player.web_name ?? "Unknown"}</td>
-                <td>{(player.now_cost / 10).toFixed(1)}</td>
+        <TableScroll>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
+                <th style={{ padding: "0.25rem 0" }}>Pos</th>
+                <th>Player</th>
+                <th>Price</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.players.map((player) => (
+                <tr key={player.player_id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ padding: "0.4rem 0", color: "var(--text-muted)" }}>
+                    {player.position ?? "-"}
+                  </td>
+                  <td>{player.web_name ?? "Unknown"}</td>
+                  <td>{(player.now_cost / 10).toFixed(1)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
       </Card>
     </div>
   );
