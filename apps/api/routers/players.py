@@ -223,6 +223,7 @@ def _explain_projection(
     *,
     ep_next: float | None,
     career_avg_points_prior_seasons: float | None,
+    career_avg_early_season_points_prior_seasons: float | None,
     next_fixture_difficulty: int | None,
     champion_model_family: str | None,
 ) -> str:
@@ -238,10 +239,19 @@ def _explain_projection(
             if next_fixture_difficulty is not None
             else ""
         )
+        # _cold_start_projection prefers the early-season-specific average over the plain
+        # full-season one whenever it exists -- mirror that same preference here so this text
+        # always describes the number that was actually blended, not a stale/wrong one.
+        if career_avg_early_season_points_prior_seasons is not None:
+            career_avg_note = (
+                f"this player's own early-season average from prior seasons "
+                f"({career_avg_early_season_points_prior_seasons})"
+            )
+        else:
+            career_avg_note = f"this player's real prior-season average ({career_avg_points_prior_seasons})"
         return (
             f"First gameweek of a new season -- no current-season form yet, so this blends "
-            f"FPL's own estimate ({ep_next}) with this player's real prior-season average "
-            f"({career_avg_points_prior_seasons}){difficulty_note}."
+            f"FPL's own estimate ({ep_next}) with {career_avg_note}{difficulty_note}."
         )
     if champion_model_family is not None:
         return f"Prediction from the trained champion model ({champion_model_family})."
@@ -295,11 +305,15 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
     # next_fixture_difficulty, which is meaningful regardless of cold-start) -- never allowed to
     # fail this endpoint, mirroring _cold_start_projection's own graceful-degrade discipline.
     career_avg_points_prior_seasons = None
+    career_avg_early_season_points_prior_seasons = None
     next_fixture_difficulty = None
     if target_gameweek_id is not None:
         try:
             feature_row = compute_features_for_player_gameweek(db, player.id, target_gameweek_id)
             career_avg_points_prior_seasons = feature_row.career_avg_points_prior_seasons
+            career_avg_early_season_points_prior_seasons = (
+                feature_row.career_avg_early_season_points_prior_seasons
+            )
             next_fixture_difficulty = feature_row.next_fixture_difficulty
         except Exception:  # noqa: BLE001 - this breakdown must never fail the endpoint
             logger.warning(
@@ -322,6 +336,11 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
         career_avg_points_prior_seasons=(
             float(career_avg_points_prior_seasons) if career_avg_points_prior_seasons is not None else None
         ),
+        career_avg_early_season_points_prior_seasons=(
+            float(career_avg_early_season_points_prior_seasons)
+            if career_avg_early_season_points_prior_seasons is not None
+            else None
+        ),
         next_fixture_difficulty=next_fixture_difficulty,
         champion_model_family=champion_model_family,
     )
@@ -337,6 +356,7 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
         is_cold_start_season=cold_start,
         ep_next=player.ep_next,
         career_avg_points_prior_seasons=career_avg_points_prior_seasons,
+        career_avg_early_season_points_prior_seasons=career_avg_early_season_points_prior_seasons,
         next_fixture_difficulty=next_fixture_difficulty,
         champion_model_family=champion_model_family,
         champion_model_version_id=champion_model_version_id,

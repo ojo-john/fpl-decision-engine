@@ -136,11 +136,19 @@ class PlayerProjectionResponse(BaseModel):
     status: str | None
 
     is_cold_start_season: bool
-    # Echoes the two raw inputs app.optimization.projection._cold_start_projection blends when
+    # Echoes the raw inputs app.optimization.projection._cold_start_projection blends when
     # is_cold_start_season is True -- None when not applicable (warm season, or no prior-season
     # history for a brand-new player) rather than a stale/misleading number.
     ep_next: Decimal | None
+    # The plain full-season average, always shown for reference even when the blend actually
+    # used the early-season-specific average instead (see career_avg_early_season_points_prior_seasons).
     career_avg_points_prior_seasons: Decimal | None
+    # Average points across only each prior season's first few gameweeks (see
+    # app.features.engineering.career_avg_early_season_points_prior_seasons) -- _cold_start_projection
+    # prefers THIS over the plain full-season average whenever it exists, since a player's season-opening
+    # form can differ meaningfully from their season-long average (well-known slow/fast starters).
+    # None when the player has no early-season history across any prior season.
+    career_avg_early_season_points_prior_seasons: Decimal | None
     next_fixture_difficulty: int | None
     # Set only when projected_points actually came from a champion model prediction (source
     # starts with "ml_champion_") -- None for every fallback/cold-start/no-champion path.
