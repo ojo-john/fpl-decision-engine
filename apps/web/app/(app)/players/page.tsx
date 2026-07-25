@@ -1,6 +1,14 @@
 import Link from "next/link";
 import { backendClient } from "@/lib/api-client";
-import { Card, EmptyState, ErrorState, TableScroll, inputStyle, buttonStyle } from "@/components/ui";
+import {
+  Card,
+  EmptyState,
+  ErrorState,
+  PriceMomentumBadge,
+  TableScroll,
+  inputStyle,
+  buttonStyle,
+} from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -85,6 +93,7 @@ export default async function PlayersPage({
                   <th>Form</th>
                   <th>Total pts</th>
                   <th>Status</th>
+                  <th>Momentum</th>
                 </tr>
               </thead>
               <tbody>
@@ -106,6 +115,11 @@ export default async function PlayersPage({
                     <td>{player.form ?? "-"}</td>
                     <td>{player.total_points}</td>
                     <td>{player.status ?? "-"}</td>
+                    <td>
+                      {player.price_momentum && player.price_momentum.momentum !== "unknown" && (
+                        <PriceMomentumBadge momentum={player.price_momentum.momentum} />
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

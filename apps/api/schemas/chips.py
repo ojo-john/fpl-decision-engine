@@ -69,3 +69,21 @@ class ChipSimulationErrorResponse(BaseModel):
     error_code: str | None
     error_message: str | None
     job_id: str
+
+
+class ChipWindowOut(BaseModel):
+    """One chip-scheduling window (a chip typically gets 2 per season) -- see
+    ``app.chips.windows.resolve_chip_windows``. Genuinely available pre-season, unlike
+    ``ChipRecommendationOut`` (needs a real squad and passes through the optimization gate):
+    FPL publishes these windows in ``bootstrap-static`` before a ball is kicked.
+    """
+
+    chip_type: str
+    window_number: int
+    start_event: int
+    stop_event: int
+    start_deadline: datetime | None
+    stop_deadline: datetime | None
+    # "past" | "open" | "upcoming", relative to the season's current gameweek -- "upcoming" for
+    # every window, always, when there's no current gameweek yet (pre-season).
+    status: str

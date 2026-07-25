@@ -141,6 +141,12 @@ def test_optimize_initial_squad_happy_path(db_session, patched_fpl_client_optimi
     assert captains[0]["player_id"] == body["captain_player_id"]
     assert vice_captains[0]["player_id"] == body["vice_captain_player_id"]
 
+    # price_momentum is deliberately never populated on a real, persisted run -- it's a live,
+    # "right now" signal, and this response could be re-fetched long after the run happened
+    # (see OptimizationRunPlayerOut.price_momentum's own docstring). Only /optimize/preview
+    # populates it.
+    assert all(p["price_momentum"] is None for p in body["players"])
+
 
 def test_optimize_initial_squad_refused_returns_409(db_session, patched_fpl_client_optimization):
     ingestion_job = _seed(db_session)
@@ -185,6 +191,13 @@ def test_preview_squad_works_even_when_the_real_gate_is_refused(
     assert body["squad_total_cost"] is not None
     assert body["captain_player_id"] is not None
     assert body["vice_captain_player_id"] is not None
+    # Every previewed player gets a live price_momentum classification -- the highest-value
+    # spot for it, since this is exactly where a manager is choosing their 15 (see
+    # apps.api.schemas.optimization.OptimizationRunPlayerOut's own docstring for why this is
+    # populated on /optimize/preview specifically but never on a persisted run).
+    for player in body["players"]:
+        assert player["price_momentum"] is not None
+        assert player["price_momentum"]["momentum"] in {"likely_rise", "likely_fall", "stable", "unknown"}
 
     # Never persisted: not a Job, not an optimization_runs row.
     db_session.expire_all()

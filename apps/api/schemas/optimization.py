@@ -6,6 +6,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, model_validator
 
+from apps.api.schemas.players import PlayerPriceMomentumOut
+
 
 class InitialSquadRequest(BaseModel):
     requested_by: str | None = None
@@ -44,6 +46,11 @@ class OptimizationRunPlayerOut(BaseModel):
     projected_points: Decimal
     projection_source: str
     now_cost_snapshot: int
+    # Only ever populated on POST /optimize/preview's response (see that endpoint's own
+    # docstring) -- current, live momentum for a player being actively considered, not a
+    # historical fact about a persisted run, so real SQUAD_OPTIMIZATION/LINEUP_OPTIMIZATION runs
+    # deliberately leave this None rather than recomputing "current" momentum for a past run.
+    price_momentum: PlayerPriceMomentumOut | None = None
 
 
 class OptimizationRunOut(BaseModel):

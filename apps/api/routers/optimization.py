@@ -24,6 +24,7 @@ from app.optimization.constraints import (
 )
 from app.optimization.gameweek_resolution import resolve_horizon_gameweeks, resolve_target_gameweek
 from app.optimization.joint_squad_solver import solve_joint_squad_and_xi
+from app.players.price_signal import classify_price_momentum
 from apps.api.dependencies import get_db
 from apps.api.schemas.optimization import (
     InitialSquadRequest,
@@ -38,12 +39,14 @@ from apps.api.schemas.optimization import (
     TransferOptimizationRunSummaryOut,
     TransferScenarioOut,
 )
+from apps.api.schemas.players import PlayerPriceMomentumOut
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.position import Position
+from packages.database.models.price_signal_calibration import PriceSignalCalibration
 from packages.database.models.season import Season
 from packages.database.models.transfer_optimization_run import TransferOptimizationRun
 from packages.database.models.transfer_optimization_run_move import TransferOptimizationRunMove
@@ -219,12 +222,27 @@ def preview_squad(db: Session = Depends(get_db)) -> SquadPreviewOut | JSONRespon
     starter_id_set = set(solution.starting_player_ids)
     bench_order_by_id = {pid: 12 + index for index, pid in enumerate(solution.bench_player_ids_ordered)}
 
+    # Loaded once for the whole 15-man squad, not once per player -- same active-calibration
+    # lookup GET /players and GET /players/{id} already do.
+    season = db.get(Season, season_id)
+    active_calibration = db.execute(
+        select(PriceSignalCalibration).where(PriceSignalCalibration.is_active.is_(True))
+    ).scalar_one_or_none()
+
     players_out = []
     for pid in squad_player_ids:
         player = players_by_id.get(pid)
         if player is None:
             continue
         position = positions_by_id.get(player.position_id) if player.position_id is not None else None
+        signal = classify_price_momentum(
+            transfers_in_event=player.transfers_in_event,
+            transfers_out_event=player.transfers_out_event,
+            selected_by_percent=player.selected_by_percent,
+            total_players=season.total_players if season is not None else None,
+            ratio_threshold=active_calibration.ratio_threshold if active_calibration is not None else None,
+            absolute_floor=active_calibration.absolute_floor if active_calibration is not None else None,
+        )
         players_out.append(
             OptimizationRunPlayerOut(
                 player_id=pid,
@@ -238,6 +256,12 @@ def preview_squad(db: Session = Depends(get_db)) -> SquadPreviewOut | JSONRespon
                 projected_points=candidates_by_id[pid].projected_points,
                 projection_source=candidates_by_id[pid].projection_source,
                 now_cost_snapshot=player.now_cost,
+                price_momentum=PlayerPriceMomentumOut(
+                    momentum=signal.momentum,
+                    net_transfers_event=signal.net_transfers_event,
+                    estimated_owners=signal.estimated_owners,
+                    momentum_ratio=signal.momentum_ratio,
+                ),
             )
         )
 

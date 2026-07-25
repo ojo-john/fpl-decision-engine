@@ -145,6 +145,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/gameweeks/next-deadline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Next Deadline
+         * @description 404s (not a stale/fabricated date) when there's no current season, or every gameweek for
+         *     it is already finished (end of season).
+         */
+        get: operations["get_next_deadline_gameweeks_next_deadline_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/optimize/chips": {
         parameters: {
             query?: never;
@@ -160,6 +181,35 @@ export interface paths {
         put?: never;
         /** Simulate Chip Optimization */
         post: operations["simulate_chip_optimization_optimize_chips_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/optimize/chips/windows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Chip Windows
+         * @description Read-only chip-scheduling windows for the current season -- genuinely available
+         *     pre-season (FPL publishes these before a ball is kicked), unlike full ``CHIP_SIMULATION``
+         *     (needs a real squad, passes through ``check_optimization_gate``). MUST be registered before
+         *     ``GET /chips/{chip_optimization_run_id}`` below -- Starlette matches routes in registration
+         *     order and both are the same one-segment shape (see this router's own inclusion-order
+         *     comment in ``apps/api/main.py`` for the established precedent this mirrors).
+         *
+         *     Sourced from the current season's ``rules_config.raw_chips_json`` -- already-ingested,
+         *     versioned data (populated by ``DATA_INGESTION``'s own ``RULES_SYNC`` step) -- never a fresh
+         *     live FPL API call at request time.
+         */
+        get: operations["get_chip_windows_optimize_chips_windows_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -979,6 +1029,29 @@ export interface components {
             /** H2H Win Probability Without Chip */
             h2h_win_probability_without_chip?: string | null;
         };
+        /**
+         * ChipWindowOut
+         * @description One chip-scheduling window (a chip typically gets 2 per season) -- see
+         *     ``app.chips.windows.resolve_chip_windows``. Genuinely available pre-season, unlike
+         *     ``ChipRecommendationOut`` (needs a real squad and passes through the optimization gate):
+         *     FPL publishes these windows in ``bootstrap-static`` before a ball is kicked.
+         */
+        ChipWindowOut: {
+            /** Chip Type */
+            chip_type: string;
+            /** Window Number */
+            window_number: number;
+            /** Start Event */
+            start_event: number;
+            /** Stop Event */
+            stop_event: number;
+            /** Start Deadline */
+            start_deadline: string | null;
+            /** Stop Deadline */
+            stop_deadline: string | null;
+            /** Status */
+            status: string;
+        };
         /** FailureAttributionOut */
         FailureAttributionOut: {
             /**
@@ -1415,6 +1488,30 @@ export interface components {
             /** Requested By */
             requested_by?: string | null;
         };
+        /**
+         * NextDeadlineOut
+         * @description The next unfinished gameweek's deadline, plus the real optimization-gate verdict for it --
+         *     for a Dashboard countdown. Not an approximation of gate status from ``is_current`` alone;
+         *     ``gate_allowed``/``gate_reason_code`` come straight from
+         *     ``app.optimization.gate.check_optimization_gate``, the same authoritative check every gated
+         *     endpoint (``SQUAD_OPTIMIZATION``/``LINEUP_OPTIMIZATION``/``TRANSFER_OPTIMIZATION``/
+         *     ``CHIP_SIMULATION``) already uses.
+         */
+        NextDeadlineOut: {
+            /** Fpl Event Id */
+            fpl_event_id: number;
+            /** Name */
+            name: string;
+            /**
+             * Deadline Time
+             * Format: date-time
+             */
+            deadline_time: string;
+            /** Gate Allowed */
+            gate_allowed: boolean;
+            /** Gate Reason Code */
+            gate_reason_code: string | null;
+        };
         /** OptimizationRunOut */
         OptimizationRunOut: {
             /**
@@ -1477,6 +1574,7 @@ export interface components {
             projection_source: string;
             /** Now Cost Snapshot */
             now_cost_snapshot: number;
+            price_momentum?: components["schemas"]["PlayerPriceMomentumOut"] | null;
         };
         /**
          * OptimizationRunSummaryOut
@@ -1725,6 +1823,7 @@ export interface components {
             ep_next: string | null;
             /** Is Quarantined */
             is_quarantined: boolean;
+            price_momentum?: components["schemas"]["PlayerPriceMomentumOut"] | null;
         };
         /**
          * PriceMomentum
@@ -2239,6 +2338,37 @@ export interface operations {
             };
         };
     };
+    get_next_deadline_gameweeks_next_deadline_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NextDeadlineOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_chip_optimization_runs_optimize_chips_get: {
         parameters: {
             query?: {
@@ -2294,6 +2424,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChipOptimizationRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_chip_windows_optimize_chips_windows_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChipWindowOut"][];
                 };
             };
             /** @description Validation Error */

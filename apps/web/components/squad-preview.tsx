@@ -9,7 +9,7 @@ import {
   STILL_WORKING_THRESHOLD_SECONDS,
   useElapsedTimer,
 } from "@/components/action-button";
-import { Card, buttonStyle } from "@/components/ui";
+import { Card, PriceMomentumBadge, buttonStyle } from "@/components/ui";
 import type { components } from "@/lib/api-types";
 
 type Preview = components["schemas"]["SquadPreviewOut"];
@@ -109,18 +109,30 @@ export function SquadPreview() {
           </p>
           <ul style={{ listStyle: "none", margin: "0 0 0.75rem", padding: 0, fontSize: "0.85rem" }}>
             {starters.map((player) => (
-              <li key={player.player_id} style={{ padding: "0.2rem 0" }}>
-                <span style={{ color: "var(--text-muted)", marginRight: "0.4rem" }}>{player.position}</span>
-                {playerLine(player)}
+              <li
+                key={player.player_id}
+                style={{ padding: "0.2rem 0", display: "flex", alignItems: "center", gap: "0.4rem" }}
+              >
+                <span style={{ color: "var(--text-muted)" }}>{player.position}</span>
+                <span>{playerLine(player)}</span>
+                {player.price_momentum && player.price_momentum.momentum !== "unknown" && (
+                  <PriceMomentumBadge momentum={player.price_momentum.momentum} />
+                )}
               </li>
             ))}
           </ul>
           <p style={{ margin: "0 0 0.3rem", fontSize: "0.8rem", color: "var(--text-muted)" }}>Bench</p>
           <ul style={{ listStyle: "none", margin: 0, padding: 0, fontSize: "0.85rem" }}>
             {bench.map((player) => (
-              <li key={player.player_id} style={{ padding: "0.2rem 0" }}>
-                <span style={{ color: "var(--text-muted)", marginRight: "0.4rem" }}>{player.position}</span>
-                {playerLine(player)}
+              <li
+                key={player.player_id}
+                style={{ padding: "0.2rem 0", display: "flex", alignItems: "center", gap: "0.4rem" }}
+              >
+                <span style={{ color: "var(--text-muted)" }}>{player.position}</span>
+                <span>{playerLine(player)}</span>
+                {player.price_momentum && player.price_momentum.momentum !== "unknown" && (
+                  <PriceMomentumBadge momentum={player.price_momentum.momentum} />
+                )}
               </li>
             ))}
           </ul>

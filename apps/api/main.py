@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apps.api.auth import require_shared_token
 from apps.api.routers import (
     chips,
+    gameweeks,
     h2h,
     health,
     leagues,
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     protected = Depends(require_shared_token)
     app.include_router(players.router, dependencies=[protected])
+    app.include_router(gameweeks.router, dependencies=[protected])
     # chips.router shares optimization.router's "/optimize" prefix and must be included
     # FIRST: Starlette matches routes in registration order, and optimization.router's
     # catch-all "GET /optimize/{optimization_run_id}" would otherwise swallow

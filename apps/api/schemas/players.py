@@ -9,6 +9,15 @@ from pydantic import BaseModel, ConfigDict
 from app.players.price_signal import PriceMomentum
 
 
+class PlayerPriceMomentumOut(BaseModel):
+    """See ``app.players.price_signal`` -- an explainable heuristic, not FPL's real algorithm."""
+
+    momentum: PriceMomentum
+    net_transfers_event: int | None
+    estimated_owners: int | None
+    momentum_ratio: Decimal | None
+
+
 class PlayerSummary(BaseModel):
     """One row in a /players list response.
 
@@ -30,6 +39,11 @@ class PlayerSummary(BaseModel):
     points_per_game: Decimal | None
     ep_next: Decimal | None
     is_quarantined: bool
+    # Same heuristic as PlayerDetail.price_momentum, computed once per request against the
+    # active PriceSignalCalibration (see apps.api.routers.players.list_players) -- surfaced
+    # here too so a manager scanning the whole list doesn't have to open each player individually
+    # to see who's trending before locking in a squad.
+    price_momentum: PlayerPriceMomentumOut | None = None
 
 
 class PlayerListResponse(BaseModel):
@@ -37,15 +51,6 @@ class PlayerListResponse(BaseModel):
     page: int
     page_size: int
     total: int
-
-
-class PlayerPriceMomentumOut(BaseModel):
-    """See ``app.players.price_signal`` -- an explainable heuristic, not FPL's real algorithm."""
-
-    momentum: PriceMomentum
-    net_transfers_event: int | None
-    estimated_owners: int | None
-    momentum_ratio: Decimal | None
 
 
 class PlayerDetail(BaseModel):
