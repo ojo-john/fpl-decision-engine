@@ -24,6 +24,7 @@ def test_explain_projection_unavailable_status_excluded():
         projection,
         ep_next=None,
         career_avg_points_prior_seasons=None,
+        career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
     )
@@ -38,6 +39,7 @@ def test_explain_projection_cold_start_blend_mentions_both_inputs_and_difficulty
         projection,
         ep_next=4.0,
         career_avg_points_prior_seasons=6.36,
+        career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=2,
         champion_model_family=None,
     )
@@ -48,6 +50,23 @@ def test_explain_projection_cold_start_blend_mentions_both_inputs_and_difficulty
     assert "new season" in explanation.lower()
 
 
+def test_explain_projection_cold_start_blend_prefers_early_season_average_when_present():
+    projection = _projection("cold_start_blend_ep_next_and_career_avg")
+
+    explanation = _explain_projection(
+        projection,
+        ep_next=4.0,
+        career_avg_points_prior_seasons=6.36,
+        career_avg_early_season_points_prior_seasons=10.21,
+        next_fixture_difficulty=None,
+        champion_model_family=None,
+    )
+
+    assert "10.21" in explanation
+    assert "6.36" not in explanation
+    assert "early-season" in explanation.lower()
+
+
 def test_explain_projection_cold_start_blend_without_difficulty_omits_difficulty_clause():
     projection = _projection("cold_start_blend_ep_next_and_career_avg")
 
@@ -55,6 +74,7 @@ def test_explain_projection_cold_start_blend_without_difficulty_omits_difficulty
         projection,
         ep_next=4.0,
         career_avg_points_prior_seasons=6.36,
+        career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
     )
@@ -69,6 +89,7 @@ def test_explain_projection_champion_sourced_names_the_model_family():
         projection,
         ep_next=None,
         career_avg_points_prior_seasons=None,
+        career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family="gradient_boosting",
     )
@@ -84,6 +105,7 @@ def test_explain_projection_ep_next_fallback():
         projection,
         ep_next=4.0,
         career_avg_points_prior_seasons=None,
+        career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
     )
@@ -99,6 +121,7 @@ def test_explain_projection_ep_next_availability_scaled_notes_the_scaling():
         projection,
         ep_next=4.0,
         career_avg_points_prior_seasons=None,
+        career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
     )
@@ -113,6 +136,7 @@ def test_explain_projection_points_per_game_fallback():
         projection,
         ep_next=None,
         career_avg_points_prior_seasons=None,
+        career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
     )
@@ -127,6 +151,7 @@ def test_explain_projection_no_data_zero_falls_back_to_generic_message():
         projection,
         ep_next=None,
         career_avg_points_prior_seasons=None,
+        career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
     )

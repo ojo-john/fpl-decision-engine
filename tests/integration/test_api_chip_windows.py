@@ -7,13 +7,18 @@ from the current season's ``rules_config.raw_chips_json`` -- see that
 endpoint's own docstring.
 """
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from app.jobs.service import execute_job
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from tests.integration.conftest import authed_client
+
+# Shared, persistent local Postgres (see conftest.py's module docstring) -- a fixed literal
+# label must be cleared before use, not assumed absent, since a prior run of this same test
+# leaves its own "9999-00" row behind (insert-only, no teardown) on a DB that is never truncated.
+_SENTINEL_SEASON_LABEL = "9999-00"
 
 
 def _seed(db_session):
@@ -41,8 +46,9 @@ def test_get_chip_windows_no_rules_config_returns_404(db_session):
     unreachable through normal ingestion. Constructed directly to exercise the defensive check.
     """
     db_session.execute(update(Season).values(is_current=False))
+    db_session.execute(delete(Season).where(Season.label == _SENTINEL_SEASON_LABEL))
     db_session.commit()
-    db_session.add(Season(label="9999-00", is_current=True, total_players=1_000_000))
+    db_session.add(Season(label=_SENTINEL_SEASON_LABEL, is_current=True, total_players=1_000_000))
     db_session.commit()
     client = authed_client()
 
