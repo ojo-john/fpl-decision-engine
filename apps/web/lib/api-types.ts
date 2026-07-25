@@ -145,6 +145,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/players/{player_id}/availability-risk-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Availability Risk Notes
+         * @description Every note ever recorded for this player, past and present, most-recent-first --
+         *     transparency/audit, not just the currently-active one (see ``GET /{player_id}/projection``
+         *     for what's actually applied to THIS gameweek's projection).
+         */
+        get: operations["list_availability_risk_notes_players__player_id__availability_risk_notes_get"];
+        put?: never;
+        /**
+         * Create Availability Risk Note
+         * @description Create a judgment-based availability-risk note for this player -- see
+         *     ``packages.database.models.player_availability_risk_note``'s own docstring for why this is
+         *     NOT the same thing as FPL's own official injury/doubt data (that already flows in
+         *     automatically; this is for a real, sourced risk FPL hasn't flagged yet).
+         */
+        post: operations["create_availability_risk_note_players__player_id__availability_risk_notes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/players/{player_id}/availability-risk-notes/{note_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Availability Risk Note
+         * @description Remove a note -- e.g. it turns out to be wrong, or real news supersedes it.
+         */
+        delete: operations["delete_availability_risk_note_players__player_id__availability_risk_notes__note_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/gameweeks/next-deadline": {
         parameters: {
             query?: never;
@@ -856,6 +905,56 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AvailabilityRiskNoteCreate
+         * @description Body for ``POST /players/{player_id}/availability-risk-notes``.
+         */
+        AvailabilityRiskNoteCreate: {
+            /** Reason */
+            reason: string;
+            /** Severity */
+            severity: number | string;
+            /** Valid From Fpl Event Id */
+            valid_from_fpl_event_id?: number | null;
+            /** Valid Until Fpl Event Id */
+            valid_until_fpl_event_id?: number | null;
+            /**
+             * Created By
+             * @default manual
+             */
+            created_by: string;
+        };
+        /**
+         * AvailabilityRiskNoteOut
+         * @description See ``packages.database.models.player_availability_risk_note``.
+         */
+        AvailabilityRiskNoteOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Player Id
+             * Format: uuid
+             */
+            player_id: string;
+            /** Reason */
+            reason: string;
+            /** Severity */
+            severity: string;
+            /** Valid From Fpl Event Id */
+            valid_from_fpl_event_id: number | null;
+            /** Valid Until Fpl Event Id */
+            valid_until_fpl_event_id: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+        };
         /** BacktestRequest */
         BacktestRequest: {
             /**
@@ -1803,12 +1902,18 @@ export interface components {
             ep_next: string | null;
             /** Career Avg Points Prior Seasons */
             career_avg_points_prior_seasons: string | null;
+            /** Career Avg Early Season Points Prior Seasons */
+            career_avg_early_season_points_prior_seasons: string | null;
             /** Next Fixture Difficulty */
             next_fixture_difficulty: number | null;
             /** Champion Model Family */
             champion_model_family: string | null;
             /** Champion Model Version Id */
             champion_model_version_id: string | null;
+            /** Availability Risk Reason */
+            availability_risk_reason?: string | null;
+            /** Availability Risk Severity */
+            availability_risk_severity?: string | null;
             /** Explanation */
             explanation: string;
         };
@@ -2371,6 +2476,108 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["PlayerProjectionResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_availability_risk_notes_players__player_id__availability_risk_notes_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                player_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AvailabilityRiskNoteOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_availability_risk_note_players__player_id__availability_risk_notes_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                player_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AvailabilityRiskNoteCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AvailabilityRiskNoteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_availability_risk_note_players__player_id__availability_risk_notes__note_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                player_id: string;
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

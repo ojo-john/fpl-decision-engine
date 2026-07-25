@@ -1,4 +1,5 @@
 import { backendClient } from "@/lib/api-client";
+import { AvailabilityRiskNotes } from "@/components/availability-risk-notes";
 import { Card, ErrorState, PriceMomentumBadge, TableScroll } from "@/components/ui";
 import type { components } from "@/lib/api-types";
 
@@ -27,12 +28,17 @@ export default async function PlayerDetailPage({
   const { playerId } = await params;
   const client = backendClient();
 
-  const [{ data: player, response: playerResponse }, { data: projection }, { data: priceHistory }] =
-    await Promise.all([
-      client.GET("/players/{player_id}", { params: { path: { player_id: playerId } } }),
-      client.GET("/players/{player_id}/projection", { params: { path: { player_id: playerId } } }),
-      client.GET("/players/{player_id}/price-history", { params: { path: { player_id: playerId } } }),
-    ]);
+  const [
+    { data: player, response: playerResponse },
+    { data: projection },
+    { data: priceHistory },
+    { data: riskNotes },
+  ] = await Promise.all([
+    client.GET("/players/{player_id}", { params: { path: { player_id: playerId } } }),
+    client.GET("/players/{player_id}/projection", { params: { path: { player_id: playerId } } }),
+    client.GET("/players/{player_id}/price-history", { params: { path: { player_id: playerId } } }),
+    client.GET("/players/{player_id}/availability-risk-notes", { params: { path: { player_id: playerId } } }),
+  ]);
 
   if (playerResponse.status === 404) {
     return <ErrorState>No player found for id {playerId}.</ErrorState>;
@@ -75,6 +81,22 @@ export default async function PlayerDetailPage({
               </span>
             )}
           </div>
+
+          {projection.availability_risk_reason && (
+            <p
+              style={{
+                margin: "0.6rem 0 0",
+                padding: "0.5rem 0.6rem",
+                borderRadius: "6px",
+                border: "1px solid var(--danger)",
+                color: "var(--danger)",
+                fontSize: "0.85rem",
+              }}
+            >
+              Flagged availability risk (severity {projection.availability_risk_severity}):{" "}
+              {projection.availability_risk_reason}
+            </p>
+          )}
 
           <p
             style={{
@@ -216,6 +238,8 @@ export default async function PlayerDetailPage({
           </TableScroll>
         )}
       </Card>
+
+      <AvailabilityRiskNotes playerId={playerId} notes={riskNotes ?? []} />
     </div>
   );
 }

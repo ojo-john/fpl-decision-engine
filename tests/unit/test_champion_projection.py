@@ -1,10 +1,12 @@
 """Unit tests for app.optimization.projection.project_player_with_champion (no DB).
 
 Every DB-touching step (`compute_features_for_player_gameweek`,
-`baselines.predict_rules_based_ep_next`) is monkeypatched at the module
-attribute projection.py actually calls through, so these tests never open a
-session — mirroring the no-DB style of tests/unit/test_projection.py, which
-this module extends rather than replaces.
+`baselines.predict_rules_based_ep_next`, and -- as of the availability-risk-notes
+feature -- `get_active_availability_risk_note`, defaulted to "no active note" by
+the autouse `_no_availability_risk_note_by_default` fixture below) is
+monkeypatched at the module attribute projection.py actually calls through, so
+these tests never open a session — mirroring the no-DB style of
+tests/unit/test_projection.py, which this module extends rather than replaces.
 """
 
 import math
@@ -21,6 +23,16 @@ from packages.database.models.player_features import PlayerFeatures
 from packages.domain.modeling import ModelFamily
 
 _TARGET_GAMEWEEK_ID = uuid.uuid4()
+
+
+@pytest.fixture(autouse=True)
+def _no_availability_risk_note_by_default(monkeypatch):
+    """Every test in this file predates player_availability_risk_notes and deliberately never
+    opens a session (see module docstring) -- project_player_with_champion's final
+    _apply_availability_risk_notes step would otherwise call session.execute(None-session) and
+    crash every one of them. Defaulted to "no active note" here; individual tests below override
+    this via monkeypatch to exercise the actual stacking behavior."""
+    monkeypatch.setattr("app.optimization.projection.get_active_availability_risk_note", lambda *a, **k: None)
 
 
 def _make_player(
@@ -414,3 +426,69 @@ def test_cold_start_season_feature_computation_raising_falls_back_to_ep_next_alo
 
     assert result == project_player(player)
     assert result.source == "ep_next"
+
+
+# --- Availability-risk-note stacking (app.players... no, app.optimization.projection's own
+# _apply_availability_risk_notes) -- these override the module's own autouse fixture default. ---
+
+
+class _FakeNote:
+    def __init__(self, severity, reason="test reason"):
+        self.severity = severity
+        self.reason = reason
+
+
+def test_availability_risk_note_discounts_an_eligible_projection(monkeypatch):
+    player = _make_player(status="a", ep_next="8.0")
+    monkeypatch.setattr(
+        "app.optimization.projection.get_active_availability_risk_note",
+        lambda *a, **k: _FakeNote(Decimal("0.6")),
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, None)
+
+    assert result.projected_points == pytest.approx(8.0 * 0.6)
+    assert result.source == "ep_next_availability_risk_noted"
+    assert result.is_eligible is True
+
+
+def test_availability_risk_note_never_applies_to_a_hard_excluded_player(monkeypatch):
+    """A note must not resurrect/relabel an already-ineligible (i/s/u status) projection."""
+    player = _make_player(status="i", ep_next="99.9")
+    monkeypatch.setattr(
+        "app.optimization.projection.get_active_availability_risk_note",
+        lambda *a, **k: _FakeNote(Decimal("0.6")),
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, None)
+
+    assert result.source == "unavailable_status_excluded"
+    assert result.projected_points == 0.0
+    assert result.is_eligible is False
+
+
+def test_availability_risk_note_stacks_multiplicatively_with_availability_scaling(monkeypatch):
+    """Two independent discounts (FPL's own chance_of_playing scaling, and a flagged risk note)
+    must both apply, not one overriding the other."""
+    player = _make_player(status="a", ep_next="10.0", chance_of_playing_next_round=50)
+    monkeypatch.setattr(
+        "app.optimization.projection.get_active_availability_risk_note",
+        lambda *a, **k: _FakeNote(Decimal("0.5")),
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, None)
+
+    # project_player's own multiplier: 50/100 = 0.5. Then the note's own 0.5 on top.
+    assert result.projected_points == pytest.approx(10.0 * 0.5 * 0.5)
+    assert result.source == "ep_next_availability_scaled_availability_risk_noted"
+
+
+def test_no_active_availability_risk_note_leaves_projection_unchanged(monkeypatch):
+    """The autouse fixture already covers this (default None), but assert it explicitly once
+    here so the "no note" contract is documented alongside the "note present" tests above."""
+    player = _make_player(status="a", ep_next="8.0")
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, None)
+
+    assert result == project_player(player)
+    assert "availability_risk_noted" not in result.source

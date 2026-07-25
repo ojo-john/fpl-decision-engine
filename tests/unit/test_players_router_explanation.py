@@ -27,6 +27,7 @@ def test_explain_projection_unavailable_status_excluded():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        availability_risk_reason=None,
     )
 
     assert "unavailable" in explanation.lower()
@@ -42,6 +43,7 @@ def test_explain_projection_cold_start_blend_mentions_both_inputs_and_difficulty
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=2,
         champion_model_family=None,
+        availability_risk_reason=None,
     )
 
     assert "4.0" in explanation
@@ -60,6 +62,7 @@ def test_explain_projection_cold_start_blend_prefers_early_season_average_when_p
         career_avg_early_season_points_prior_seasons=10.21,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        availability_risk_reason=None,
     )
 
     assert "10.21" in explanation
@@ -77,6 +80,7 @@ def test_explain_projection_cold_start_blend_without_difficulty_omits_difficulty
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        availability_risk_reason=None,
     )
 
     assert "difficulty" not in explanation.lower()
@@ -92,6 +96,7 @@ def test_explain_projection_champion_sourced_names_the_model_family():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family="gradient_boosting",
+        availability_risk_reason=None,
     )
 
     assert "gradient_boosting" in explanation
@@ -108,6 +113,7 @@ def test_explain_projection_ep_next_fallback():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        availability_risk_reason=None,
     )
 
     assert "ep_next" in explanation
@@ -124,6 +130,7 @@ def test_explain_projection_ep_next_availability_scaled_notes_the_scaling():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        availability_risk_reason=None,
     )
 
     assert "scaled down" in explanation.lower()
@@ -139,6 +146,7 @@ def test_explain_projection_points_per_game_fallback():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        availability_risk_reason=None,
     )
 
     assert "points-per-game" in explanation.lower()
@@ -154,6 +162,67 @@ def test_explain_projection_no_data_zero_falls_back_to_generic_message():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        availability_risk_reason=None,
     )
 
     assert explanation == "No projection data is available for this player yet."
+
+
+def test_explain_projection_availability_risk_noted_appends_the_reason():
+    """AVAILABILITY_RISK_NOTED_SUFFIX must be stripped before the base-source branching, and the
+    active note's own reason appended -- not silently ignored, and not causing a fallthrough to
+    the generic "no projection data" message (source no longer matches any known base string)."""
+    projection = _projection("ep_next_availability_risk_noted")
+
+    explanation = _explain_projection(
+        projection,
+        ep_next=4.0,
+        career_avg_points_prior_seasons=None,
+        career_avg_early_season_points_prior_seasons=None,
+        next_fixture_difficulty=None,
+        champion_model_family=None,
+        availability_risk_reason="Short on match fitness after a long international tournament.",
+    )
+
+    assert "ep_next" in explanation
+    assert "Flagged availability risk" in explanation
+    assert "Short on match fitness after a long international tournament." in explanation
+
+
+def test_explain_projection_availability_risk_noted_on_champion_sourced_projection():
+    """The champion_model_family branch must also survive the suffix strip."""
+    projection = _projection("ml_champion_gradient_boosting_availability_risk_noted")
+
+    explanation = _explain_projection(
+        projection,
+        ep_next=None,
+        career_avg_points_prior_seasons=None,
+        career_avg_early_season_points_prior_seasons=None,
+        next_fixture_difficulty=None,
+        champion_model_family="gradient_boosting",
+        availability_risk_reason="Confirmed late return to training.",
+    )
+
+    assert "gradient_boosting" in explanation
+    assert "Flagged availability risk" in explanation
+    assert "Confirmed late return to training." in explanation
+
+
+def test_explain_projection_suffix_present_but_no_reason_given_omits_the_clause():
+    """Defensive case: has_risk_note True but no reason text available (shouldn't happen via the
+    real router, which always looks the note up alongside the projection, but must degrade
+    gracefully rather than append "None")."""
+    projection = _projection("ep_next_availability_risk_noted")
+
+    explanation = _explain_projection(
+        projection,
+        ep_next=4.0,
+        career_avg_points_prior_seasons=None,
+        career_avg_early_season_points_prior_seasons=None,
+        next_fixture_difficulty=None,
+        champion_model_family=None,
+        availability_risk_reason=None,
+    )
+
+    assert "Flagged availability risk" not in explanation
+    assert "None" not in explanation
