@@ -229,28 +229,87 @@ objective has no way to see or flag). Two things close that gap:
 
 **`GET /players/{player_id}/projection`'s "why this projection" breakdown**
 (added post-review): the response includes `is_cold_start_season`,
-`ep_next`, `career_avg_points_prior_seasons`, `next_fixture_difficulty`,
-`champion_model_family`/`champion_model_version_id`, and a one-line
-`explanation` string. These are display-only surfacing of numbers already
-computed by `project_player_with_champion`/`_cold_start_projection` and a
-best-effort extra `compute_features_for_player_gameweek` call for display
-purposes — not a new explainability system (no SHAP, no per-feature
-attribution). `champion_model_family` is set ONLY when `projected_points`
-actually came from a live champion-model prediction (`source` starts with
-`ml_champion_`) — during a cold-start season, a champion may exist and be
-the reason `_cold_start_projection` engaged at all, but the fields shown
-are the blend's own inputs, not the (unused, untrustworthy-for-this-input-
-shape) champion prediction, so `champion_model_family` correctly stays
-`None` in that case. **Known gap (introduced by migration 0030, not yet
-fixed):** this endpoint's explanation still only ever surfaces
-`career_avg_points_prior_seasons` (full-season), not the
-early-season-preferring value `_cold_start_projection` itself now
-actually blends with — so for a player where the two differ, the
-explanation text can name the wrong number for what was actually used.
-See `apps.api.routers.players._explain_projection` for
-the exact source-string-to-sentence mapping and
+`ep_next`, `career_avg_points_prior_seasons`,
+`career_avg_early_season_points_prior_seasons`, `next_fixture_difficulty`,
+`champion_model_family`/`champion_model_version_id`,
+`availability_risk_reason`/`availability_risk_severity` (see "Availability
+risk notes" below), and a one-line `explanation` string. These are
+display-only surfacing of numbers already computed by
+`project_player_with_champion`/`_cold_start_projection` and a best-effort
+extra `compute_features_for_player_gameweek` call for display purposes —
+not a new explainability system (no SHAP, no per-feature attribution).
+`champion_model_family` is set whenever `projected_points` came from a live
+champion-model prediction, checked via `.startswith(f"ml_champion_
+{family}")` rather than `==` (the source string may carry the
+`_availability_risk_noted` suffix on top — see below) — during a cold-start
+season, a champion may exist and be the reason `_cold_start_projection`
+engaged at all, but the fields shown are the blend's own inputs, not the
+(unused, untrustworthy-for-this-input-shape) champion prediction, so
+`champion_model_family` correctly stays `None` in that case. The
+explanation text correctly names
+`career_avg_early_season_points_prior_seasons` (not the stale full-season
+number) whenever `_cold_start_projection` actually used it — fixed in the
+same session `career_avg_early_season_points_prior_seasons` was added.
+See `apps.api.routers.players._explain_base_projection`/`_explain_projection`
+for the exact source-string-to-sentence mapping (the latter strips
+`app.optimization.projection.AVAILABILITY_RISK_NOTED_SUFFIX` before
+delegating to the former, then appends a risk-note sentence) and
 `app.optimization.projection.is_cold_start_season` (a thin public wrapper
 around the module's own `_is_cold_start_season`, added for this endpoint).
+
+**Availability risk notes** (migration `0031`) close a gap neither FPL's
+own official data nor this codebase's models can see: a player who isn't
+officially listed injured/doubtful (`players.chance_of_playing_next_round`/
+`news`, refreshed automatically every `DATA_INGESTION` run and already
+down-weighted by `project_player`'s own `_AVAILABILITY_SCALE_THRESHOLD`
+multiplier) but has a real, sourced, judgment-based reason to expect
+reduced early-season involvement — concretely, several Premier League
+players returning from a deep 2026 FIFA World Cup run with a compressed
+pre-season. **This is NOT a background job that checks the news itself —
+there is no autonomous news-monitoring anywhere in this system** (it only
+ever talks to the official FPL API); a `player_availability_risk_notes`
+row is added by a human, or an agent doing fresh research on request, the
+same way a manager makes any other judgment call about their own squad.
+
+- `packages/database/models/player_availability_risk_note.py`: each row is
+  an independent note (NOT the single-active-row-per-invariant pattern
+  `seasons.is_current`/`model_versions.is_champion`/`leagues.is_priority`
+  use elsewhere in this schema) — `reason` (text), `severity` (a
+  projection multiplier in (0, 1]), `valid_from_fpl_event_id`/
+  `valid_until_fpl_event_id` (the gameweek NUMBER window it applies to,
+  inclusive both ends), `created_by` (free text — this app has no user
+  table, only a single shared bearer token). A note simply stops applying
+  once its own gameweek window passes; no explicit deactivation needed.
+- `app.optimization.projection.get_active_availability_risk_note`
+  (public) / `_apply_availability_risk_notes` (private): looked up as the
+  FINAL step of `project_player_with_champion`, after whichever branch
+  (champion-model, cold-start blend, or plain `project_player` fallback)
+  produced its own result — so a flagged risk applies regardless of
+  whether a champion model happened to be consulted. Stacks
+  multiplicatively with (does not replace) the existing
+  `chance_of_playing_next_round`-based scaling — two independent,
+  legitimate reasons a projection might be too high. If more than one
+  note is active for the same player/gameweek, the MOST severe (lowest
+  multiplier) wins. Appends `AVAILABILITY_RISK_NOTED_SUFFIX` to
+  `PlayerProjection.source`, which every source-string-matching caller
+  (`_explain_projection`, the `champion_model_family` check above) must
+  strip/account for.
+- CRUD via `apps/api/routers/players.py`: `GET`/`POST`/`DELETE
+  /players/{player_id}/availability-risk-notes[/{note_id}]`. `POST`
+  validates `valid_from_fpl_event_id <= valid_until_fpl_event_id` (422 if
+  backwards). Minimal frontend on the player detail page
+  (`apps/web/components/availability-risk-notes.tsx`): a danger-styled
+  banner on the projection card when a note is active for the target
+  gameweek, a list of every note ever recorded (past and present, for
+  audit), and an inline add/remove form — no separate admin page.
+- Seeded (via the real API, on the real dev database, not a raw SQL
+  insert) with two real, sourced notes as of 2026-07-25: Declan Rice and
+  Bukayo Saka (both Arsenal/England, lost the World Cup semifinal July 15,
+  confirmed not returning to training until Aug 10 — 11 days before the
+  Aug 21 opener), severity 0.65, valid GW1-3. Three Arsenal players who
+  actually won the tournament for Spain (Raya, Zubimendi, Merino) were
+  deliberately NOT flagged — limited World Cup minutes, expected back in
+  good shape.
 
 ## Two separate ingestion pipelines — don't conflate them
 
@@ -478,6 +537,11 @@ new code needed, just running the existing pipeline.
   `transfers_in_event`/`transfers_out_event` are typically 0/0 before real
   gameweeks start) is suppressed in the compact spots rather than shown as
   a badge with nothing to say.
+- **`player_availability_risk_notes`** (migration `0031`) — curated,
+  judgment-based fitness/availability risk notes, distinct from the
+  official `chance_of_playing_next_round`-driven signal above; see
+  "Availability risk notes" under "The optimization gate" above for the
+  full rationale and how `project_player_with_champion` applies them.
 
 ## API (`apps/api`)
 

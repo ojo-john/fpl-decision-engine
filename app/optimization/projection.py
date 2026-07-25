@@ -22,7 +22,9 @@ from app.features.service import compute_features_for_player_gameweek
 from app.modeling import baselines
 from app.modeling.candidates import align_columns, build_feature_row
 from app.optimization.champion_loader import LoadedChampion
+from packages.database.models.gameweek import Gameweek
 from packages.database.models.player import Player
+from packages.database.models.player_availability_risk_note import PlayerAvailabilityRiskNote
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.domain.modeling import BASELINE_MODEL_FAMILIES, ModelFamily
 
@@ -236,6 +238,81 @@ def _cold_start_projection(
     return PlayerProjection(player.id, blended, "cold_start_blend_ep_next_and_career_avg", is_eligible=True)
 
 
+# Appended to PlayerProjection.source whenever _apply_availability_risk_notes discounts it --
+# callers that branch on exact source strings (e.g. apps.api.routers.players._explain_projection)
+# must strip this suffix before matching, and use it to also surface the note's own reason text.
+AVAILABILITY_RISK_NOTED_SUFFIX = "_availability_risk_noted"
+
+
+def get_active_availability_risk_note(
+    session: Session, player_id: uuid.UUID, target_gameweek_id: uuid.UUID
+) -> PlayerAvailabilityRiskNote | None:
+    """The single most-severe active ``player_availability_risk_notes`` row for this player and
+    gameweek, or ``None`` if none applies. Public so callers outside this module (e.g. the "why
+    this projection" breakdown) can find the same note ``_apply_availability_risk_notes`` would
+    apply, without duplicating the gameweek-number resolution + active-window filtering logic --
+    mirrors ``is_cold_start_season``'s own "public wrapper around a private helper" precedent.
+
+    Looks up by this gameweek's ``fpl_event_id`` (not ``target_gameweek_id`` directly) since notes
+    are authored in terms of gameweek NUMBERS ("valid from GW1 to GW3"), not opaque row ids. If
+    more than one note is active for the same player and gameweek, the MOST severe (lowest
+    multiplier) wins — understating a real risk is worse than overstating it here.
+    """
+    fpl_event_id = session.execute(
+        select(Gameweek.fpl_event_id).where(Gameweek.id == target_gameweek_id)
+    ).scalar_one_or_none()
+    if fpl_event_id is None:
+        return None
+
+    notes = (
+        session.execute(
+            select(PlayerAvailabilityRiskNote).where(PlayerAvailabilityRiskNote.player_id == player_id)
+        )
+        .scalars()
+        .all()
+    )
+    active = [
+        note
+        for note in notes
+        if (note.valid_from_fpl_event_id is None or fpl_event_id >= note.valid_from_fpl_event_id)
+        and (note.valid_until_fpl_event_id is None or fpl_event_id <= note.valid_until_fpl_event_id)
+    ]
+    if not active:
+        return None
+    return min(active, key=lambda note: note.severity)
+
+
+def _apply_availability_risk_notes(
+    session: Session, target_gameweek_id: uuid.UUID, projection: PlayerProjection
+) -> PlayerProjection:
+    """Apply the active ``player_availability_risk_notes`` row (if any) as an additional multiplier.
+
+    Stacks with (does not replace) the ``chance_of_playing_next_round``-based multiplier
+    ``project_player`` already applies — these are two independent, legitimate reasons a
+    projection might be too high: FPL's own official injury/doubt data (refreshed every
+    ``DATA_INGESTION`` run) versus a judgment-based, pre-official risk a human or research agent
+    has flagged (e.g. a player who went deep into an international tournament and returns to club
+    training only days before a season opener, without yet being listed injured/doubtful by FPL).
+
+    A no-op for an already-ineligible projection (``is_eligible=False``, e.g. hard-excluded by
+    status) — there's nothing to discount further, and appending a note-driven source suffix to
+    ``"unavailable_status_excluded"`` would be misleading.
+    """
+    if not projection.is_eligible:
+        return projection
+
+    note = get_active_availability_risk_note(session, projection.player_id, target_gameweek_id)
+    if note is None:
+        return projection
+
+    return PlayerProjection(
+        projection.player_id,
+        projection.projected_points * float(note.severity),
+        f"{projection.source}{AVAILABILITY_RISK_NOTED_SUFFIX}",
+        is_eligible=True,
+    )
+
+
 def project_player_with_champion(
     session: Session,
     player: Player,
@@ -273,32 +350,38 @@ def project_player_with_champion(
        ``f"ml_champion_{champion.model_family.value}"`` so it's always
        possible to tell, after the fact, which players in a recommendation
        used the trained model versus the fallback formula.
+    7. Whatever the above produces (steps 2-6), a final pass applies any active
+       ``player_availability_risk_notes`` for this player/gameweek as an additional discount —
+       see ``_apply_availability_risk_notes``. This step is NOT skipped for the ``project_player``
+       fallback branches (2, 4, 5): a flagged fitness risk is just as real whether or not a
+       champion model happened to be available.
     """
     if player.status in _HARD_EXCLUDE_STATUSES:
         return PlayerProjection(player.id, 0.0, "unavailable_status_excluded", is_eligible=False)
 
     if champion is None:
-        return project_player(player)
+        projection = project_player(player)
+    elif _is_cold_start_season(session, player.season_id):
+        projection = _cold_start_projection(session, player, target_gameweek_id)
+    else:
+        try:
+            prediction = _predict_from_champion(session, player, target_gameweek_id, champion)
+        except Exception:  # noqa: BLE001 - a champion-projection failure must never fail the optimizer
+            logger.warning(
+                "Champion projection failed for player_id=%s target_gameweek_id=%s "
+                "model_version_id=%s; falling back to project_player().",
+                player.id,
+                target_gameweek_id,
+                champion.model_version_id,
+                exc_info=True,
+            )
+            projection = project_player(player)
+        else:
+            if prediction is None or math.isnan(prediction):
+                projection = project_player(player)
+            else:
+                projection = PlayerProjection(
+                    player.id, prediction, f"ml_champion_{champion.model_family.value}", is_eligible=True
+                )
 
-    if _is_cold_start_season(session, player.season_id):
-        return _cold_start_projection(session, player, target_gameweek_id)
-
-    try:
-        prediction = _predict_from_champion(session, player, target_gameweek_id, champion)
-    except Exception:  # noqa: BLE001 - a champion-projection failure must never fail the optimizer
-        logger.warning(
-            "Champion projection failed for player_id=%s target_gameweek_id=%s "
-            "model_version_id=%s; falling back to project_player().",
-            player.id,
-            target_gameweek_id,
-            champion.model_version_id,
-            exc_info=True,
-        )
-        return project_player(player)
-
-    if prediction is None or math.isnan(prediction):
-        return project_player(player)
-
-    return PlayerProjection(
-        player.id, prediction, f"ml_champion_{champion.model_family.value}", is_eligible=True
-    )
+    return _apply_availability_risk_notes(session, target_gameweek_id, projection)

@@ -154,4 +154,38 @@ class PlayerProjectionResponse(BaseModel):
     # starts with "ml_champion_") -- None for every fallback/cold-start/no-champion path.
     champion_model_family: str | None
     champion_model_version_id: uuid.UUID | None
+    # Set only when a player_availability_risk_notes row is active for this player and gameweek --
+    # see app.optimization.projection.get_active_availability_risk_note. Distinct from FPL's own
+    # official chance_of_playing_next_round-driven scaling (always reflected in `source` via
+    # "_availability_scaled"): this is judgment-based, pre-official risk a human/research agent
+    # flagged (e.g. a player short on match fitness after a long international tournament).
+    availability_risk_reason: str | None = None
+    availability_risk_severity: Decimal | None = None
     explanation: str
+
+
+class AvailabilityRiskNoteCreate(BaseModel):
+    """Body for ``POST /players/{player_id}/availability-risk-notes``."""
+
+    reason: str
+    # Projection multiplier in (0, 1] -- e.g. 0.65 = discount to 65% of what the projection would
+    # otherwise be. Validated at the boundary (see the router), not re-validated internally.
+    severity: Decimal
+    valid_from_fpl_event_id: int | None = None
+    valid_until_fpl_event_id: int | None = None
+    created_by: str = "manual"
+
+
+class AvailabilityRiskNoteOut(BaseModel):
+    """See ``packages.database.models.player_availability_risk_note``."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    player_id: uuid.UUID
+    reason: str
+    severity: Decimal
+    valid_from_fpl_event_id: int | None
+    valid_until_fpl_event_id: int | None
+    created_at: datetime
+    created_by: str

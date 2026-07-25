@@ -11,8 +11,10 @@ from app.features.service import compute_features_for_player_gameweek
 from app.optimization.champion_loader import load_current_champion
 from app.optimization.gameweek_resolution import resolve_target_gameweek
 from app.optimization.projection import (
+    AVAILABILITY_RISK_NOTED_SUFFIX,
     PROJECTION_FORMULA_VERSION,
     PlayerProjection,
+    get_active_availability_risk_note,
     is_cold_start_season,
     project_player,
     project_player_with_champion,
@@ -20,6 +22,8 @@ from app.optimization.projection import (
 from app.players.price_signal import classify_price_momentum
 from apps.api.dependencies import get_db
 from apps.api.schemas.players import (
+    AvailabilityRiskNoteCreate,
+    AvailabilityRiskNoteOut,
     PlayerDetail,
     PlayerListResponse,
     PlayerPriceChangeOut,
@@ -28,6 +32,7 @@ from apps.api.schemas.players import (
     PlayerSummary,
 )
 from packages.database.models.player import Player
+from packages.database.models.player_availability_risk_note import PlayerAvailabilityRiskNote
 from packages.database.models.player_price_history import PlayerPriceHistory
 from packages.database.models.position import Position
 from packages.database.models.price_signal_calibration import PriceSignalCalibration
@@ -218,7 +223,7 @@ def get_player_price_history(
     ]
 
 
-def _explain_projection(
+def _explain_base_projection(
     projection: PlayerProjection,
     *,
     ep_next: float | None,
@@ -227,10 +232,8 @@ def _explain_projection(
     next_fixture_difficulty: int | None,
     champion_model_family: str | None,
 ) -> str:
-    """A one-line, plain-English account of which code path produced ``projection`` and why --
-    the "why this projection" breakdown's human-readable summary. Branches on ``projection.source``
-    (see ``app.optimization.projection``'s own source strings) rather than re-deriving state,
-    since the source string already IS the authoritative record of which path ran."""
+    """Same as ``_explain_projection`` but assumes ``projection.source`` has already had any
+    ``AVAILABILITY_RISK_NOTED_SUFFIX`` stripped -- see that function for why."""
     if projection.source == "unavailable_status_excluded":
         return "This player is currently unavailable, so no points are projected."
     if projection.source == "cold_start_blend_ep_next_and_career_avg":
@@ -264,6 +267,46 @@ def _explain_projection(
             f"instead{scaled_note}."
         )
     return "No projection data is available for this player yet."
+
+
+def _explain_projection(
+    projection: PlayerProjection,
+    *,
+    ep_next: float | None,
+    career_avg_points_prior_seasons: float | None,
+    career_avg_early_season_points_prior_seasons: float | None,
+    next_fixture_difficulty: int | None,
+    champion_model_family: str | None,
+    availability_risk_reason: str | None,
+) -> str:
+    """A one-line, plain-English account of which code path produced ``projection`` and why --
+    the "why this projection" breakdown's human-readable summary. Branches on ``projection.source``
+    (see ``app.optimization.projection``'s own source strings) rather than re-deriving state,
+    since the source string already IS the authoritative record of which path ran.
+
+    ``app.optimization.projection._apply_availability_risk_notes`` appends
+    ``AVAILABILITY_RISK_NOTED_SUFFIX`` to whatever source the underlying formula produced -- stripped
+    here before delegating to ``_explain_base_projection`` (so every existing branch keeps matching
+    exactly), then a note-specific sentence is appended describing the flagged risk, since a
+    discounted number with no explanation of WHY would be more confusing than the un-noted case."""
+    has_risk_note = projection.source.endswith(AVAILABILITY_RISK_NOTED_SUFFIX)
+    base_source = (
+        projection.source[: -len(AVAILABILITY_RISK_NOTED_SUFFIX)] if has_risk_note else projection.source
+    )
+    base_projection = PlayerProjection(
+        projection.player_id, projection.projected_points, base_source, projection.is_eligible
+    )
+    base_explanation = _explain_base_projection(
+        base_projection,
+        ep_next=ep_next,
+        career_avg_points_prior_seasons=career_avg_points_prior_seasons,
+        career_avg_early_season_points_prior_seasons=career_avg_early_season_points_prior_seasons,
+        next_fixture_difficulty=next_fixture_difficulty,
+        champion_model_family=champion_model_family,
+    )
+    if has_risk_note and availability_risk_reason is not None:
+        return f"{base_explanation} Flagged availability risk: {availability_risk_reason}"
+    return base_explanation
 
 
 @router.get("/{player_id}/projection", response_model=PlayerProjectionResponse)
@@ -326,9 +369,17 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
 
     champion_model_family = None
     champion_model_version_id = None
-    if champion is not None and projection.source == f"ml_champion_{champion.model_family.value}":
+    # .startswith(), not == -- AVAILABILITY_RISK_NOTED_SUFFIX may be appended after the
+    # "ml_champion_{family}" source string when a risk note is also active for this gameweek.
+    if champion is not None and projection.source.startswith(f"ml_champion_{champion.model_family.value}"):
         champion_model_family = champion.model_family.value
         champion_model_version_id = champion.model_version_id
+
+    active_risk_note = (
+        get_active_availability_risk_note(db, player.id, target_gameweek_id)
+        if target_gameweek_id is not None
+        else None
+    )
 
     explanation = _explain_projection(
         projection,
@@ -343,6 +394,7 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
         ),
         next_fixture_difficulty=next_fixture_difficulty,
         champion_model_family=champion_model_family,
+        availability_risk_reason=active_risk_note.reason if active_risk_note is not None else None,
     )
 
     return PlayerProjectionResponse(
@@ -360,5 +412,81 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
         next_fixture_difficulty=next_fixture_difficulty,
         champion_model_family=champion_model_family,
         champion_model_version_id=champion_model_version_id,
+        availability_risk_reason=active_risk_note.reason if active_risk_note is not None else None,
+        availability_risk_severity=active_risk_note.severity if active_risk_note is not None else None,
         explanation=explanation,
     )
+
+
+@router.get("/{player_id}/availability-risk-notes", response_model=list[AvailabilityRiskNoteOut])
+def list_availability_risk_notes(
+    player_id: uuid.UUID, db: Session = Depends(get_db)
+) -> list[AvailabilityRiskNoteOut]:
+    """Every note ever recorded for this player, past and present, most-recent-first --
+    transparency/audit, not just the currently-active one (see ``GET /{player_id}/projection``
+    for what's actually applied to THIS gameweek's projection)."""
+    if db.get(Player, player_id) is None:
+        raise HTTPException(status_code=404, detail=f"Player {player_id} not found.")
+
+    rows = (
+        db.execute(
+            select(PlayerAvailabilityRiskNote)
+            .where(PlayerAvailabilityRiskNote.player_id == player_id)
+            .order_by(PlayerAvailabilityRiskNote.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return [AvailabilityRiskNoteOut.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/{player_id}/availability-risk-notes",
+    response_model=AvailabilityRiskNoteOut,
+    status_code=201,
+)
+def create_availability_risk_note(
+    player_id: uuid.UUID, body: AvailabilityRiskNoteCreate, db: Session = Depends(get_db)
+) -> AvailabilityRiskNoteOut:
+    """Create a judgment-based availability-risk note for this player -- see
+    ``packages.database.models.player_availability_risk_note``'s own docstring for why this is
+    NOT the same thing as FPL's own official injury/doubt data (that already flows in
+    automatically; this is for a real, sourced risk FPL hasn't flagged yet)."""
+    player = db.get(Player, player_id)
+    if player is None:
+        raise HTTPException(status_code=404, detail=f"Player {player_id} not found.")
+
+    if (
+        body.valid_from_fpl_event_id is not None
+        and body.valid_until_fpl_event_id is not None
+        and body.valid_from_fpl_event_id > body.valid_until_fpl_event_id
+    ):
+        raise HTTPException(
+            status_code=422, detail="valid_from_fpl_event_id must not be after valid_until_fpl_event_id."
+        )
+
+    note = PlayerAvailabilityRiskNote(
+        player_id=player_id,
+        season_id=player.season_id,
+        reason=body.reason,
+        severity=body.severity,
+        valid_from_fpl_event_id=body.valid_from_fpl_event_id,
+        valid_until_fpl_event_id=body.valid_until_fpl_event_id,
+        created_by=body.created_by,
+    )
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+    return AvailabilityRiskNoteOut.model_validate(note)
+
+
+@router.delete("/{player_id}/availability-risk-notes/{note_id}", status_code=204)
+def delete_availability_risk_note(
+    player_id: uuid.UUID, note_id: uuid.UUID, db: Session = Depends(get_db)
+) -> None:
+    """Remove a note -- e.g. it turns out to be wrong, or real news supersedes it."""
+    note = db.get(PlayerAvailabilityRiskNote, note_id)
+    if note is None or note.player_id != player_id:
+        raise HTTPException(status_code=404, detail=f"Availability risk note {note_id} not found.")
+    db.delete(note)
+    db.commit()
