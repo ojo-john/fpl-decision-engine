@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.chips.windows import ChipWindow, resolve_chip_windows
 from app.jobs.service import execute_job
 from apps.api.dependencies import get_db
 from apps.api.schemas.chips import (
@@ -22,10 +23,14 @@ from apps.api.schemas.chips import (
     ChipRecommendationOut,
     ChipSimulationRequest,
     ChipWindowCandidateOut,
+    ChipWindowOut,
 )
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.chip_recommendation import ChipRecommendation
 from packages.database.models.chip_window_candidate import ChipWindowCandidate
+from packages.database.models.gameweek import Gameweek
+from packages.database.models.rules_config import RulesConfig
+from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 
 # Same "capped read, not full pagination" convention as apps.api.routers.optimization/managers.
@@ -179,6 +184,80 @@ def list_chip_optimization_runs(
             completed_at=row.completed_at,
         )
         for row in rows
+    ]
+
+
+def _window_status(window: ChipWindow, current_event_id: int | None) -> str:
+    if current_event_id is None:
+        return "upcoming"
+    if current_event_id > window.stop_event:
+        return "past"
+    if window.start_event <= current_event_id <= window.stop_event:
+        return "open"
+    return "upcoming"
+
+
+@router.get("/chips/windows", response_model=list[ChipWindowOut])
+def get_chip_windows(db: Session = Depends(get_db)) -> list[ChipWindowOut] | JSONResponse:
+    """Read-only chip-scheduling windows for the current season -- genuinely available
+    pre-season (FPL publishes these before a ball is kicked), unlike full ``CHIP_SIMULATION``
+    (needs a real squad, passes through ``check_optimization_gate``). MUST be registered before
+    ``GET /chips/{chip_optimization_run_id}`` below -- Starlette matches routes in registration
+    order and both are the same one-segment shape (see this router's own inclusion-order
+    comment in ``apps/api/main.py`` for the established precedent this mirrors).
+
+    Sourced from the current season's ``rules_config.raw_chips_json`` -- already-ingested,
+    versioned data (populated by ``DATA_INGESTION``'s own ``RULES_SYNC`` step) -- never a fresh
+    live FPL API call at request time.
+    """
+    season_id = db.execute(select(Season.id).where(Season.is_current.is_(True))).scalar_one_or_none()
+    if season_id is None:
+        return JSONResponse(
+            status_code=404, content={"error_code": "NO_CURRENT_SEASON", "detail": "No current season found."}
+        )
+
+    rules_config = db.execute(
+        select(RulesConfig).where(RulesConfig.season_id == season_id, RulesConfig.is_current.is_(True))
+    ).scalar_one_or_none()
+    if rules_config is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error_code": "NO_RULES_CONFIG",
+                "detail": "No rules config snapshot exists yet -- run DATA_INGESTION first.",
+            },
+        )
+
+    windows = resolve_chip_windows(rules_config.raw_chips_json)
+
+    event_ids = {w.start_event for w in windows} | {w.stop_event for w in windows}
+    deadline_by_event = (
+        {
+            row.fpl_event_id: row.deadline_time
+            for row in db.execute(
+                select(Gameweek).where(
+                    Gameweek.season_id == season_id, Gameweek.fpl_event_id.in_(event_ids)
+                )
+            ).scalars()
+        }
+        if event_ids
+        else {}
+    )
+    current_event_id = db.execute(
+        select(Gameweek.fpl_event_id).where(Gameweek.season_id == season_id, Gameweek.is_current.is_(True))
+    ).scalar_one_or_none()
+
+    return [
+        ChipWindowOut(
+            chip_type=w.chip_type.value,
+            window_number=w.window_number,
+            start_event=w.start_event,
+            stop_event=w.stop_event,
+            start_deadline=deadline_by_event.get(w.start_event),
+            stop_deadline=deadline_by_event.get(w.stop_event),
+            status=_window_status(w, current_event_id),
+        )
+        for w in windows
     ]
 
 

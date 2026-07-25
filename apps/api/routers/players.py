@@ -105,24 +105,48 @@ def list_players(
         else {}
     )
 
-    items = [
-        PlayerSummary(
-            id=p.id,
-            fpl_element_id=p.fpl_element_id,
-            web_name=p.web_name,
-            team_id=p.team_id,
-            team_short_name=teams_by_id[p.team_id].short_name if p.team_id in teams_by_id else None,
-            position=positions_by_id[p.position_id].short_name if p.position_id in positions_by_id else None,
-            now_cost=p.now_cost,
-            status=p.status,
-            total_points=p.total_points,
-            form=p.form,
-            points_per_game=p.points_per_game,
-            ep_next=p.ep_next,
-            is_quarantined=p.is_quarantined,
+    # Loaded once per request, not once per row (up to MAX_PAGE_SIZE=200 players) -- same
+    # active-calibration lookup get_player's own price_momentum enrichment does.
+    total_players = db.execute(select(Season.total_players).where(Season.id == season_id)).scalar_one()
+    active_calibration = db.execute(
+        select(PriceSignalCalibration).where(PriceSignalCalibration.is_active.is_(True))
+    ).scalar_one_or_none()
+
+    items = []
+    for p in rows:
+        signal = classify_price_momentum(
+            transfers_in_event=p.transfers_in_event,
+            transfers_out_event=p.transfers_out_event,
+            selected_by_percent=p.selected_by_percent,
+            total_players=total_players,
+            ratio_threshold=active_calibration.ratio_threshold if active_calibration is not None else None,
+            absolute_floor=active_calibration.absolute_floor if active_calibration is not None else None,
         )
-        for p in rows
-    ]
+        items.append(
+            PlayerSummary(
+                id=p.id,
+                fpl_element_id=p.fpl_element_id,
+                web_name=p.web_name,
+                team_id=p.team_id,
+                team_short_name=teams_by_id[p.team_id].short_name if p.team_id in teams_by_id else None,
+                position=(
+                    positions_by_id[p.position_id].short_name if p.position_id in positions_by_id else None
+                ),
+                now_cost=p.now_cost,
+                status=p.status,
+                total_points=p.total_points,
+                form=p.form,
+                points_per_game=p.points_per_game,
+                ep_next=p.ep_next,
+                is_quarantined=p.is_quarantined,
+                price_momentum=PlayerPriceMomentumOut(
+                    momentum=signal.momentum,
+                    net_transfers_event=signal.net_transfers_event,
+                    estimated_owners=signal.estimated_owners,
+                    momentum_ratio=signal.momentum_ratio,
+                ),
+            )
+        )
     return PlayerListResponse(items=items, page=page, page_size=page_size, total=total)
 
 

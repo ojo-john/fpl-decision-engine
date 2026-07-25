@@ -41,6 +41,10 @@ def test_list_players_returns_paginated_current_season_players(db_session, patch
     for item in body["items"]:
         assert item["is_quarantined"] is False
         assert isinstance(item["fpl_element_id"], int)
+        # Same price_momentum enrichment GET /players/{id} already does, computed once per
+        # request (not once per row) -- see list_players's own active-calibration lookup.
+        assert item["price_momentum"] is not None
+        assert item["price_momentum"]["momentum"] in {"likely_rise", "likely_fall", "stable", "unknown"}
 
 
 def test_list_players_filters_by_position(db_session, patched_fpl_client_optimization):
@@ -253,5 +257,51 @@ def test_get_player_detail_price_momentum_uses_active_calibration_thresholds(
 
     assert response.status_code == 200
     momentum = response.json()["price_momentum"]
+    assert momentum["momentum"] == "likely_rise"
+    assert momentum["net_transfers_event"] == 1000
+
+
+def test_list_players_price_momentum_uses_active_calibration_thresholds(
+    db_session, patched_fpl_client_optimization
+):
+    """Same calibration-respecting behavior as the detail endpoint's own test above, proven at
+    the list endpoint too -- list_players hoists the active-calibration lookup to once per
+    request (not once per row), so this also guards against that hoisting accidentally reusing
+    a stale/wrong value across rows.
+    """
+    db_session.execute(update(PriceSignalCalibration).values(is_active=False))
+    db_session.commit()
+
+    _seed(db_session)
+    client = authed_client()
+    listed = client.get("/players", params={"page_size": 1}).json()["items"][0]
+
+    player = db_session.get(Player, uuid.UUID(listed["id"]))
+    player.transfers_in_event = 1500
+    player.transfers_out_event = 500
+    player.selected_by_percent = Decimal("50.0")
+    season = db_session.get(Season, player.season_id)
+    season.total_players = 1_000_000
+    db_session.commit()
+
+    baseline = client.get("/players", params={"search": listed["web_name"]})
+    assert baseline.json()["items"][0]["price_momentum"]["momentum"] == "stable"
+
+    db_session.add(
+        PriceSignalCalibration(
+            ratio_threshold=Decimal("0.001"),
+            absolute_floor=1000,
+            sample_size=40,
+            accuracy=Decimal("1.0000"),
+            is_active=True,
+            calibrated_at=datetime.now(UTC),
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/players", params={"search": listed["web_name"]})
+
+    assert response.status_code == 200
+    momentum = response.json()["items"][0]["price_momentum"]
     assert momentum["momentum"] == "likely_rise"
     assert momentum["net_transfers_event"] == 1000

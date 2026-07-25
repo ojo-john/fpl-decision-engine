@@ -402,9 +402,21 @@ new code needed, just running the existing pipeline.
   looks up the current active `price_signal_calibrations` row and passes its
   tuned values in when one exists, falling back to the hardcoded defaults
   otherwise; see "Price-signal auto-recalibration" below for how that row
-  gets populated. Exposed as `PlayerDetail.price_momentum` on
-  `GET /players/{id}` (computed in the router, not a stored column) and
-  shown as a badge on the player detail page.
+  gets populated. Computed in the router, never a stored column, on three
+  responses: `PlayerDetail.price_momentum` (`GET /players/{id}`),
+  `PlayerSummary.price_momentum` (`GET /players` — the active-calibration
+  lookup is hoisted to once per request, not once per row), and
+  `OptimizationRunPlayerOut.price_momentum` on `POST /optimize/preview`
+  specifically (a live, "right now" signal, deliberately left `None` on
+  every *persisted* run — `SQUAD_OPTIMIZATION`/`LINEUP_OPTIMIZATION`'s own
+  responses never populate it, since a past run being re-fetched shouldn't
+  silently show today's momentum for yesterday's decision). Shown as a
+  compact badge wherever a manager is actually choosing/scanning players
+  (players list, squad preview) and the fuller version on the player
+  detail page; `unknown` (the common pre-season case, since
+  `transfers_in_event`/`transfers_out_event` are typically 0/0 before real
+  gameweeks start) is suppressed in the compact spots rather than shown as
+  a badge with nothing to say.
 
 ## API (`apps/api`)
 
@@ -412,14 +424,42 @@ Single FastAPI app, single shared-secret auth (`apps/api/auth.py`,
 `require_shared_token`, `secrets.compare_digest`, fails closed with 401) on
 every router except `health.py`. No user table — deliberate, this is a
 single-manager system. CORS via `Settings.cors_allowed_origins_list`
-(empty/fail-closed by default). Routers: `players`, `optimize` (squad/
-lineup/transfers, plus `chips` sharing the same `/optimize` prefix — watch
-route registration order in `main.py`, the catch-all `GET
+(empty/fail-closed by default). Routers: `players`, `gameweeks`, `optimize`
+(squad/lineup/transfers, plus `chips` sharing the same `/optimize` prefix —
+watch route registration order in `main.py`, the catch-all `GET
 /optimize/{id}` must be registered after every static sibling path or it
-swallows them), `managers`/`squads`, `h2h`, `recommendations`, `jobs`/
-`learning`, `leagues`, `models`. List endpoints are capped-at-200,
+swallows them; within `chips.py` itself, `GET /optimize/chips/windows` is
+likewise registered before `GET /optimize/chips/{chip_optimization_run_id}`
+for the identical reason), `managers`/`squads`, `h2h`, `recommendations`,
+`jobs`/`learning`, `leagues`, `models`. List endpoints are capped-at-200,
 most-recent-first (no real pagination) except `players`, which has real
 page/page_size.
+
+Two read-only endpoints exist specifically because they're genuinely usable
+*pre-season*, unlike almost everything else gated behind
+`check_optimization_gate` or requiring a synced/manual squad — both read
+already-ingested data, never touch the gate, and were added so a manager
+has something actionable to look at before FPL marks a gameweek live:
+- **`GET /gameweeks/next-deadline`** — the next unfinished gameweek's
+  `deadline_time` plus the REAL `check_optimization_gate` verdict for it
+  (`gate_allowed`/`gate_reason_code`, not an approximation derived from
+  `is_current` alone). 404s as `NO_CURRENT_SEASON`/`NO_UPCOMING_GAMEWEEK`
+  rather than fabricating a stale date. Powers the Dashboard's deadline
+  countdown card, shown in every Dashboard state (including "no
+  recommendation yet") since the real FPL deadline matters regardless of
+  what this system's own gate currently permits.
+- **`GET /optimize/chips/windows`** — this season's chip-scheduling windows
+  (`app.chips.windows.resolve_chip_windows`, wildcard/free hit/bench
+  boost/triple captain, each with a `start_event`/`stop_event` gameweek
+  range) sourced from the current season's `rules_config.raw_chips_json`
+  (already-ingested by `DATA_INGESTION`'s own `RULES_SYNC` step — never a
+  fresh live FPL API call at request time). FPL publishes these before a
+  ball is kicked, so unlike a real `CHIP_SIMULATION` run (needs a squad,
+  passes through the gate) this is available immediately. Each window's
+  `status` (`past`/`open`/`upcoming`) is computed against the season's
+  current gameweek — every window is `upcoming` pre-season, when there is
+  none. Powers the `/chips` overview page (distinct from `/chips/[runId]`,
+  a specific simulation run's results).
 
 ## Frontend (`apps/web`)
 
@@ -434,9 +474,11 @@ Next.js App Router. Two distinct API-calling paths:
 
 Both share one generated `lib/api-types.ts` (from the backend's own
 OpenAPI schema — regenerate after *any* `apps/api` schema/router change,
-see README's exact command). Pages (14 total): Dashboard, Team (+ manual
-squad create/duplicate/delete), Players (list + detail w/ live
-projection), Rivals (+ H2H simulate), History (all 4 run types), Learning
+see README's exact command). Pages (15 total): Dashboard (+ deadline
+countdown card, every state), Team (+ manual squad create/duplicate/
+delete), Players (list w/ price-momentum column + detail w/ live
+projection), Chips (read-only chip-window overview — see the API section
+above), Rivals (+ H2H simulate), History (all 4 run types), Learning
 (review + signals/failures + backtest), plus one detail page per run type
 (`squad/[id]`, `transfers/[id]`, `chips/[id]`, `h2h/[id]`, `backtest/[id]`).
 Light theme is `prefers-color-scheme` only (no toggle); tables wrap in a

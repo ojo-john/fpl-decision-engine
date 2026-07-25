@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { backendClient } from "@/lib/api-client";
 import { ActionButton } from "@/components/action-button";
@@ -5,13 +6,62 @@ import { Card, ConfidenceBadge, EmptyState, ErrorState } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
+function formatCountdown(deadlineIso: string): string {
+  const msRemaining = new Date(deadlineIso).getTime() - Date.now();
+  if (msRemaining <= 0) return "deadline has passed";
+  const totalHours = Math.floor(msRemaining / (1000 * 60 * 60));
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  if (days === 0) return `${hours}h remaining`;
+  return `${days}d ${hours}h remaining`;
+}
+
+/**
+ * The real FPL squad-selection deadline matters to a manager regardless of what this system's
+ * own optimization gate currently permits -- so this is shown unconditionally (every Dashboard
+ * state, including "no recommendation yet"), not gated behind having a recommendation. 404 (no
+ * current season, or every gameweek already finished) renders nothing rather than an error --
+ * an off-season/no-data Dashboard shouldn't have a broken-looking card on it.
+ */
+async function DeadlineCard(): Promise<ReactNode> {
+  const { data, response } = await backendClient().GET("/gameweeks/next-deadline");
+  if (response.status === 404 || !data) return null;
+
+  return (
+    <Card>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
+        <div>
+          <h2 style={{ margin: "0 0 0.25rem", fontSize: "0.95rem" }}>
+            {data.name} deadline -- {formatCountdown(data.deadline_time)}
+          </h2>
+          <p style={{ margin: 0, color: "var(--text-muted)", fontSize: "0.85rem" }}>
+            {new Date(data.deadline_time).toLocaleString()}
+          </p>
+        </div>
+        <span
+          style={{
+            fontSize: "0.8rem",
+            color: data.gate_allowed ? "var(--success)" : "var(--text-muted)",
+          }}
+        >
+          {data.gate_allowed
+            ? "Official optimization is open"
+            : "Official optimization is blocked pre-season -- use Preview on the Team page"}
+        </span>
+      </div>
+    </Card>
+  );
+}
+
 export default async function DashboardPage() {
   const client = backendClient();
   const { data, response } = await client.GET("/recommendations/latest");
+  const deadlineCard = await DeadlineCard();
 
   if (response.status === 404) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        {deadlineCard}
         <EmptyState>No recommendation has been generated for the current season yet.</EmptyState>
         <ActionButton
           path="/recommendations/generate"
@@ -22,7 +72,12 @@ export default async function DashboardPage() {
     );
   }
   if (!data) {
-    return <ErrorState>Could not load the latest recommendation ({response.status}).</ErrorState>;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        {deadlineCard}
+        <ErrorState>Could not load the latest recommendation ({response.status}).</ErrorState>
+      </div>
+    );
   }
 
   // A recommendation-generation attempt can succeed with all 4 correlated components (squad/
@@ -40,6 +95,7 @@ export default async function DashboardPage() {
   if (resolvedComponentCount === 0) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        {deadlineCard}
         <EmptyState>
           A recommendation was generated for gameweek {data.target_fpl_event_id} (
           {new Date(data.generated_at).toLocaleString()}), but none of the squad, transfer, H2H,
@@ -58,6 +114,7 @@ export default async function DashboardPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      {deadlineCard}
       <Card>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start" }}>
           <div>
