@@ -289,6 +289,50 @@ def test_cold_start_season_blends_ep_next_with_career_average_when_present(monke
     assert result.source == "cold_start_blend_ep_next_and_career_avg"
 
 
+def test_cold_start_season_prefers_early_season_average_over_full_season_average(monkeypatch):
+    """A player whose season-opening form differs from their full-season average (a real,
+    well-known slow/fast-starter pattern) should be blended using the early-season-specific
+    number, not the full-season one that papers over the difference."""
+    player = _make_player(status="a", ep_next="4.0")
+    champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.optimization.projection.compute_features_for_player_gameweek",
+        lambda *a, **k: _make_feature_row(
+            player,
+            career_avg_points_prior_seasons=Decimal("6.36"),
+            career_avg_early_season_points_prior_seasons=Decimal("3.00"),
+        ),
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, champion)
+
+    # Must use the early-season average (3.00), NOT the full-season one (6.36).
+    assert result.projected_points == pytest.approx((4.0 + 3.00) / 2)
+    assert result.source == "cold_start_blend_ep_next_and_career_avg"
+
+
+def test_cold_start_season_falls_back_to_full_season_average_with_no_early_season_history(monkeypatch):
+    """A player with real prior-season history, but none of it early-season (e.g. every prior
+    season they have a record for started with a mid-season transfer) -- must fall back to the
+    full-season average rather than treating "no early-season data" as "no data at all"."""
+    player = _make_player(status="a", ep_next="4.0")
+    champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.optimization.projection.compute_features_for_player_gameweek",
+        lambda *a, **k: _make_feature_row(
+            player,
+            career_avg_points_prior_seasons=Decimal("6.36"),
+            career_avg_early_season_points_prior_seasons=None,
+        ),
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, champion)
+
+    assert result.projected_points == pytest.approx((4.0 + 6.36) / 2)
+
+
 def test_cold_start_season_easy_fixture_scales_the_blend_up(monkeypatch):
     player = _make_player(status="a", ep_next="4.0")
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))

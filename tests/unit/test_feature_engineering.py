@@ -19,6 +19,7 @@ from app.features.engineering import (
     season_avg_points_to_date,
     sum_points_for_gameweek,
 )
+from app.features.engineering import career_avg_early_season_points_prior_seasons as career_avg_early_season
 from app.features.engineering import career_avg_points_prior_seasons as career_avg
 
 
@@ -35,6 +36,7 @@ def _stat(
     kickoff: datetime | None = None,
     season_id: str = "season-a",
     gameweek_key: str | None = None,
+    fpl_event_id: int = 1,
 ) -> PriorGameweekStat:
     return PriorGameweekStat(
         season_id=season_id,
@@ -44,6 +46,7 @@ def _stat(
         minutes=minutes,
         was_home=was_home,
         fixture_kickoff_time=kickoff,
+        fpl_event_id=fpl_event_id,
     )
 
 
@@ -161,6 +164,61 @@ def test_career_avg_points_prior_seasons_hand_computed():
 
 def test_career_avg_points_prior_seasons_none_with_no_earlier_seasons():
     assert career_avg([]) is None
+
+
+# --- early-season career average --------------------------------------------
+
+
+def test_career_avg_early_season_points_prior_seasons_filters_out_late_gameweeks():
+    stats = [
+        _stat(1, points=10, season_id="season-x", gameweek_key="x-1", fpl_event_id=1),
+        _stat(2, points=20, season_id="season-x", gameweek_key="x-6", fpl_event_id=6),
+        # Gameweek 7 of season-x: outside the default cutoff (6) -- must be excluded.
+        _stat(3, points=999, season_id="season-x", gameweek_key="x-7", fpl_event_id=7),
+    ]
+    # Only the fpl_event_id<=6 rows count: (10 + 20) / 2 = 15.00.
+    assert career_avg_early_season(stats) == Decimal("15.00")
+
+
+def test_career_avg_early_season_points_prior_seasons_combines_across_seasons():
+    stats = [
+        _stat(1, points=4, season_id="season-x", gameweek_key="x-1", fpl_event_id=1),
+        _stat(2, points=8, season_id="season-y", gameweek_key="y-2", fpl_event_id=2),
+    ]
+    assert career_avg_early_season(stats) == Decimal("6.00")
+
+
+def test_career_avg_early_season_points_prior_seasons_none_with_no_earlier_seasons():
+    assert career_avg_early_season([]) is None
+
+
+def test_career_avg_early_season_points_prior_seasons_none_when_all_history_is_late_season():
+    """A player whose only prior-season rows are all outside the early window -- e.g. every
+    prior season they have a record for started with a mid-season transfer/debut -- has real
+    prior-season history but none of it answers "how did they start a season", so this must
+    be None, not silently 0 or fall back to the late-season rows."""
+    stats = [_stat(1, points=50, season_id="season-x", gameweek_key="x-20", fpl_event_id=20)]
+    assert career_avg_early_season(stats) is None
+
+
+def test_career_avg_early_season_points_prior_seasons_respects_custom_cutoff():
+    stats = [
+        _stat(1, points=10, season_id="season-x", gameweek_key="x-4", fpl_event_id=4),
+        _stat(2, points=30, season_id="season-x", gameweek_key="x-5", fpl_event_id=5),
+    ]
+    # cutoff=4 excludes gameweek 5, leaving only the gameweek-4 row.
+    assert career_avg_early_season(stats, early_season_gameweek_cutoff=4) == Decimal("10.00")
+
+
+def test_career_avg_early_season_points_prior_seasons_sums_double_gameweek_in_window():
+    """Two rows sharing a gameweek_key (a Double Gameweek) inside the early window must be
+    summed into one gameweek entry, exactly like career_avg_points_prior_seasons does."""
+    stats = [
+        _stat(1, points=5, season_id="season-x", gameweek_key="x-3-dgw", fpl_event_id=3),
+        _stat(1, points=7, season_id="season-x", gameweek_key="x-3-dgw", fpl_event_id=3),
+    ]
+    # One gameweek entry worth 12 points -> average of a single entry is 12.00.
+    assert career_avg_early_season(stats) == Decimal("12.00")
 
 
 # --- form-weighted average ---------------------------------------------------
@@ -289,6 +347,7 @@ def test_unrelated_none_fields_do_not_break_points_or_minutes_calculations():
             minutes=90,
             was_home=True,
             fixture_kickoff_time=None,
+            fpl_event_id=1,
             expected_goals=None,  # simulates a schema-drift-absent column (pre-2021-22 seasons)
         ),
         PriorGameweekStat(
@@ -299,6 +358,7 @@ def test_unrelated_none_fields_do_not_break_points_or_minutes_calculations():
             minutes=90,
             was_home=False,
             fixture_kickoff_time=None,
+            fpl_event_id=2,
             expected_goals=Decimal("0.42"),  # present for a later-era season
         ),
     ]

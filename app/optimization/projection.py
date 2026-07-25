@@ -160,22 +160,35 @@ def is_cold_start_season(session: Session, season_id: uuid.UUID) -> bool:
 def _cold_start_projection(
     session: Session, player: Player, target_gameweek_id: uuid.UUID
 ) -> PlayerProjection:
-    """The cold-start fallback: blends ``project_player``'s own ``ep_next``-first estimate with
-    ``career_avg_points_prior_seasons`` (a real, per-gameweek average computed from every
-    earlier season this player has a record for, resolved cross-season via ``fpl_code`` — see
-    ``app.features.engineering.career_avg_points_prior_seasons``), then adjusts by
-    ``next_fixture_difficulty`` for THIS specific ``target_gameweek_id``, rather than using
-    ``ep_next`` alone.
+    """The cold-start fallback: blends ``project_player``'s own ``ep_next``-first estimate with a
+    real cross-season points average for this player, resolved via ``fpl_code`` — preferring
+    ``career_avg_early_season_points_prior_seasons`` (average points across only each prior
+    season's own EARLY gameweeks — see
+    ``app.features.engineering.career_avg_early_season_points_prior_seasons``) over
+    ``career_avg_points_prior_seasons`` (a plain full-season average) when the player has any
+    early-season history at all, then adjusts by ``next_fixture_difficulty`` for THIS specific
+    ``target_gameweek_id``, rather than using ``ep_next`` alone.
 
-    Both ``ep_next`` and the career average are genuinely informative and genuinely different:
-    ``ep_next`` is FPL's own current estimate; the career average is our own real historical
-    record. Averaging them is more data-driven than picking one — confirmed on a real player:
-    FPL's ep_next=4.0 for a striker whose real last-season average was 6.36 (both plausible,
-    genuinely different signals; the blend is 5.18, not an arbitrary pick of either).
+    Why early-season specifically, not full-season: a full-season average conflates a player's
+    September form with their April form into one number that represents neither, and some
+    players are well-established slow starters (need match fitness/rhythm) or fast starters
+    (thrive on a pre-season rebuild) relative to their own season-long average — exactly the
+    thing this projection is trying to answer when it's projecting a fresh season's own opening
+    gameweeks. Falls back to the full-season career average when no early-season-specific
+    history exists (e.g. a player who only ever joined the league mid-season in every prior
+    season they have a record for) — still more informative than nothing, just less precise
+    than the early-season-specific number when that's available.
+
+    Both ``ep_next`` and the (early-season-preferring) career average are genuinely informative
+    and genuinely different: ``ep_next`` is FPL's own current estimate; the career average is
+    our own real historical record. Averaging them is more data-driven than picking one —
+    confirmed on a real player: FPL's ep_next=4.0 for a striker whose real last-season average
+    was 6.36 (both plausible, genuinely different signals; the blend is 5.18, not an arbitrary
+    pick of either).
 
     Neither of those two inputs varies by ``target_gameweek_id`` at all, though (``ep_next`` is
-    a single static field on ``player``; the career average is a season-spanning constant) —
-    so summing this projection across a multi-gameweek horizon (see
+    a single static field on ``player``; the career average — either version — is a
+    season-spanning constant) — so summing this projection across a multi-gameweek horizon (see
     ``app.transfers.horizon_projection.compute_horizon_points``, used by
     ``app.jobs.handlers.squad_optimization`` for exactly this) would otherwise just be "N times
     the same number" for every player uniformly, never differentiating a player with an easy
@@ -206,7 +219,11 @@ def _cold_start_projection(
         )
         return baseline
 
-    career_avg = feature_row.career_avg_points_prior_seasons
+    career_avg = (
+        feature_row.career_avg_early_season_points_prior_seasons
+        if feature_row.career_avg_early_season_points_prior_seasons is not None
+        else feature_row.career_avg_points_prior_seasons
+    )
     if career_avg is None:
         return baseline
 

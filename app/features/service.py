@@ -105,6 +105,9 @@ def _build_player_features_values(
         "rolling_avg_minutes_5gw": engineering.rolling_avg_minutes(current_prior, 5),
         "season_avg_points_to_date": engineering.season_avg_points_to_date(current_prior),
         "career_avg_points_prior_seasons": engineering.career_avg_points_prior_seasons(other_prior),
+        "career_avg_early_season_points_prior_seasons": (
+            engineering.career_avg_early_season_points_prior_seasons(other_prior)
+        ),
         "form_weighted_avg_points": engineering.form_weighted_avg_points(
             current_prior, FORM_HALF_LIFE_GAMEWEEKS
         ),
@@ -144,6 +147,7 @@ def compute_features_for_player_gameweek(
             PlayerGameweekStats.selected_by_count_at_time,
             PlayerGameweekStats.position_short_name_at_time,
             Gameweek.deadline_time.label("gw_deadline"),
+            Gameweek.fpl_event_id,
             Fixture.kickoff_time,
         )
         .join(Gameweek, Gameweek.id == PlayerGameweekStats.gameweek_id)
@@ -160,6 +164,7 @@ def compute_features_for_player_gameweek(
             minutes=row.minutes,
             was_home=row.was_home,
             fixture_kickoff_time=row.kickoff_time,
+            fpl_event_id=row.fpl_event_id,
         )
         for row in current_rows
     ]
@@ -183,6 +188,7 @@ def compute_features_for_player_gameweek(
                     PlayerGameweekStats.total_points,
                     PlayerGameweekStats.season_id,
                     Gameweek.deadline_time.label("gw_deadline"),
+                    Gameweek.fpl_event_id,
                 )
                 .join(Gameweek, Gameweek.id == PlayerGameweekStats.gameweek_id)
                 .where(PlayerGameweekStats.player_id.in_(other_player_ids))
@@ -196,6 +202,7 @@ def compute_features_for_player_gameweek(
                     minutes=0,
                     was_home=None,
                     fixture_kickoff_time=None,
+                    fpl_event_id=row.fpl_event_id,
                 )
                 for row in other_rows
             ]
@@ -334,6 +341,7 @@ def generate_features_for_season(
             PlayerGameweekStats.selected_by_count_at_time,
             PlayerGameweekStats.position_short_name_at_time,
             Gameweek.deadline_time.label("gw_deadline"),
+            Gameweek.fpl_event_id,
             Fixture.kickoff_time,
         )
         .join(Gameweek, Gameweek.id == PlayerGameweekStats.gameweek_id)
@@ -363,6 +371,7 @@ def generate_features_for_season(
                     PlayerGameweekStats.total_points,
                     PlayerGameweekStats.season_id,
                     Gameweek.deadline_time.label("gw_deadline"),
+                    Gameweek.fpl_event_id,
                 )
                 .join(Gameweek, Gameweek.id == PlayerGameweekStats.gameweek_id)
                 .where(PlayerGameweekStats.player_id.in_(list(other_player_id_to_code.keys())))
@@ -378,6 +387,7 @@ def generate_features_for_season(
                         minutes=0,
                         was_home=None,
                         fixture_kickoff_time=None,
+                        fpl_event_id=other_row.fpl_event_id,
                     )
                 )
 
@@ -430,6 +440,7 @@ def generate_features_for_season(
                 minutes=row.minutes,
                 was_home=row.was_home,
                 fixture_kickoff_time=row.kickoff_time,
+                fpl_event_id=row.fpl_event_id,
             )
             for row in player_rows
         ]

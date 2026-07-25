@@ -143,20 +143,45 @@ same player.
 
 For a cold-start season, `app/optimization/projection.py`'s
 `_cold_start_projection` replaces the raw champion prediction with a
-blend: `(project_player(player).projected_points +
-career_avg_points_prior_seasons) / 2` — a 50/50 average of FPL's own
-pre-season estimate and that specific player's real cross-season scoring
-average (`career_avg_points_prior_seasons`, resolved via the
+blend: `(project_player(player).projected_points + career_avg) / 2` — a
+50/50 average of FPL's own pre-season estimate and a real cross-season
+scoring average for that specific player, resolved via the
 season-independent `fpl_code`, populated by `HISTORICAL_DATA_INGESTION`
-+ `FEATURE_GENERATION`; falls back to the bare `project_player` estimate
-if no career history exists, e.g. a debutant). That blend is then
-adjusted by `next_fixture_difficulty` (FPL's own 1=easiest..5=hardest
-rating for the specific target gameweek): `blended *= 1 + (3 -
-difficulty) * 0.075`, i.e. a neutral fixture (3) leaves it unchanged, the
-easiest (1) is +15%, the hardest (5) is -15%. This exists because neither
-`ep_next` nor `career_avg_points_prior_seasons` vary per gameweek, so
-without it every gameweek in a horizon summed to identical values
-regardless of the actual fixture list.
++ `app.features.service.compute_features_for_player_gameweek` (computed
+on demand, not read from the persisted `player_features` table — see
+below). `career_avg` here prefers
+`career_avg_early_season_points_prior_seasons` (the player's average
+across only each PRIOR season's own early gameweeks — `fpl_event_id <=
+6` by default, matching `SQUAD_BUILD_HORIZON_LENGTH` — see
+`app.features.engineering.career_avg_early_season_points_prior_seasons`)
+over the plain full-season `career_avg_points_prior_seasons` whenever
+early-season history exists; some players are well-established slow or
+fast starters relative to their own season-long average (confirmed live
+against real historical data: Haaland's early-season GW1-6 average is
+10.21 vs. a 6.36 full-season average — a genuine fast-starter pattern a
+full-season blend alone would have missed, changing the cold-start
+blend from 5.18 to 7.11 for the same `ep_next`). Falls back to the
+full-season average when no early-season-specific history exists (e.g.
+every prior season on record started with a mid-season transfer), and
+to the bare `project_player` estimate if no career history exists at
+all (e.g. a debutant). That blend is then adjusted by
+`next_fixture_difficulty` (FPL's own 1=easiest..5=hardest rating for the
+specific target gameweek): `blended *= 1 + (3 - difficulty) * 0.075`,
+i.e. a neutral fixture (3) leaves it unchanged, the easiest (1) is +15%,
+the hardest (5) is -15%. This exists because neither `ep_next` nor
+either career average varies by gameweek, so without it every gameweek
+in a horizon summed to identical values regardless of the actual
+fixture list.
+
+`career_avg_early_season_points_prior_seasons` is also a column on the
+PERSISTED `player_features` table (migration 0030) for
+`FEATURE_GENERATION`/`MODEL_TRAINING`/audit purposes, alongside the
+existing `career_avg_points_prior_seasons` — but `_cold_start_projection`
+itself never reads that persisted table; it always computes fresh via
+`compute_features_for_player_gameweek`, so the cold-start blend
+improvement is live immediately, without needing `FEATURE_GENERATION` to
+be re-run. A re-run is only needed to backfill the new column on
+already-computed historical `player_features` rows.
 
 Both `SQUAD_OPTIMIZATION` and `/optimize/preview` rank candidates by
 points summed across the next `SQUAD_BUILD_HORIZON_LENGTH` (6) unfinished
@@ -186,7 +211,13 @@ actually came from a live champion-model prediction (`source` starts with
 the reason `_cold_start_projection` engaged at all, but the fields shown
 are the blend's own inputs, not the (unused, untrustworthy-for-this-input-
 shape) champion prediction, so `champion_model_family` correctly stays
-`None` in that case. See `apps.api.routers.players._explain_projection` for
+`None` in that case. **Known gap (introduced by migration 0030, not yet
+fixed):** this endpoint's explanation still only ever surfaces
+`career_avg_points_prior_seasons` (full-season), not the
+early-season-preferring value `_cold_start_projection` itself now
+actually blends with — so for a player where the two differ, the
+explanation text can name the wrong number for what was actually used.
+See `apps.api.routers.players._explain_projection` for
 the exact source-string-to-sentence mapping and
 `app.optimization.projection.is_cold_start_season` (a thin public wrapper
 around the module's own `_is_cold_start_season`, added for this endpoint).

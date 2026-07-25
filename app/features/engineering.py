@@ -68,11 +68,19 @@ __all__ = [
     "rolling_avg_minutes",
     "season_avg_points_to_date",
     "career_avg_points_prior_seasons",
+    "career_avg_early_season_points_prior_seasons",
     "form_weighted_avg_points",
     "home_away_avg_points",
     "rest_days",
     "sum_points_for_gameweek",
 ]
+
+# Default early-season window for career_avg_early_season_points_prior_seasons:
+# matches app.jobs.handlers.squad_optimization.SQUAD_BUILD_HORIZON_LENGTH (6) --
+# the same "how far into a fresh season are we projecting" horizon already used
+# for cold-start squad building, so a player's own early-season history is
+# measured over the same span the projection is actually being asked about.
+DEFAULT_EARLY_SEASON_GAMEWEEK_CUTOFF = 6
 
 
 @dataclass(frozen=True)
@@ -95,6 +103,14 @@ class PriorGameweekStat:
     same ``gameweek_key`` (a Double Gameweek) are summed together by the
     per-gameweek averaging functions below.
 
+    ``fpl_event_id`` is the gameweek's number WITHIN its own season (1-38,
+    FPL's own numbering) — distinct from ``gameweek_deadline`` (an absolute
+    timestamp, useless for asking "was this row within the first N
+    gameweeks of ITS season", since a season's own gameweek 1 has a
+    different absolute date every year). Only
+    ``career_avg_early_season_points_prior_seasons`` reads this field today;
+    every other function below is indifferent to it.
+
     ``expected_goals`` is never read by any function here — see the module
     docstring's "Null handling" section.
     """
@@ -106,6 +122,7 @@ class PriorGameweekStat:
     minutes: int
     was_home: bool | None
     fixture_kickoff_time: datetime | None
+    fpl_event_id: int
     expected_goals: Decimal | None = None
 
 
@@ -208,6 +225,41 @@ def career_avg_points_prior_seasons(
     season ever).
     """
     aggregates = _aggregate_by_gameweek(prior_stats_from_earlier_seasons_only)
+    if not aggregates:
+        return None
+    return _round2(Decimal(sum(agg.total_points for agg in aggregates)) / Decimal(len(aggregates)))
+
+
+def career_avg_early_season_points_prior_seasons(
+    prior_stats_from_earlier_seasons_only: Sequence[PriorGameweekStat],
+    early_season_gameweek_cutoff: int = DEFAULT_EARLY_SEASON_GAMEWEEK_CUTOFF,
+) -> Decimal | None:
+    """Average points per gameweek across only the EARLY gameweeks (``fpl_event_id <=
+    early_season_gameweek_cutoff``) of every earlier season this player has a record for.
+
+    This exists because ``career_avg_points_prior_seasons`` (a full-season average) is the
+    wrong number for projecting a fresh season's own opening gameweeks: a player's September
+    form and their April form get blended into one number that represents neither. Some
+    players are well-established slow starters (need match fitness/rhythm) or fast starters
+    (thrive on a pre-season rebuild) relative to their OWN season-long average — a real,
+    observable pattern this function is specifically built to surface, using whichever prior
+    seasons' early gameweeks are actually available (via ``fpl_code`` cross-season resolution,
+    exactly like ``career_avg_points_prior_seasons`` — see that function's own docstring for the
+    resolution contract, identical here).
+
+    ``None`` if the player has no rows falling inside the early-season window in ANY prior
+    season — covers both a genuinely new player (no prior-season history at all) and the
+    narrower case of a player whose prior-season history exists but never falls early in a
+    season (e.g. every one of their FPL seasons started with a mid-season transfer/debut, so
+    they were never present for gameweek 1-``early_season_gameweek_cutoff`` of any of them).
+    Both are real "we don't know this player's early-season form" cases, not a `0`.
+    """
+    early_stats = [
+        stat
+        for stat in prior_stats_from_earlier_seasons_only
+        if stat.fpl_event_id <= early_season_gameweek_cutoff
+    ]
+    aggregates = _aggregate_by_gameweek(early_stats)
     if not aggregates:
         return None
     return _round2(Decimal(sum(agg.total_points for agg in aggregates)) / Decimal(len(aggregates)))
