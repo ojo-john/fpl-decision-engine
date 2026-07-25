@@ -24,15 +24,18 @@ from app.optimization.constraints import (
 )
 from app.optimization.gameweek_resolution import resolve_horizon_gameweeks, resolve_target_gameweek
 from app.optimization.joint_squad_solver import solve_joint_squad_and_xi
+from app.optimization.squad_risk import compute_bench_depth_warnings, compute_budget_concentration
 from app.players.price_signal import classify_price_momentum
 from apps.api.dependencies import get_db
 from apps.api.schemas.optimization import (
+    CompositionRiskOut,
     InitialSquadRequest,
     LineupRequest,
     OptimizationRunOut,
     OptimizationRunPlayerOut,
     OptimizationRunSummaryOut,
     SquadPreviewOut,
+    SquadPreviewRequest,
     TransferMoveOut,
     TransferOptimizationRequest,
     TransferOptimizationRunOut,
@@ -146,7 +149,9 @@ def optimize_initial_squad(
 
 
 @router.post("/preview", response_model=SquadPreviewOut)
-def preview_squad(db: Session = Depends(get_db)) -> SquadPreviewOut | JSONResponse:
+def preview_squad(
+    body: SquadPreviewRequest = SquadPreviewRequest(), db: Session = Depends(get_db)
+) -> SquadPreviewOut | JSONResponse:
     """Unofficial, throwaway squad preview -- deliberately bypasses
     ``app.optimization.gate.check_optimization_gate`` entirely (never calls it, never touches
     ``execute_job``/``Job``/``optimization_runs``) so a manager can see "what would this
@@ -170,6 +175,15 @@ def preview_squad(db: Session = Depends(get_db)) -> SquadPreviewOut | JSONRespon
     versus a sane ~5 once blended with his real prior-season average). The caller should still
     surface this flag (it's informational -- "no current-season signal yet" -- not a data-
     quality warning anymore now that the blend fixes the magnitude problem).
+
+    ``body.exclude_player_ids`` (optional, defaults to none) removes those players from the
+    candidate pool before solving -- lets a caller directly ask "what if I didn't have this
+    player" (e.g. comparing with/without one expensive premium) as a real, repeatable request
+    instead of a one-off manual re-solve. ``composition_risk`` (see
+    ``app.optimization.squad_risk``) is computed on every call regardless of exclusions --
+    the solver's own objective is pure expected-points maximization and has no notion of
+    budget concentration or positional bench depth, so this surfaces those signals every time
+    rather than requiring a caller to go looking for them.
     """
     season_id = db.execute(select(Season.id).where(Season.is_current.is_(True))).scalar_one_or_none()
     if season_id is None:
@@ -208,6 +222,11 @@ def preview_squad(db: Session = Depends(get_db)) -> SquadPreviewOut | JSONRespon
     captain_multiplier = get_captain_multiplier(db, constraints.rules_config_id)
     horizon_gameweek_ids = resolve_horizon_gameweeks(db, season_id, SQUAD_BUILD_HORIZON_LENGTH)
     candidates = _build_candidates(db, season_id, horizon_gameweek_ids, champion)
+
+    excluded_ids = set(body.exclude_player_ids)
+    if excluded_ids:
+        candidates = [c for c in candidates if c.player_id not in excluded_ids]
+
     solution = solve_joint_squad_and_xi(candidates, constraints, captain_multiplier)
 
     candidates_by_id = {c.player_id: c for c in candidates}
@@ -265,6 +284,29 @@ def preview_squad(db: Session = Depends(get_db)) -> SquadPreviewOut | JSONRespon
             )
         )
 
+    squad_candidates = [candidates_by_id[pid] for pid in squad_player_ids if pid in candidates_by_id]
+    starter_candidates = [c for c in squad_candidates if c.player_id in starter_id_set]
+    bench_candidates = [c for c in squad_candidates if c.player_id not in starter_id_set]
+    player_names = {pid: p.web_name for pid, p in players_by_id.items() if p.web_name is not None}
+
+    budget_concentration = compute_budget_concentration(squad_candidates, constraints)
+    bench_depth_warnings = compute_bench_depth_warnings(starter_candidates, bench_candidates, player_names)
+    composition_risk = CompositionRiskOut(
+        most_expensive_player_id=(
+            budget_concentration.most_expensive_player_id if budget_concentration is not None else None
+        ),
+        most_expensive_player_web_name=(
+            player_names.get(budget_concentration.most_expensive_player_id)
+            if budget_concentration is not None
+            else None
+        ),
+        budget_share_pct=budget_concentration.budget_share_pct if budget_concentration is not None else None,
+        is_budget_notably_concentrated=(
+            budget_concentration.is_notably_concentrated if budget_concentration is not None else False
+        ),
+        bench_depth_warnings=bench_depth_warnings,
+    )
+
     return SquadPreviewOut(
         solver_status=solution.solver_status.value,
         target_fpl_event_id=target_gameweek.fpl_event_id,
@@ -273,6 +315,8 @@ def preview_squad(db: Session = Depends(get_db)) -> SquadPreviewOut | JSONRespon
         squad_total_cost=solution.squad_total_cost,
         squad_projected_points=solution.squad_projected_points,
         xi_projected_points=solution.xi_projected_points,
+        excluded_player_ids=body.exclude_player_ids,
+        composition_risk=composition_risk,
         captain_player_id=solution.captain_player_id,
         vice_captain_player_id=solution.vice_captain_player_id,
         players=players_out,

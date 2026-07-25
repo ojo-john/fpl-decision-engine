@@ -15,6 +15,7 @@ from packages.database.models.job import Job
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.player import Player
+from packages.database.models.position import Position
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.transfers import ManagerSquadSnapshotSource
@@ -220,6 +221,104 @@ def test_preview_squad_flags_a_cold_start_gameweek(
 
     assert response.status_code == 200
     assert response.json()["is_cold_start_gameweek"] is True
+
+
+def test_preview_squad_returns_composition_risk_on_every_call(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """composition_risk (app.optimization.squad_risk) has no request-side trigger -- it's
+    computed on every /optimize/preview call, since the solver's own objective has no notion
+    of budget concentration or bench depth and would otherwise never surface either."""
+    _seed(db_session)
+    client = authed_client()
+
+    response = client.post("/optimize/preview")
+
+    assert response.status_code == 200
+    risk = response.json()["composition_risk"]
+    assert risk is not None
+    assert isinstance(risk["budget_share_pct"], float)
+    assert risk["most_expensive_player_id"] is not None
+    assert isinstance(risk["is_budget_notably_concentrated"], bool)
+    assert isinstance(risk["bench_depth_warnings"], list)
+
+
+def test_preview_squad_exclude_player_ids_produces_a_different_squad(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """exclude_player_ids re-solves with that player removed from the candidate pool entirely
+    -- the concrete "what if I didn't have this player" comparison a manager would otherwise
+    only get via a one-off manual re-solve."""
+    _seed(db_session)
+    client = authed_client()
+
+    baseline = client.post("/optimize/preview")
+    assert baseline.status_code == 200
+    excluded_id = baseline.json()["captain_player_id"]
+    assert excluded_id is not None
+
+    response = client.post("/optimize/preview", json={"exclude_player_ids": [excluded_id]})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["excluded_player_ids"] == [excluded_id]
+    assert excluded_id not in {p["player_id"] for p in body["players"]}
+    # The fixture's 60-player pool has generous depth per position (see
+    # build_optimization_bootstrap_json's own docstring) -- removing exactly one candidate
+    # must still yield a full, feasible 15-man squad, not a degraded one.
+    assert len(body["players"]) == 15
+    assert body["solver_status"] == "optimal"
+
+
+def test_preview_squad_exclude_player_ids_ignores_an_id_not_in_the_candidate_pool(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """A garbage/unrelated id in exclude_player_ids must not crash the solve -- it simply has
+    no matching candidate to filter out."""
+    _seed(db_session)
+    client = authed_client()
+    unrelated_id = str(uuid.uuid4())
+
+    response = client.post("/optimize/preview", json={"exclude_player_ids": [unrelated_id]})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["excluded_player_ids"] == [unrelated_id]
+    assert body["solver_status"] == "optimal"
+    assert len(body["players"]) == 15
+
+
+def test_preview_squad_excluding_an_entire_position_degrades_gracefully_to_infeasible(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """Excluding every FWD candidate leaves no way to fill the FWD squad_select requirement --
+    must come back as a clean 200 with solver_status=infeasible and empty fields, never a
+    500 or an unhandled exception."""
+    _seed(db_session)
+    season_id = db_session.execute(select(Season.id).where(Season.is_current.is_(True))).scalar_one()
+    fwd_player_ids = (
+        db_session.execute(
+            select(Player.id)
+            .join(Position, Player.position_id == Position.id)
+            .where(Position.short_name == "FWD", Player.season_id == season_id)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(fwd_player_ids) > 0
+    client = authed_client()
+
+    response = client.post(
+        "/optimize/preview", json={"exclude_player_ids": [str(pid) for pid in fwd_player_ids]}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["solver_status"] == "infeasible"
+    assert body["players"] == []
+    assert body["squad_total_cost"] is None
+    assert body["composition_risk"]["budget_share_pct"] is None
+    assert body["composition_risk"]["bench_depth_warnings"] == []
 
 
 def test_optimize_lineup_chained_from_squad_run(db_session, patched_fpl_client_optimization):

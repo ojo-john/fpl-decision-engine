@@ -197,6 +197,36 @@ different question.) Candidate `projection_source` is labeled
 `horizon_{N}gw_heuristic` when it doesn't (no champion ever
 promoted/selected).
 
+**`/optimize/preview`'s composition-risk signals and exclude-and-resolve**
+(added post-review, after a live example: a preview squad spent GBP15.5m —
+15.5% of the whole budget — on one striker; a manual re-solve with that
+player removed from candidates found an alternative squad scoring only
+~1.3 points less over the 6-gameweek horizon, but with a real structural
+weakness — a single genuine starting forward with near-zero-projected bench
+cover — that `solve_joint_squad_and_xi`'s pure expected-points-maximization
+objective has no way to see or flag). Two things close that gap:
+
+- `app/optimization/squad_risk.py` (pure, no I/O) computes, over every
+  solved squad regardless of request parameters: `compute_budget_concentration`
+  (the single most expensive squad member's cost as a % of the total
+  budget, flagged `is_notably_concentrated` once it exceeds 1.5x an
+  evenly-spread per-member share — relative to the constraints in force,
+  not a hardcoded FPL-specific percentage) and `compute_bench_depth_warnings`
+  (human-readable warnings for positions with exactly ONE starter whose
+  best bench cover projects below 25% of that starter's own points, or has
+  no bench cover at all — positions with 2+ starters are deliberately never
+  flagged, since losing one starter among several is a normal, already-
+  priced-in risk, not a structural weakness). Surfaced on every
+  `SquadPreviewOut.composition_risk`, computed automatically, not opt-in.
+- `POST /optimize/preview`'s optional body, `SquadPreviewRequest.exclude_player_ids`,
+  filters those players out of the candidate pool before solving — the
+  exact comparison above, now a real, repeatable request instead of a
+  one-off manual Python-shell re-solve. `SquadPreviewOut.excluded_player_ids`
+  echoes the request back so a caller can label the comparison. Excluding
+  candidates down to infeasibility (e.g. every player at one position)
+  degrades gracefully to `solver_status="infeasible"` with empty players/
+  cost/composition_risk fields — never a 500.
+
 **`GET /players/{player_id}/projection`'s "why this projection" breakdown**
 (added post-review): the response includes `is_cold_start_season`,
 `ep_next`, `career_avg_points_prior_seasons`, `next_fixture_difficulty`,
