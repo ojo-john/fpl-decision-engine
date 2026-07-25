@@ -287,6 +287,15 @@ export interface paths {
          *     versus a sane ~5 once blended with his real prior-season average). The caller should still
          *     surface this flag (it's informational -- "no current-season signal yet" -- not a data-
          *     quality warning anymore now that the blend fixes the magnitude problem).
+         *
+         *     ``body.exclude_player_ids`` (optional, defaults to none) removes those players from the
+         *     candidate pool before solving -- lets a caller directly ask "what if I didn't have this
+         *     player" (e.g. comparing with/without one expensive premium) as a real, repeatable request
+         *     instead of a one-off manual re-solve. ``composition_risk`` (see
+         *     ``app.optimization.squad_risk``) is computed on every call regardless of exclusions --
+         *     the solver's own objective is pure expected-points maximization and has no notion of
+         *     budget concentration or positional bench depth, so this surfaces those signals every time
+         *     rather than requiring a caller to go looking for them.
          */
         post: operations["preview_squad_optimize_preview_post"];
         delete?: never;
@@ -1051,6 +1060,24 @@ export interface components {
             stop_deadline: string | null;
             /** Status */
             status: string;
+        };
+        /**
+         * CompositionRiskOut
+         * @description Structural risk signals the solver's pure points-maximization objective can't see --
+         *     see ``app.optimization.squad_risk`` for the full rationale. ``None``/empty fields mean
+         *     "nothing notable to report", not "not computed".
+         */
+        CompositionRiskOut: {
+            /** Most Expensive Player Id */
+            most_expensive_player_id: string | null;
+            /** Most Expensive Player Web Name */
+            most_expensive_player_web_name: string | null;
+            /** Budget Share Pct */
+            budget_share_pct: number | null;
+            /** Is Budget Notably Concentrated */
+            is_budget_notably_concentrated: boolean;
+            /** Bench Depth Warnings */
+            bench_depth_warnings: string[];
         };
         /** FailureAttributionOut */
         FailureAttributionOut: {
@@ -2014,12 +2041,30 @@ export interface components {
             squad_projected_points: string | null;
             /** Xi Projected Points */
             xi_projected_points: string | null;
+            /** Excluded Player Ids */
+            excluded_player_ids?: string[];
+            composition_risk?: components["schemas"]["CompositionRiskOut"] | null;
             /** Captain Player Id */
             captain_player_id: string | null;
             /** Vice Captain Player Id */
             vice_captain_player_id: string | null;
             /** Players */
             players: components["schemas"]["OptimizationRunPlayerOut"][];
+        };
+        /**
+         * SquadPreviewRequest
+         * @description Optional body for ``POST /optimize/preview``.
+         *
+         *     ``exclude_player_ids`` re-solves with the given players removed from the
+         *     candidate pool entirely -- lets a manager directly ask "what if I didn't
+         *     have this player available" (e.g. comparing a squad with vs. without a
+         *     single expensive premium) instead of that comparison only being
+         *     reachable via a one-off manual re-solve. Defaults to an empty list so
+         *     every existing caller sending no body at all is unaffected.
+         */
+        SquadPreviewRequest: {
+            /** Exclude Player Ids */
+            exclude_player_ids?: string[];
         };
         /** TransferMoveOut */
         TransferMoveOut: {
@@ -2545,7 +2590,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SquadPreviewRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

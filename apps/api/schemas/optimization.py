@@ -84,6 +84,32 @@ class OptimizationRunSummaryOut(BaseModel):
     completed_at: datetime | None
 
 
+class SquadPreviewRequest(BaseModel):
+    """Optional body for ``POST /optimize/preview``.
+
+    ``exclude_player_ids`` re-solves with the given players removed from the
+    candidate pool entirely -- lets a manager directly ask "what if I didn't
+    have this player available" (e.g. comparing a squad with vs. without a
+    single expensive premium) instead of that comparison only being
+    reachable via a one-off manual re-solve. Defaults to an empty list so
+    every existing caller sending no body at all is unaffected.
+    """
+
+    exclude_player_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class CompositionRiskOut(BaseModel):
+    """Structural risk signals the solver's pure points-maximization objective can't see --
+    see ``app.optimization.squad_risk`` for the full rationale. ``None``/empty fields mean
+    "nothing notable to report", not "not computed"."""
+
+    most_expensive_player_id: uuid.UUID | None
+    most_expensive_player_web_name: str | None
+    budget_share_pct: float | None
+    is_budget_notably_concentrated: bool
+    bench_depth_warnings: list[str]
+
+
 class SquadPreviewOut(BaseModel):
     """A throwaway, unofficial squad preview -- see apps/api/routers/optimization.py's
     ``preview_squad`` docstring for why this deliberately skips the optimization gate and is
@@ -97,6 +123,8 @@ class SquadPreviewOut(BaseModel):
     squad_total_cost: int | None
     squad_projected_points: Decimal | None
     xi_projected_points: Decimal | None
+    excluded_player_ids: list[uuid.UUID] = Field(default_factory=list)
+    composition_risk: CompositionRiskOut | None = None
     captain_player_id: uuid.UUID | None
     vice_captain_player_id: uuid.UUID | None
     players: list[OptimizationRunPlayerOut]

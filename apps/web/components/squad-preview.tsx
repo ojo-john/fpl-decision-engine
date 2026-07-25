@@ -31,19 +31,29 @@ function playerLine(player: PreviewPlayer): string {
  */
 export function SquadPreview() {
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [baselineXiPoints, setBaselineXiPoints] = useState<number | null>(null);
+  const [excludedPlayerName, setExcludedPlayerName] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { elapsedSeconds, start, stop } = useElapsedTimer();
 
-  async function handleClick() {
+  async function runPreview(excludePlayerIds: string[]) {
     setPending(true);
     setError(null);
     start();
     try {
-      const { data, error: apiError, response } = await browserClient().POST("/optimize/preview", {});
+      const { data, error: apiError, response } = await browserClient().POST("/optimize/preview", {
+        body: { exclude_player_ids: excludePlayerIds },
+      });
       if (!data) {
         setError(extractErrorMessage(apiError) ?? `Request failed (${response.status}).`);
         return;
+      }
+      // Remember the very first (unrestricted) solve's XI points so every "try without this
+      // player" comparison always shows the delta against the real optimum, not against
+      // whatever the previous exclusion happened to be.
+      if (excludePlayerIds.length === 0 && data.xi_projected_points !== null) {
+        setBaselineXiPoints(Number(data.xi_projected_points));
       }
       setPreview(data);
     } catch {
@@ -52,6 +62,21 @@ export function SquadPreview() {
       setPending(false);
       stop();
     }
+  }
+
+  function handleClick() {
+    setExcludedPlayerName(null);
+    void runPreview([]);
+  }
+
+  function handleExclude(playerId: string, webName: string | null) {
+    setExcludedPlayerName(webName ?? "this player");
+    void runPreview([playerId]);
+  }
+
+  function handleReset() {
+    setExcludedPlayerName(null);
+    void runPreview([]);
   }
 
   const starters = preview
@@ -107,6 +132,66 @@ export function SquadPreview() {
             {preview.champion_model_family ?? "heuristic fallback"} -- squad cost{" "}
             {preview.squad_total_cost !== null ? (preview.squad_total_cost / 10).toFixed(1) : "-"}
           </p>
+
+          {(preview.excluded_player_ids ?? []).length > 0 && (
+            <div
+              style={{
+                margin: "0 0 0.75rem",
+                padding: "0.6rem 0.75rem",
+                borderRadius: "6px",
+                border: "1px solid var(--accent)",
+                fontSize: "0.85rem",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "0.75rem",
+                flexWrap: "wrap",
+              }}
+            >
+              <span>
+                Excluding <strong>{excludedPlayerName}</strong>:{" "}
+                {preview.xi_projected_points !== null ? Number(preview.xi_projected_points).toFixed(2) : "-"} pts
+                {baselineXiPoints !== null && preview.xi_projected_points !== null && (
+                  <>
+                    {" "}
+                    vs {baselineXiPoints.toFixed(2)} pts with them -- a difference of{" "}
+                    {Math.abs(baselineXiPoints - Number(preview.xi_projected_points)).toFixed(2)} pts over{" "}
+                    the horizon.
+                  </>
+                )}
+              </span>
+              <button onClick={handleReset} disabled={pending} style={{ ...buttonStyle, opacity: pending ? 0.7 : 1 }}>
+                Reset to optimal
+              </button>
+            </div>
+          )}
+
+          {preview.composition_risk && (
+            <div
+              style={{
+                margin: "0 0 0.75rem",
+                padding: "0.6rem 0.75rem",
+                borderRadius: "6px",
+                border: "1px solid var(--border)",
+                fontSize: "0.8rem",
+                color: "var(--text-muted)",
+              }}
+            >
+              {preview.composition_risk.budget_share_pct !== null && (
+                <p style={{ margin: "0 0 0.3rem" }}>
+                  {preview.composition_risk.most_expensive_player_web_name} is{" "}
+                  {preview.composition_risk.budget_share_pct}% of your total budget
+                  {preview.composition_risk.is_budget_notably_concentrated ? " -- notably concentrated" : ""}.
+                </p>
+              )}
+              {preview.composition_risk.bench_depth_warnings.map((warning) => (
+                <p key={warning} style={{ margin: "0.2rem 0 0", color: "var(--danger)" }}>
+                  {warning}
+                </p>
+              ))}
+            </div>
+          )}
+
           <ul style={{ listStyle: "none", margin: "0 0 0.75rem", padding: 0, fontSize: "0.85rem" }}>
             {starters.map((player) => (
               <li
@@ -118,6 +203,21 @@ export function SquadPreview() {
                 {player.price_momentum && player.price_momentum.momentum !== "unknown" && (
                   <PriceMomentumBadge momentum={player.price_momentum.momentum} />
                 )}
+                <button
+                  onClick={() => handleExclude(player.player_id, player.web_name)}
+                  disabled={pending}
+                  style={{
+                    background: "transparent",
+                    border: "1px solid var(--border)",
+                    borderRadius: "6px",
+                    color: "var(--text-muted)",
+                    padding: "0.1rem 0.5rem",
+                    fontSize: "0.75rem",
+                    cursor: "pointer",
+                  }}
+                >
+                  Try without
+                </button>
               </li>
             ))}
           </ul>
