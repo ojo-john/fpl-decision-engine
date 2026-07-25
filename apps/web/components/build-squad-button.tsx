@@ -1,9 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { ActionButton } from "@/components/action-button";
-
-const GATE_ERROR_CODES = new Set(["OPTIMIZATION_NOT_PERMITTED", "NO_INGESTION_DATA", "RULES_BLOCKED"]);
+import { ActionButton, isOptimizationGateError } from "@/components/action-button";
 
 /** POST /optimize/initial-squad needs no existing snapshot at all -- builds
  * a fresh 15-man squad from scratch via the solver. This is the *official*,
@@ -25,13 +23,11 @@ export function BuildSquadButton() {
         const body = data as { optimization_run_id: string };
         router.push(`/squad/${body.optimization_run_id}`);
       }}
-      mapError={(data) => {
-        const record = data as { error_code?: string } | null;
-        if (record?.error_code && GATE_ERROR_CODES.has(record.error_code)) {
-          return "Official squad building is blocked until FPL marks a gameweek live (a pre-season safeguard, not a bug). Use \"Preview a squad (unofficial)\" below instead -- it runs the exact same solver against real players, it's just not saved as an official run yet.";
-        }
-        return null;
-      }}
+      mapError={(data) =>
+        isOptimizationGateError(data)
+          ? "Official squad building is blocked until FPL marks a gameweek live (a pre-season safeguard, not a bug). Use \"Preview a squad (unofficial)\" below instead -- it runs the exact same solver against real players, it's just not saved as an official run yet."
+          : null
+      }
     />
   );
 }

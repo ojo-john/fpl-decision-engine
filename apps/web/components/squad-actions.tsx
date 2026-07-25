@@ -1,8 +1,12 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { ActionButton } from "@/components/action-button";
+import { ActionButton, isOptimizationGateError } from "@/components/action-button";
 import { H2HSimulatePicker } from "@/components/h2h-simulate-picker";
+
+const GATE_BLOCKED_MESSAGE =
+  "Blocked until FPL marks a gameweek live (a pre-season safeguard, not a bug) -- " +
+  "check_optimization_gate refuses this pre-season the same way it refuses squad building.";
 
 /**
  * The optimization/simulation triggers that make sense against any squad
@@ -37,6 +41,7 @@ export function SquadActions({
             const body = data as { optimization_run_id: string };
             router.push(`/squad/${body.optimization_run_id}`);
           }}
+          mapError={(data) => (isOptimizationGateError(data) ? GATE_BLOCKED_MESSAGE : null)}
         />
       ) : (
         <span style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
@@ -52,6 +57,7 @@ export function SquadActions({
           const body = data as { transfer_optimization_run_id: string };
           router.push(`/transfers/${body.transfer_optimization_run_id}`);
         }}
+        mapError={(data) => (isOptimizationGateError(data) ? GATE_BLOCKED_MESSAGE : null)}
       />
       <ActionButton
         path="/optimize/chips"
@@ -62,6 +68,7 @@ export function SquadActions({
           const body = data as { chip_optimization_run_id: string };
           router.push(`/chips/${body.chip_optimization_run_id}`);
         }}
+        mapError={(data) => (isOptimizationGateError(data) ? GATE_BLOCKED_MESSAGE : null)}
       />
       {!hasRawPicks && (
         <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>

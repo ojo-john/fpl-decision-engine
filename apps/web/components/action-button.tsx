@@ -117,6 +117,22 @@ export function ActionButton({
   );
 }
 
+/** error_code values app.optimization.gate.check_optimization_gate returns
+ * when it refuses SQUAD_OPTIMIZATION/LINEUP_OPTIMIZATION/TRANSFER_OPTIMIZATION/
+ * CHIP_SIMULATION pre-season (no gameweek marked is_current yet). Shared by
+ * every action that can hit this gate, so each one explains it consistently
+ * rather than surfacing the raw backend code. */
+export const OPTIMIZATION_GATE_ERROR_CODES = new Set([
+  "OPTIMIZATION_NOT_PERMITTED",
+  "NO_INGESTION_DATA",
+  "RULES_BLOCKED",
+]);
+
+export function isOptimizationGateError(data: unknown): boolean {
+  const record = data as { error_code?: string } | null;
+  return !!record?.error_code && OPTIMIZATION_GATE_ERROR_CODES.has(record.error_code);
+}
+
 export function extractErrorMessage(data: unknown): string | null {
   if (data && typeof data === "object") {
     const record = data as Record<string, unknown>;
