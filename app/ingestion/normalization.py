@@ -37,6 +37,7 @@ from packages.database.models.fixture import Fixture
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.player import Player
 from packages.database.models.player_price_history import PlayerPriceHistory
+from packages.database.models.player_price_signal_observation import PlayerPriceSignalObservation
 from packages.database.models.position import Position
 from packages.database.models.team import Team
 
@@ -364,6 +365,49 @@ def upsert_players(
         session.execute(insert(PlayerPriceHistory).values(price_history_values))
 
     return NormalizationCounts(inserted=inserted, updated=updated, quarantined=len(quarantined_ids)), issues
+
+
+def record_price_signal_observations(
+    session: Session, season_id: uuid.UUID, total_players: int | None, observed_at: datetime
+) -> int:
+    """Append one ``player_price_signal_observations`` row per current-season player.
+
+    Called AFTER ``upsert_players`` has committed its changes for this run, so
+    it reads the just-normalized, authoritative ``transfers_in_event``/
+    ``transfers_out_event``/``selected_by_percent`` straight from the
+    ``players`` table rather than re-deriving them from raw API rows. Runs
+    every ingestion, regardless of whether anything about the player
+    changed -- a quiet gameweek (no momentum) is just as necessary for
+    calibration as a real spike. See that table's own module docstring for
+    why this needs to exist at all.
+    """
+    rows = session.execute(
+        select(
+            Player.id,
+            Player.transfers_in_event,
+            Player.transfers_out_event,
+            Player.selected_by_percent,
+        ).where(Player.season_id == season_id, Player.is_quarantined.is_(False))
+    ).all()
+
+    if not rows:
+        return 0
+
+    values = [
+        {
+            "id": uuid.uuid4(),
+            "player_id": player_id,
+            "season_id": season_id,
+            "observed_at": observed_at,
+            "transfers_in_event": transfers_in_event,
+            "transfers_out_event": transfers_out_event,
+            "selected_by_percent": selected_by_percent,
+            "total_players": total_players,
+        }
+        for player_id, transfers_in_event, transfers_out_event, selected_by_percent in rows
+    ]
+    session.execute(insert(PlayerPriceSignalObservation).values(values))
+    return len(values)
 
 
 def upsert_gameweeks(

@@ -7,8 +7,15 @@ committed rows from one are visible to the other.
 """
 
 import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from sqlalchemy import update
 
 from app.jobs.service import execute_job
+from packages.database.models.player import Player
+from packages.database.models.price_signal_calibration import PriceSignalCalibration
+from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from tests.integration.conftest import authed_client
 
@@ -194,3 +201,57 @@ def test_get_player_price_history_returns_a_real_observed_change(
     assert len(body) == 1
     assert body[0]["old_cost"] == original_cost
     assert body[0]["new_cost"] == original_cost + 3
+
+
+# --- GET /players/{id}: price_momentum respects an active PriceSignalCalibration ---------------
+
+
+def test_get_player_detail_price_momentum_uses_active_calibration_thresholds(
+    db_session, patched_fpl_client_optimization
+):
+    """A tuned, active price_signal_calibrations row must actually change the classification a
+    real request sees -- not just be persisted and ignored. net=1000, ratio=0.002: STABLE under
+    the hardcoded default ratio_threshold (0.02), but LIKELY_RISE once an active calibration
+    tunes it down to 0.001 (same numbers test_classify_price_momentum_custom_ratio_threshold_
+    flips_stable_to_likely already proves at the pure-function level -- this proves the router
+    wiring that makes it real).
+    """
+    # Shared, persistent local Postgres (see conftest.py's module docstring) -- explicitly clear
+    # any pre-existing is_active row rather than assume a pristine DB, same convention this
+    # codebase already uses for is_champion/is_current/is_priority in other test modules.
+    db_session.execute(update(PriceSignalCalibration).values(is_active=False))
+    db_session.commit()
+
+    _seed(db_session)
+    client = authed_client()
+    listed = client.get("/players", params={"page_size": 1}).json()["items"][0]
+
+    player = db_session.get(Player, uuid.UUID(listed["id"]))
+    player.transfers_in_event = 1500
+    player.transfers_out_event = 500
+    player.selected_by_percent = Decimal("50.0")
+    season = db_session.get(Season, player.season_id)
+    season.total_players = 1_000_000
+    db_session.commit()
+
+    baseline = client.get(f"/players/{listed['id']}")
+    assert baseline.json()["price_momentum"]["momentum"] == "stable"
+
+    db_session.add(
+        PriceSignalCalibration(
+            ratio_threshold=Decimal("0.001"),
+            absolute_floor=1000,
+            sample_size=40,
+            accuracy=Decimal("1.0000"),
+            is_active=True,
+            calibrated_at=datetime.now(UTC),
+        )
+    )
+    db_session.commit()
+
+    response = client.get(f"/players/{listed['id']}")
+
+    assert response.status_code == 200
+    momentum = response.json()["price_momentum"]
+    assert momentum["momentum"] == "likely_rise"
+    assert momentum["net_transfers_event"] == 1000

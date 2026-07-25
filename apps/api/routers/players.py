@@ -30,6 +30,7 @@ from apps.api.schemas.players import (
 from packages.database.models.player import Player
 from packages.database.models.player_price_history import PlayerPriceHistory
 from packages.database.models.position import Position
+from packages.database.models.price_signal_calibration import PriceSignalCalibration
 from packages.database.models.season import Season
 from packages.database.models.team import Team
 
@@ -142,11 +143,16 @@ def get_player(player_id: uuid.UUID, db: Session = Depends(get_db)) -> PlayerDet
         detail.position = position.short_name if position is not None else None
 
     season = db.get(Season, player.season_id)
+    active_calibration = db.execute(
+        select(PriceSignalCalibration).where(PriceSignalCalibration.is_active.is_(True))
+    ).scalar_one_or_none()
     signal = classify_price_momentum(
         transfers_in_event=player.transfers_in_event,
         transfers_out_event=player.transfers_out_event,
         selected_by_percent=player.selected_by_percent,
         total_players=season.total_players if season is not None else None,
+        ratio_threshold=active_calibration.ratio_threshold if active_calibration is not None else None,
+        absolute_floor=active_calibration.absolute_floor if active_calibration is not None else None,
     )
     detail.price_momentum = PlayerPriceMomentumOut(
         momentum=signal.momentum,

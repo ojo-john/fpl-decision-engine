@@ -46,14 +46,15 @@ Postgres.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app.jobs.service import execute_job
 from app.learning.attribution import FailureAttributionData, persist_failure_attributions
+from app.players.price_signal_calibration import MIN_CALIBRATION_SAMPLE_SIZE
 from packages.database.models.chip_optimization_run import ChipOptimizationRun  # noqa: F401 (registers model)
 from packages.database.models.failure_attribution import FailureAttribution
 from packages.database.models.gameweek import Gameweek
@@ -67,6 +68,9 @@ from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
+from packages.database.models.player_price_history import PlayerPriceHistory
+from packages.database.models.player_price_signal_observation import PlayerPriceSignalObservation
+from packages.database.models.price_signal_calibration import PriceSignalCalibration
 from packages.database.models.recommendation_audit import RecommendationAudit
 from packages.database.models.recommendation_outcome import RecommendationOutcome
 from packages.database.models.rules_config import RulesConfig
@@ -845,3 +849,156 @@ def test_gameweek_review_retraining_failure_is_recorded_but_never_fails_the_revi
         .all()
     )
     assert promotions == []
+
+
+# --- Milestone: price-signal auto-recalibration -----------------------------------------------
+# app.jobs.handlers.gameweek_review.GameweekReviewJobRunner._maybe_recalibrate_price_signal --
+# independent of the MAE-breach retraining trigger above; runs on every review regardless.
+
+
+def test_gameweek_review_price_signal_recalibration_skipped_when_under_sample_size(
+    db_session, patched_fpl_client_optimization
+):
+    """_seed_players' own single DATA_INGESTION run leaves exactly one observation per player (no
+    "next" observation yet to pair against) -- nowhere near
+    price_signal_calibration.MIN_CALIBRATION_SAMPLE_SIZE. This is the overwhelmingly common state
+    for most of a season, so it gets its own dedicated happy-path-shaped test, mirroring
+    test_gameweek_review_no_mae_breach_does_not_trigger_retraining's exact shape.
+    """
+    # Shared, persistent local Postgres (see this module's own docstring) -- explicitly count
+    # rows before/after rather than assert zero-ever, since an earlier test in this same run (or
+    # an earlier full-suite pass, per this repo's own "run integration twice" protocol) may have
+    # already left real price_signal_calibrations rows behind (append-only, by design).
+    calibration_count_before = db_session.execute(
+        select(func.count()).select_from(PriceSignalCalibration)
+    ).scalar_one()
+
+    season_id = _seed_players(db_session)
+    season = db_session.get(Season, season_id)
+    rules_config_id = _seed_rules_config_id(db_session, season_id)
+    model_version_id = _create_champion_model_version(db_session, season.label, _BASELINE_MAE)
+    _seed_reviewed_gameweek(db_session, season_id, rules_config_id, model_version_id)
+
+    job = execute_job(
+        db_session,
+        job_type=JobType.GAMEWEEK_REVIEW,
+        parameters={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID, "season_id": str(season_id)},
+        trigger_type=TriggerType.LOCAL,
+    )
+
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    assert job.output_json["price_signal_recalibration_triggered"] is False
+    assert job.output_json["price_signal_new_ratio_threshold"] is None
+    assert job.output_json["price_signal_new_absolute_floor"] is None
+
+    calibration_count_after = db_session.execute(
+        select(func.count()).select_from(PriceSignalCalibration)
+    ).scalar_one()
+    assert calibration_count_after == calibration_count_before
+
+
+def test_gameweek_review_price_signal_recalibration_triggers_and_persists_new_calibration(
+    db_session, patched_fpl_client_optimization
+):
+    """Seeds enough real (signal, outcome) evidence -- a clear, large, repeated momentum spike
+    that always precedes an observed price change, for one real player -- to cross
+    MIN_CALIBRATION_SAMPLE_SIZE, and asserts a new, active price_signal_calibrations row is
+    persisted with the expected sample size and a real accuracy score.
+    """
+    # Shared, persistent local Postgres -- explicitly clear any pre-existing active row so this
+    # test's own tie-break/accuracy assertions are deterministic regardless of what earlier
+    # tests/runs left behind (same convention used elsewhere in this module for is_champion).
+    db_session.execute(update(PriceSignalCalibration).values(is_active=False))
+    db_session.commit()
+
+    season_id = _seed_players(db_session)
+    season = db_session.get(Season, season_id)
+    rules_config_id = _seed_rules_config_id(db_session, season_id)
+    model_version_id = _create_champion_model_version(db_session, season.label, _BASELINE_MAE)
+    _seed_reviewed_gameweek(db_session, season_id, rules_config_id, model_version_id)
+
+    captain_id = _player_id(db_session, season_id, _CAPTAIN_ELEMENT_ID)
+    base_time = datetime(2026, 8, 1, tzinfo=UTC)
+    observation_count = MIN_CALIBRATION_SAMPLE_SIZE + 1  # yields exactly MIN_CALIBRATION_SAMPLE_SIZE pairs
+    for i in range(observation_count):
+        db_session.add(
+            PlayerPriceSignalObservation(
+                player_id=captain_id,
+                season_id=season_id,
+                observed_at=base_time + timedelta(hours=i),
+                transfers_in_event=50_000,
+                transfers_out_event=0,
+                selected_by_percent=Decimal("10.0"),
+                total_players=1_000_000,
+            )
+        )
+        # A real price change strictly between every consecutive pair of observations -- every
+        # one of the MIN_CALIBRATION_SAMPLE_SIZE samples this produces has price_changed=True.
+        # Pair i spans (obs[i], obs[i+1]) = (base+i*1h, base+(i+1)*1h), so the change for pair i
+        # must land at base+i*1h+30min -- guarded to i < observation_count - 1 (one fewer change
+        # than observations, matching one fewer pair than observations).
+        if i < observation_count - 1:
+            db_session.add(
+                PlayerPriceHistory(
+                    player_id=captain_id,
+                    season_id=season_id,
+                    old_cost=50 + i,
+                    new_cost=51 + i,
+                    observed_at=base_time + timedelta(hours=i, minutes=30),
+                )
+            )
+    db_session.commit()
+
+    job = execute_job(
+        db_session,
+        job_type=JobType.GAMEWEEK_REVIEW,
+        parameters={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID, "season_id": str(season_id)},
+        trigger_type=TriggerType.LOCAL,
+    )
+
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    assert job.output_json["price_signal_recalibration_triggered"] is True
+    assert job.output_json["price_signal_recalibration_sample_size"] == MIN_CALIBRATION_SAMPLE_SIZE
+
+    active_calibrations = (
+        db_session.execute(select(PriceSignalCalibration).where(PriceSignalCalibration.is_active.is_(True)))
+        .scalars()
+        .all()
+    )
+    assert len(active_calibrations) == 1
+    assert active_calibrations[0].sample_size == MIN_CALIBRATION_SAMPLE_SIZE
+    assert active_calibrations[0].accuracy == Decimal("1.0000")
+
+
+def test_gameweek_review_price_signal_recalibration_failure_is_recorded_but_never_fails_the_review(
+    db_session, patched_fpl_client_optimization, monkeypatch
+):
+    """A recalibration-step failure (here: forced via monkeypatch, mirroring
+    test_gameweek_review_retraining_failure_is_recorded_but_never_fails_the_review's own
+    approach for a case that's otherwise hard to trigger with real seeded data alone) must never
+    fail GAMEWEEK_REVIEW's own already-succeeded primary work.
+    """
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated calibration failure")
+
+    monkeypatch.setattr("app.jobs.handlers.gameweek_review.calibrate_thresholds", _boom)
+
+    season_id = _seed_players(db_session)
+    season = db_session.get(Season, season_id)
+    rules_config_id = _seed_rules_config_id(db_session, season_id)
+    model_version_id = _create_champion_model_version(db_session, season.label, _BASELINE_MAE)
+    _seed_reviewed_gameweek(db_session, season_id, rules_config_id, model_version_id)
+
+    job = execute_job(
+        db_session,
+        job_type=JobType.GAMEWEEK_REVIEW,
+        parameters={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID, "season_id": str(season_id)},
+        trigger_type=TriggerType.LOCAL,
+    )
+
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    learning_report_id = uuid.UUID(job.output_json["learning_report_id"])
+    report = db_session.get(LearningReport, learning_report_id)
+    assert report.run_status == GameweekReviewRunStatus.SUCCEEDED
+    assert job.output_json["price_signal_recalibration_triggered"] is False

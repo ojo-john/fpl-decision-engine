@@ -35,7 +35,10 @@ from packages.database.models.optimization_run_player import OptimizationRunPlay
 from packages.database.models.player import Player
 from packages.database.models.player_features import PlayerFeatures
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
+from packages.database.models.player_price_history import PlayerPriceHistory
+from packages.database.models.player_price_signal_observation import PlayerPriceSignalObservation
 from packages.database.models.position import Position
+from packages.database.models.price_signal_calibration import PriceSignalCalibration
 from packages.database.models.raw_api_snapshot import RawApiSnapshot
 from packages.database.models.recommendation_audit import RecommendationAudit
 from packages.database.models.recommendation_outcome import RecommendationOutcome
@@ -79,7 +82,10 @@ __all__ = [
     "Player",
     "PlayerFeatures",
     "PlayerGameweekStats",
+    "PlayerPriceHistory",
+    "PlayerPriceSignalObservation",
     "Position",
+    "PriceSignalCalibration",
     "RawApiSnapshot",
     "RecommendationAudit",
     "RecommendationOutcome",

@@ -96,3 +96,42 @@ def test_classify_price_momentum_unknown_when_total_players_is_zero():
     )
     assert result.momentum == PriceMomentum.UNKNOWN
     assert result.estimated_owners is None
+
+
+def test_classify_price_momentum_uses_default_thresholds_when_overrides_omitted():
+    # Same inputs as test_classify_price_momentum_stable_when_ratio_below_threshold: ratio 0.002
+    # is stable under the 0.02 default, with no explicit ratio_threshold/absolute_floor passed.
+    result = classify_price_momentum(
+        transfers_in_event=1500,
+        transfers_out_event=500,
+        selected_by_percent=Decimal("50.0"),
+        total_players=1_000_000,
+    )
+    assert result.momentum == PriceMomentum.STABLE
+
+
+def test_classify_price_momentum_custom_ratio_threshold_flips_stable_to_likely():
+    # Same inputs as the default-threshold test above (ratio=0.002, stable under 0.02) --
+    # a tuned, looser ratio_threshold of 0.001 now calls it likely instead.
+    result = classify_price_momentum(
+        transfers_in_event=1500,
+        transfers_out_event=500,
+        selected_by_percent=Decimal("50.0"),
+        total_players=1_000_000,
+        ratio_threshold=Decimal("0.001"),
+    )
+    assert result.momentum == PriceMomentum.LIKELY_RISE
+
+
+def test_classify_price_momentum_custom_absolute_floor_flips_likely_to_stable():
+    # Same inputs as test_classify_price_momentum_likely_rise_when_ratio_and_floor_both_cross
+    # (net=8000, ratio=0.08, likely under defaults) -- a tuned, stricter absolute_floor of
+    # 10000 now suppresses it back to stable.
+    result = classify_price_momentum(
+        transfers_in_event=9000,
+        transfers_out_event=1000,
+        selected_by_percent=Decimal("10.0"),
+        total_players=1_000_000,
+        absolute_floor=10_000,
+    )
+    assert result.momentum == PriceMomentum.STABLE
