@@ -109,11 +109,12 @@ docstring for exactly how this is implemented, including why the nested
 check reuses this handler's own.
 """
 
+import logging
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.features.service import FEATURE_VERSION
@@ -141,6 +142,13 @@ from app.learning.signals import (
 )
 from app.modeling.promotion import decide_and_record_promotion, evaluate_promotion
 from app.modeling.shadow_evaluation import compute_shadow_challenger_evaluation
+from app.players.price_signal import DEFAULT_MIN_ABSOLUTE_NET_TRANSFERS, DEFAULT_MOMENTUM_RATIO_THRESHOLD
+from app.players.price_signal_calibration import (
+    PlayerPriceChangeInput,
+    PlayerPriceObservationInput,
+    build_calibration_samples,
+    calibrate_thresholds,
+)
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.counterfactual_result import CounterfactualResult
 from packages.database.models.gameweek import Gameweek
@@ -148,12 +156,17 @@ from packages.database.models.h2h_simulation_run import H2HSimulationRun
 from packages.database.models.learning_report import LearningReport
 from packages.database.models.model_version import ModelVersion
 from packages.database.models.optimization_run import OptimizationRun
+from packages.database.models.player_price_history import PlayerPriceHistory
+from packages.database.models.player_price_signal_observation import PlayerPriceSignalObservation
+from packages.database.models.price_signal_calibration import PriceSignalCalibration
 from packages.database.models.recommendation_audit import RecommendationAudit
 from packages.database.models.season import Season
 from packages.database.models.transfer_optimization_run import TransferOptimizationRun
 from packages.database.session import SessionLocal
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.learning import GameweekReviewRunStatus, LearningSignalType, ModelLifecycleState
+
+logger = logging.getLogger(__name__)
 
 
 class _InputResolutionError(Exception):
@@ -179,6 +192,24 @@ class _ResolvedInputs:
     season_id: uuid.UUID
     gameweek: Gameweek
     audit: RecommendationAudit
+
+
+@dataclass(frozen=True)
+class PriceSignalRecalibrationSummary:
+    """What happened, if anything, when this run checked whether enough real price-change
+    evidence has accumulated to recalibrate ``app.players.price_signal``'s thresholds.
+
+    ``triggered=False`` (every other field ``None``) covers both "not enough samples yet"
+    and "recalibration itself failed" -- see ``error`` to distinguish the latter. Mirrors
+    ``RetrainingTriggerSummary``'s own shape/naming for consistency.
+    """
+
+    triggered: bool
+    sample_size: int | None = None
+    ratio_threshold: str | None = None
+    absolute_floor: int | None = None
+    accuracy: str | None = None
+    error: str | None = None
 
 
 def _resolve_inputs(session: Session, parameters: dict | None) -> _ResolvedInputs:
@@ -405,6 +436,12 @@ class GameweekReviewJobRunner(JobRunner):
                         session, ctx
                     )
 
+                # --- price-signal recalibration: independent of the MAE-breach retraining trigger
+                # above -- runs every finished-gameweek review, since price-change evidence
+                # accumulates regardless of whether the projection model itself is degrading. See
+                # _maybe_recalibrate_price_signal's own docstring for the failure-isolation contract.
+                price_signal_summary = self._maybe_recalibrate_price_signal(session, season_id)
+
                 notable_findings = compose_notable_findings(
                     failure_summaries, signal_summaries, retraining_summary
                 )
@@ -471,6 +508,10 @@ class GameweekReviewJobRunner(JobRunner):
                     "retraining_triggered": retraining_summary.triggered,
                     "retraining_job_id": retraining_summary.model_training_job_id,
                     "retraining_promotion_verdict": retraining_summary.promotion_verdict,
+                    "price_signal_recalibration_triggered": price_signal_summary.triggered,
+                    "price_signal_recalibration_sample_size": price_signal_summary.sample_size,
+                    "price_signal_new_ratio_threshold": price_signal_summary.ratio_threshold,
+                    "price_signal_new_absolute_floor": price_signal_summary.absolute_floor,
                 }
 
                 report_row.recommendation_outcome_id = outcome.id
@@ -501,6 +542,10 @@ class GameweekReviewJobRunner(JobRunner):
                             str(retraining_job_id) if retraining_job_id is not None else None
                         ),
                         "retraining_promotion_verdict": retraining_summary.promotion_verdict,
+                        "price_signal_recalibration_triggered": price_signal_summary.triggered,
+                        "price_signal_recalibration_sample_size": price_signal_summary.sample_size,
+                        "price_signal_new_ratio_threshold": price_signal_summary.ratio_threshold,
+                        "price_signal_new_absolute_floor": price_signal_summary.absolute_floor,
                     },
                     error_code=None,
                     error_message=None,
@@ -640,3 +685,131 @@ class GameweekReviewJobRunner(JobRunner):
                 model_training_job_id=(str(training_job_id) if training_job_id is not None else None),
                 error=str(exc),
             )
+
+    def _maybe_recalibrate_price_signal(
+        self, session: Session, season_id: uuid.UUID
+    ) -> PriceSignalRecalibrationSummary:
+        """Recalibrate ``app.players.price_signal``'s thresholds if enough real evidence exists.
+
+        NEVER raises -- mirrors ``_trigger_retraining_and_promotion_check``'s
+        own failure-isolation contract exactly (see this module's docstring):
+        this runs after GAMEWEEK_REVIEW's own primary work has already
+        succeeded, so a recalibration failure must never flip this run's
+        ``learning_reports.run_status`` to ``FAILED``. Uses this handler's
+        own ``session`` (plain reads + a pure computation + one conditional
+        write, same shape as the promotion-gate check above) rather than a
+        nested job -- there is no separate JobType for this, it is not a
+        user-triggerable action on its own.
+
+        A no-op (``triggered=False``) whenever fewer than
+        ``price_signal_calibration.MIN_CALIBRATION_SAMPLE_SIZE`` (signal,
+        outcome) pairs exist yet for this season -- the common case for most
+        of a season, and always true pre-season/early-season. See
+        ``app.players.price_signal_calibration``'s own module docstring for
+        why this data literally cannot exist until real gameweeks have been
+        played.
+        """
+        try:
+            observation_rows = session.execute(
+                select(
+                    PlayerPriceSignalObservation.player_id,
+                    PlayerPriceSignalObservation.observed_at,
+                    PlayerPriceSignalObservation.transfers_in_event,
+                    PlayerPriceSignalObservation.transfers_out_event,
+                    PlayerPriceSignalObservation.selected_by_percent,
+                    PlayerPriceSignalObservation.total_players,
+                ).where(PlayerPriceSignalObservation.season_id == season_id)
+            ).all()
+            change_rows = session.execute(
+                select(PlayerPriceHistory.player_id, PlayerPriceHistory.observed_at).where(
+                    PlayerPriceHistory.season_id == season_id
+                )
+            ).all()
+
+            observations = [
+                PlayerPriceObservationInput(
+                    player_id=row.player_id,
+                    observed_at=row.observed_at,
+                    transfers_in_event=row.transfers_in_event,
+                    transfers_out_event=row.transfers_out_event,
+                    selected_by_percent=row.selected_by_percent,
+                    total_players=row.total_players,
+                )
+                for row in observation_rows
+            ]
+            price_changes = [
+                PlayerPriceChangeInput(player_id=player_id, observed_at=observed_at)
+                for player_id, observed_at in change_rows
+            ]
+
+            samples = build_calibration_samples(observations, price_changes)
+
+            active_calibration = session.execute(
+                select(PriceSignalCalibration).where(PriceSignalCalibration.is_active.is_(True))
+            ).scalar_one_or_none()
+            current_ratio_threshold = (
+                active_calibration.ratio_threshold
+                if active_calibration is not None
+                else DEFAULT_MOMENTUM_RATIO_THRESHOLD
+            )
+            current_absolute_floor = (
+                active_calibration.absolute_floor
+                if active_calibration is not None
+                else DEFAULT_MIN_ABSOLUTE_NET_TRANSFERS
+            )
+
+            result = calibrate_thresholds(
+                samples,
+                current_ratio_threshold=current_ratio_threshold,
+                current_absolute_floor=current_absolute_floor,
+            )
+            if result is None:
+                logger.info(
+                    "gameweek_review.price_signal_recalibration_skipped",
+                    extra={"season_id": str(season_id), "sample_size": len(samples)},
+                )
+                return PriceSignalRecalibrationSummary(triggered=False)
+
+            session.execute(
+                update(PriceSignalCalibration)
+                .where(PriceSignalCalibration.is_active.is_(True))
+                .values(is_active=False)
+            )
+            session.add(
+                PriceSignalCalibration(
+                    ratio_threshold=result.ratio_threshold,
+                    absolute_floor=result.absolute_floor,
+                    sample_size=result.sample_size,
+                    accuracy=result.accuracy,
+                    is_active=True,
+                    calibrated_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+
+            logger.info(
+                "gameweek_review.price_signal_recalibrated",
+                extra={
+                    "season_id": str(season_id),
+                    "sample_size": result.sample_size,
+                    "previous_ratio_threshold": str(current_ratio_threshold),
+                    "previous_absolute_floor": current_absolute_floor,
+                    "new_ratio_threshold": str(result.ratio_threshold),
+                    "new_absolute_floor": result.absolute_floor,
+                    "accuracy": str(result.accuracy),
+                },
+            )
+            return PriceSignalRecalibrationSummary(
+                triggered=True,
+                sample_size=result.sample_size,
+                ratio_threshold=str(result.ratio_threshold),
+                absolute_floor=result.absolute_floor,
+                accuracy=str(result.accuracy),
+            )
+        except Exception as exc:  # noqa: BLE001 - never propagates, see this method's own docstring
+            session.rollback()
+            logger.warning(
+                "gameweek_review.price_signal_recalibration_failed",
+                extra={"season_id": str(season_id), "error": str(exc)},
+            )
+            return PriceSignalRecalibrationSummary(triggered=False, error=str(exc))

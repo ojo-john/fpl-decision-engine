@@ -26,6 +26,7 @@ from app.ingestion.live_stats_normalization import (
 )
 from app.ingestion.normalization import (
     NormalizationCounts,
+    record_price_signal_observations,
     upsert_fixtures,
     upsert_gameweeks,
     upsert_players,
@@ -318,6 +319,14 @@ def run_ingestion(
         team_id_by_fpl_id=team_id_by_fpl_id,
         position_id_by_fpl_id=position_id_by_fpl_id,
         last_synced_at=bootstrap_result.retrieved_at,
+    )
+
+    # Snapshot this run's transfer-momentum signal for every player -- see
+    # app.players.price_signal_calibration for why this needs to happen every run (not just
+    # when a price actually changes): calibration needs "quiet" observations too, to know what
+    # a non-event looks like.
+    record_price_signal_observations(
+        session, season.id, total_players=season.total_players, observed_at=bootstrap_result.retrieved_at
     )
 
     # --- Step 3: fixtures -> gameweeks (from bootstrap events), fixtures ---

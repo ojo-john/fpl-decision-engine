@@ -268,6 +268,30 @@ new code needed, just running the existing pipeline.
   check — see `gameweek_review.py`'s own docstring for the exact
   failure-isolation boundary (a retraining failure never fails the review
   itself).
+- **Price-signal auto-recalibration** (same failure-isolation boundary,
+  independent step) — every `GAMEWEEK_REVIEW` run also calls
+  `GameweekReviewJobRunner._maybe_recalibrate_price_signal`, which grid-
+  searches `app.players.price_signal_calibration.calibrate_thresholds`
+  against every real (signal, observed-outcome) pair accumulated so far for
+  the season, and — only once at least `MIN_CALIBRATION_SAMPLE_SIZE=30`
+  pairs exist — inserts a new `price_signal_calibrations` row (`is_active`
+  flipped exactly like `is_current`/`is_champion`/`is_priority` elsewhere in
+  this schema) that `GET /players/{id}` then uses instead of
+  `price_signal.py`'s hardcoded `DEFAULT_*` thresholds. This can't run
+  before now because there was previously no historical record of what the
+  transfer-momentum signal looked like at any past point in time —
+  `players.transfers_in_event`/`transfers_out_event`/`selected_by_percent`
+  are overwritten every `DATA_INGESTION` run — so migration `0029` adds
+  `player_price_signal_observations`, an insert-only snapshot of those
+  fields appended for every current-season player at the end of every
+  successful `DATA_INGESTION` run (`app.ingestion.normalization
+  .record_price_signal_observations`). `app.players.price_signal_calibration
+  .build_calibration_samples` pairs each player's consecutive observations
+  into a sample, labeled `price_changed=True` iff a real `player_price_history`
+  row falls strictly between them — this is genuinely unusable until a live
+  season has run long enough to accumulate both enough observations AND at
+  least a few real FPL price changes, which is exactly the "once real
+  gameweek data starts flowing" trigger this was built for.
 
 ## Data model — key relationships
 
@@ -278,9 +302,11 @@ new code needed, just running the existing pipeline.
   `player_features`, `manager_squad_snapshots`, `optimization_runs`,
   `transfer_optimization_runs`, `chip_optimization_runs`, `rival_profiles`,
   `recommendation_audits`, `learning_signals`, `learning_reports`,
-  `model_challenger_evaluations` all carry a direct `season_id` FK). Exactly
-  one `seasons` row should have `is_current=True` at a time — nothing
-  enforces this at the DB level, it's an application-level invariant.
+  `model_challenger_evaluations`, `player_price_history`,
+  `player_price_signal_observations` all carry a direct `season_id` FK).
+  Exactly one `seasons` row should have `is_current=True` at a time —
+  nothing enforces this at the DB level, it's an application-level
+  invariant.
 - **`jobs`** is referenced *by* nearly every run/audit table (`job_id`), never
   the reverse — jobs are a flat audit log, not a parent entity with owned
   children in the FK-cascade sense.
@@ -292,6 +318,15 @@ new code needed, just running the existing pipeline.
 - **`model_versions`** is deliberately **not** season-scoped (global,
   `training_job_id` → `jobs` only) — a champion trained on historical data
   applies regardless of which season is "current".
+- **`price_signal_calibrations`** is also deliberately **not** season-scoped
+  (global, no FK at all — just `ratio_threshold`/`absolute_floor`/
+  `sample_size`/`accuracy`/`is_active`/`calibrated_at`) — mirrors
+  `model_versions`' own reasoning: the price-momentum heuristic itself isn't
+  a per-season concept, and every recalibration INSERTS a new row rather
+  than updating one in place (same "never overwrite, always append and
+  re-point the active flag" philosophy as `model_versions`/
+  `optimization_runs`), preserving a full audit trail of how the thresholds
+  drifted over time. See "Price-signal auto-recalibration" above.
 - **`leagues.is_priority`** (added post-review, migration `0027`): a manager
   can sync more than one real H2H league (`POST /leagues/sync` has no cap),
   but the Rivals page needs exactly one to show by default — same
@@ -358,13 +393,18 @@ new code needed, just running the existing pipeline.
   pipeline). `classify_price_momentum` is a deliberately simple,
   explainable heuristic — **not** FPL's real (undisclosed) price-change
   algorithm — that flags `likely_rise`/`likely_fall` when net transfer
-  activity crosses both a ratio threshold (2% of the player's own
-  estimated owner base) and an absolute floor (1000 net transfers, to
-  avoid false positives on tiny-owned differentials where a handful of
-  transfers is a huge percentage of a tiny owner base). Exposed as
-  `PlayerDetail.price_momentum` on `GET /players/{id}` (computed in the
-  router, not a stored column) and shown as a badge on the player detail
-  page.
+  activity crosses both a ratio threshold (`DEFAULT_MOMENTUM_RATIO_THRESHOLD`
+  = 2% of the player's own estimated owner base) and an absolute floor
+  (`DEFAULT_MIN_ABSOLUTE_NET_TRANSFERS` = 1000 net transfers, to avoid false
+  positives on tiny-owned differentials where a handful of transfers is a
+  huge percentage of a tiny owner base). Both are overridable per-call
+  (`ratio_threshold`/`absolute_floor` params) — `GET /players/{id}`'s router
+  looks up the current active `price_signal_calibrations` row and passes its
+  tuned values in when one exists, falling back to the hardcoded defaults
+  otherwise; see "Price-signal auto-recalibration" below for how that row
+  gets populated. Exposed as `PlayerDetail.price_momentum` on
+  `GET /players/{id}` (computed in the router, not a stored column) and
+  shown as a badge on the player detail page.
 
 ## API (`apps/api`)
 

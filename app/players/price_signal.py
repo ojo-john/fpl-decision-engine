@@ -15,6 +15,19 @@ already covers the latter) and `selected_by_percent` combined with the
 season's `total_players` (total registered FPL manager accounts) to turn a
 percentage into an estimated absolute owner count, since "2% swinging" means
 very different things for a template pick vs. a 0.1%-owned differential.
+
+Auto-recalibration
+--------------------
+The two ``DEFAULT_*`` thresholds below were reasoned defaults, never
+calibrated against a real FPL price-change outcome (there was no such
+outcome to calibrate against pre-season). ``classify_price_momentum``'s
+optional ``ratio_threshold``/``absolute_floor`` params let a caller override
+them with a tuned ``PriceSignalCalibration`` row instead -- see
+``app.players.price_signal_calibration`` (the grid-search tuning logic) and
+``app.jobs.handlers.gameweek_review.GameweekReviewJobRunner
+._maybe_recalibrate_price_signal`` (the automatic trigger, once real
+gameweek/price-change data exists). Callers that don't pass overrides
+(``None``, the default) keep getting the original hardcoded behavior.
 """
 
 from dataclasses import dataclass
@@ -29,13 +42,12 @@ class PriceMomentum(StrEnum):
     UNKNOWN = "unknown"
 
 
-# Net transfers must reach roughly this fraction of the player's own estimated
-# owner base, AND clear the absolute floor below, before this heuristic calls
-# it "likely" rather than "stable". Both are deliberately conservative
-# approximations, not calibrated against real FPL price-change outcomes --
-# tune from observation if this proves too noisy in practice.
-_MOMENTUM_RATIO_THRESHOLD = Decimal("0.02")
-_MIN_ABSOLUTE_NET_TRANSFERS = 1000
+# Fallback thresholds, used whenever no active PriceSignalCalibration row exists yet (see
+# module docstring's "Auto-recalibration" section). Net transfers must reach roughly this
+# fraction of the player's own estimated owner base, AND clear the absolute floor, before
+# this heuristic calls it "likely" rather than "stable".
+DEFAULT_MOMENTUM_RATIO_THRESHOLD = Decimal("0.02")
+DEFAULT_MIN_ABSOLUTE_NET_TRANSFERS = 1000
 
 
 @dataclass(frozen=True)
@@ -53,6 +65,8 @@ def classify_price_momentum(
     transfers_out_event: int | None,
     selected_by_percent: Decimal | None,
     total_players: int | None,
+    ratio_threshold: Decimal | None = None,
+    absolute_floor: int | None = None,
 ) -> PriceMomentumSignal:
     """Classify this gameweek's transfer momentum for one player.
 
@@ -63,7 +77,19 @@ def classify_price_momentum(
     populated wherever they *can* be computed, even if the final momentum
     classification can't be, so callers can display partial information
     rather than nothing.
+
+    ``ratio_threshold``/``absolute_floor`` default to the hardcoded
+    ``DEFAULT_*`` constants when omitted -- pass a tuned
+    ``PriceSignalCalibration`` row's values instead once one exists (see
+    module docstring's "Auto-recalibration" section).
     """
+    effective_ratio_threshold = (
+        ratio_threshold if ratio_threshold is not None else DEFAULT_MOMENTUM_RATIO_THRESHOLD
+    )
+    effective_absolute_floor = (
+        absolute_floor if absolute_floor is not None else DEFAULT_MIN_ABSOLUTE_NET_TRANSFERS
+    )
+
     if transfers_in_event is None or transfers_out_event is None:
         return PriceMomentumSignal(PriceMomentum.UNKNOWN, None, None, None)
 
@@ -77,8 +103,8 @@ def classify_price_momentum(
         return PriceMomentumSignal(PriceMomentum.UNKNOWN, net, estimated_owners, None)
 
     ratio = Decimal(net) / Decimal(estimated_owners)
-    crosses_ratio_threshold = abs(ratio) >= _MOMENTUM_RATIO_THRESHOLD
-    crosses_absolute_floor = abs(net) >= _MIN_ABSOLUTE_NET_TRANSFERS
+    crosses_ratio_threshold = abs(ratio) >= effective_ratio_threshold
+    crosses_absolute_floor = abs(net) >= effective_absolute_floor
 
     if crosses_ratio_threshold and crosses_absolute_floor:
         momentum = PriceMomentum.LIKELY_RISE if net > 0 else PriceMomentum.LIKELY_FALL

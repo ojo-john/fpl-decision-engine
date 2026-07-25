@@ -17,6 +17,7 @@ from packages.database.models.fixture import Fixture
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.ingestion_run import IngestionRun
 from packages.database.models.player import Player
+from packages.database.models.player_price_signal_observation import PlayerPriceSignalObservation
 from packages.database.models.position import Position
 from packages.database.models.season import Season
 from packages.database.models.team import Team
@@ -104,3 +105,50 @@ def test_data_ingestion_row_counts_and_quarantine(db_session, patched_fpl_client
     # score = 100 - 5*ERROR_PENALTY(5) - 1*WARNING_PENALTY(1) = 74 >= 70 threshold
     assert output["data_quality_score"] == 74.0
     assert output["optimization_permitted"] is True
+
+
+def test_data_ingestion_records_price_signal_observations_for_every_non_quarantined_player(
+    db_session, patched_fpl_client
+):
+    """app.ingestion.normalization.record_price_signal_observations -- one observation row per
+    current-season, non-quarantined player, snapshotting the momentum inputs
+    app.players.price_signal needs a historical record of to ever be calibratable (see that
+    table's own module docstring). Quarantined players are deliberately excluded -- their
+    transfers_in_event/selected_by_percent may be unreliable, same convention every other
+    quarantine-respecting reader in this codebase already follows.
+    """
+    job = execute_job(db_session, job_type=JobType.DATA_INGESTION, trigger_type=TriggerType.LOCAL)
+    assert job.status == JobStatus.SUCCEEDED
+    season_id = _season_id_for_label(db_session, job.output_json["season_label"])
+
+    observations = (
+        db_session.execute(
+            select(PlayerPriceSignalObservation).where(PlayerPriceSignalObservation.season_id == season_id)
+        )
+        .scalars()
+        .all()
+    )
+    # 9 non-duplicate players ingested; 4 quarantined (900105 bad team FK, 900106 negative
+    # minutes, 900107 impossible price, 900108 duplicate_fpl_id -- BOTH rows sharing a
+    # colliding id get quarantined, even though only the first is actually upserted/kept) ->
+    # 5 non-quarantined players, 5 observations.
+    assert len(observations) == 5
+
+    observed_player_ids = {o.player_id for o in observations}
+    quarantined_players = (
+        db_session.execute(
+            select(Player).where(Player.season_id == season_id, Player.is_quarantined.is_(True))
+        )
+        .scalars()
+        .all()
+    )
+    for player in quarantined_players:
+        assert player.id not in observed_player_ids
+
+    player_900101 = db_session.execute(
+        select(Player).where(Player.season_id == season_id, Player.fpl_code == 900101)
+    ).scalar_one()
+    observation = next(o for o in observations if o.player_id == player_900101.id)
+    assert observation.transfers_in_event == player_900101.transfers_in_event
+    assert observation.transfers_out_event == player_900101.transfers_out_event
+    assert observation.selected_by_percent == player_900101.selected_by_percent
