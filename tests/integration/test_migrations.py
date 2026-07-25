@@ -293,6 +293,7 @@ EXPECTED_MILESTONE_3_LAYER2_TABLE_COLUMNS = {
         "rolling_avg_minutes_5gw",
         "season_avg_points_to_date",
         "career_avg_points_prior_seasons",
+        "career_avg_early_season_points_prior_seasons",
         "form_weighted_avg_points",
         "home_avg_points",
         "away_avg_points",

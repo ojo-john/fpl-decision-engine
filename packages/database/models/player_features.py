@@ -90,6 +90,13 @@ class PlayerFeatures(Base):
     rolling_avg_minutes_5gw: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     season_avg_points_to_date: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     career_avg_points_prior_seasons: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    # Same cross-season resolution as career_avg_points_prior_seasons, but
+    # restricted to each prior season's own early gameweeks only (see
+    # app.features.engineering.career_avg_early_season_points_prior_seasons) --
+    # a player's season-opening form can differ meaningfully from their
+    # full-season average (well-known slow/fast starters), which the
+    # full-season column alone papers over.
+    career_avg_early_season_points_prior_seasons: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     form_weighted_avg_points: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     home_avg_points: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     away_avg_points: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
