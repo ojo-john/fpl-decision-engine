@@ -57,7 +57,7 @@ tests/unit/ (44 files)  No DB
 tests/integration/ (46) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
 tests/fixtures/          Committed FPL API samples (fpl_api/) + a small real historical CSV set (historical/2023-24/)
-.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml, historical-ingest.yml, feature-generation.yml, train.yml
+.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml, historical-ingest.yml, feature-generation.yml, train.yml, league-watch.yml (standalone -- see its own section below)
 ```
 
 ## Job system
@@ -650,6 +650,35 @@ pytest-only monkeypatched client, neither CI-appropriate as-is (see
 - `tests/fixtures/fpl_api/`: trimmed real API response samples. `tests/
   fixtures/historical/2023-24/`: a small real historical CSV sample for
   testing the historical pipeline without hitting GitHub.
+
+## League Watch (`.github/workflows/league-watch.yml`)
+
+A standalone, deliberately non-generic scheduled workflow, distinct from
+every other job/workflow in this repo: it does not spin up the app's own
+Postgres, run any `JobType` handler, or touch this app's database at all.
+It hits FPL's own public, unauthenticated `leagues-h2h/{id}/standings/`
+endpoint directly (cron `17 9 * * 1,5`, plus `workflow_dispatch`) and
+compares the response against `.github/state/league-814682-watch.json`
+(committed back to the repo only when something actually changes) for two
+specific transitions: a new manager joining the league, or `standings`
+going from empty to populated (FPL only ever populates real H2H standings
+once the season has started and at least one gameweek has been played —
+a newly created league sits in an empty-standings "new entries" pending
+state indefinitely before that). On a real change, it opens a GitHub
+issue (label `league-watch`) via `gh issue create`; on no change, it
+exits silently — it does not spam an issue every run.
+
+This exists because a specific user asked for an automatic,
+session-independent check on their own real FPL H2H league (814682,
+"Pro Clubs '27") — hardcoded to that one league/manager rather than
+built as a reusable app feature, unlike every other workflow in this
+repo. It was built as the durable alternative to a `CronCreate`-scheduled
+in-session check (session-only, dies when the chat session closes,
+auto-expires after 7 days) once the user asked for something that
+survives closing the session. If this stops being needed (e.g. once the
+league has real standings and the user is checking the app's own Rivals
+page directly), it can simply be deleted — it has no dependency from
+anything else in this codebase and nothing depends on it.
 
 ## Known real gaps (as of this doc)
 

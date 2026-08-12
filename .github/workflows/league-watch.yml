@@ -1,0 +1,126 @@
+name: League Watch
+
+# Watches one specific real FPL H2H league (814682, "Pro Clubs '27") for the
+# moment real rival/standings data becomes available. Deliberately standalone
+# from every other workflow in this repo: it does NOT spin up the app's own
+# Postgres or run any app job -- it has no need to. The only thing this check
+# depends on is FPL's own public, unauthenticated leagues-h2h standings
+# endpoint, so hitting that directly is simpler and more robust than routing
+# through the app's DATA_INGESTION/LEAGUE_SYNC machinery (which exists to
+# populate this app's own database for its own optimizer/rivals UI -- a
+# concern this workflow doesn't share).
+#
+# FPL only ever populates standings.results for an H2H league once the
+# season has started and at least one gameweek has been played -- before
+# that, a newly created league sits in a "new_entries" pending state with an
+# empty standings array indefinitely. This workflow polls for that exact
+# transition (plus new managers joining in the meantime) and opens a GitHub
+# issue only when something has actually changed, comparing against
+# .github/state/league-814682-watch.json (committed back to the repo after
+# each run that finds a real change, so state survives across runs without
+# needing any external storage).
+#
+# This is intentionally hardcoded to one league/manager rather than
+# generalized -- it exists because a specific user asked for an automatic,
+# session-independent check on their own real league, not as a reusable
+# feature of the app itself.
+
+on:
+  schedule:
+    - cron: "17 9 * * 1,5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch real league state from FPL's public API
+        run: |
+          curl -sf "https://fantasy.premierleague.com/api/leagues-h2h/814682/standings/" \
+            -H "User-Agent: Mozilla/5.0" \
+            -o fpl_league_response.json
+          cat fpl_league_response.json
+
+      - name: Compare against last known state
+        id: compare
+        run: |
+          python - <<'EOF'
+          import json
+          import os
+          from datetime import datetime, timezone
+
+          state_path = ".github/state/league-814682-watch.json"
+          with open(state_path) as f:
+              state = json.load(f)
+
+          with open("fpl_league_response.json") as f:
+              live = json.load(f)
+
+          known_ids = set(state["known_manager_entry_ids"])
+          live_new_entries = live.get("new_entries", {}).get("results", [])
+          live_entry_ids = {e["entry"] for e in live_new_entries}
+          newly_joined = [e for e in live_new_entries if e["entry"] not in known_ids]
+
+          standings_results = live.get("standings", {}).get("results", [])
+          standings_now_populated = len(standings_results) > 0
+          standings_transition = standings_now_populated and not state["standings_ever_populated"]
+
+          changed = bool(newly_joined) or standings_transition
+
+          summary_lines = []
+          if newly_joined:
+              names = ", ".join(f"{e['player_first_name']} {e['player_last_name']} ({e['entry_name']})" for e in newly_joined)
+              summary_lines.append(f"**New manager(s) joined:** {names}")
+          if standings_transition:
+              summary_lines.append(
+                  f"**Real standings are now live** -- the season has started and this league has "
+                  f"{len(standings_results)} manager(s) with real H2H results. This is the moment "
+                  f"you've been waiting for -- sync it in the app (POST /leagues/sync) to see rival "
+                  f"differentials."
+              )
+              lines = [f"- {r['entry_name']} ({r['player_first_name']} {r['player_last_name']}): "
+                       f"{r.get('total', '?')} pts" for r in standings_results]
+              summary_lines.append("\n".join(lines))
+
+          print(f"changed={str(changed).lower()}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as gh_out:
+              gh_out.write(f"changed={str(changed).lower()}\n")
+
+          if changed:
+              with open("issue_body.md", "w") as f:
+                  f.write("\n\n".join(summary_lines))
+                  f.write(f"\n\n---\n_Checked {datetime.now(timezone.utc).isoformat()}_")
+
+              state["known_manager_entry_ids"] = sorted(known_ids | live_entry_ids)
+              state["standings_ever_populated"] = state["standings_ever_populated"] or standings_now_populated
+              state["last_checked_at"] = datetime.now(timezone.utc).isoformat()
+              with open(state_path, "w") as f:
+                  json.dump(state, f, indent=2)
+                  f.write("\n")
+          EOF
+
+      - name: Open an issue if something changed
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "League Pro Clubs '27 (814682) update -- $(date -u +%Y-%m-%d)" \
+            --body-file issue_body.md \
+            --label "league-watch"
+
+      - name: Commit updated state (only when it changed)
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/state/league-814682-watch.json
+          git commit -m "chore(league-watch): record league 814682 state change"
+          git push
