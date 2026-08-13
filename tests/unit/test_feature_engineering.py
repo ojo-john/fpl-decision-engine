@@ -181,11 +181,55 @@ def test_career_avg_early_season_points_prior_seasons_filters_out_late_gameweeks
 
 
 def test_career_avg_early_season_points_prior_seasons_combines_across_seasons():
+    """Two different seasons -- recency-weighted, not a flat average (see the dedicated
+    weighting tests below): season-y (day 2) is more recent than season-x (day 1), so its
+    points count for more than a plain (4+8)/2=6.00 would."""
     stats = [
         _stat(1, points=4, season_id="season-x", gameweek_key="x-1", fpl_event_id=1),
         _stat(2, points=8, season_id="season-y", gameweek_key="y-2", fpl_event_id=2),
     ]
-    assert career_avg_early_season(stats) == Decimal("6.00")
+    assert career_avg_early_season(stats) == Decimal("6.34")
+
+
+def test_career_avg_early_season_points_prior_seasons_weights_within_a_season_flatly():
+    """Rows sharing the SAME season get equal weight regardless of order -- only cross-season
+    recency decays, never within-season recency (that's form_weighted_avg_points's own,
+    separate job for within-season data)."""
+    stats = [
+        _stat(1, points=10, season_id="season-x", gameweek_key="x-1", fpl_event_id=1),
+        _stat(2, points=20, season_id="season-x", gameweek_key="x-2", fpl_event_id=2),
+    ]
+    assert career_avg_early_season(stats) == Decimal("15.00")
+
+
+def test_career_avg_early_season_points_prior_seasons_older_season_contributes_less():
+    """A 3-season spread: the most recent season's points should pull the result closer to
+    itself than an unweighted average of all three would (an unweighted average of
+    100/50/0 would be 50.00 -- the recency-weighted result must be strictly higher, since
+    the most recent season (100) is weighted the heaviest)."""
+    stats = [
+        _stat(1, points=0, season_id="season-oldest", gameweek_key="old-1", fpl_event_id=1),
+        _stat(2, points=50, season_id="season-middle", gameweek_key="mid-1", fpl_event_id=1),
+        _stat(3, points=100, season_id="season-newest", gameweek_key="new-1", fpl_event_id=1),
+    ]
+    result = career_avg_early_season(stats)
+    assert result is not None
+    assert result > Decimal("50.00")
+
+
+def test_career_avg_early_season_points_prior_seasons_custom_half_life_widens_the_gap():
+    """A shorter half_life_seasons discounts older seasons more aggressively -- the result
+    should move even closer to the most recent season's own value than the default half-life
+    does."""
+    stats = [
+        _stat(1, points=0, season_id="season-old", gameweek_key="old-1", fpl_event_id=1),
+        _stat(2, points=100, season_id="season-new", gameweek_key="new-1", fpl_event_id=1),
+    ]
+    default_result = career_avg_early_season(stats)
+    short_half_life_result = career_avg_early_season(stats, half_life_seasons=0.5)
+    assert default_result is not None
+    assert short_half_life_result is not None
+    assert short_half_life_result > default_result
 
 
 def test_career_avg_early_season_points_prior_seasons_none_with_no_earlier_seasons():

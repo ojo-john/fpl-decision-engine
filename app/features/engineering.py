@@ -82,6 +82,18 @@ __all__ = [
 # measured over the same span the projection is actually being asked about.
 DEFAULT_EARLY_SEASON_GAMEWEEK_CUTOFF = 6
 
+# Half-life, in SEASONS (not gameweeks), for career_avg_early_season_points_prior_seasons'
+# cross-season recency weighting: a season 2 seasons ago is weighted half as much as the
+# most recent one available, 4 seasons ago a quarter, etc. Deliberately much coarser than
+# FORM_HALF_LIFE_GAMEWEEKS (3 gameweeks, in app/features/service.py) -- seasons are a much
+# larger unit of "how much has this player's game changed", and with at most ~6 seasons of
+# real history to draw on (HISTORICAL_DATA_INGESTION's EARLIEST_USABLE_SEASON), a half-life
+# this short would nearly zero out everything but the last 1-2 seasons; 2.0 keeps recent
+# seasons dominant while still letting older ones meaningfully contribute, rather than
+# ignoring them outright (a flat, unweighted average was the prior behavior, which gave a
+# season 6 years ago exactly as much say as last season -- the gap this constant closes).
+DEFAULT_EARLY_SEASON_HALF_LIFE_SEASONS = 2.0
+
 
 @dataclass(frozen=True)
 class PriorGameweekStat:
@@ -92,10 +104,13 @@ class PriorGameweekStat:
     ORM row itself, so this module stays free of any DB dependency.
 
     ``season_id`` is a plain string (e.g. ``str(uuid.UUID(...))``), carried
-    only so the service layer can partition a combined, already-filtered
-    list back into "this season" vs. "an earlier season" after applying
-    ``filter_to_strictly_prior`` once across both; it is never interpreted or
-    compared by any function in this module.
+    so the service layer can partition a combined, already-filtered list
+    back into "this season" vs. "an earlier season" after applying
+    ``filter_to_strictly_prior`` once across both. Also read by
+    ``career_avg_early_season_points_prior_seasons`` to rank each row's own
+    season by recency (most-recent-season-present = 0 "seasons ago") for
+    its exponential recency weighting -- every other function in this
+    module remains indifferent to it.
 
     ``gameweek_key`` identifies which gameweek this row belongs to (e.g.
     ``str(gameweek_id)``) — distinct from ``gameweek_deadline``, which is
@@ -129,6 +144,7 @@ class PriorGameweekStat:
 @dataclass(frozen=True)
 class _GameweekAggregate:
     gameweek_key: str
+    season_id: str
     deadline: datetime
     total_points: int
     minutes: int
@@ -163,6 +179,7 @@ def _aggregate_by_gameweek(prior_stats: Sequence[PriorGameweekStat]) -> list[_Ga
         if existing is None:
             groups[stat.gameweek_key] = _GameweekAggregate(
                 gameweek_key=stat.gameweek_key,
+                season_id=stat.season_id,
                 deadline=stat.gameweek_deadline,
                 total_points=stat.total_points,
                 minutes=stat.minutes,
@@ -170,6 +187,7 @@ def _aggregate_by_gameweek(prior_stats: Sequence[PriorGameweekStat]) -> list[_Ga
         else:
             groups[stat.gameweek_key] = _GameweekAggregate(
                 gameweek_key=existing.gameweek_key,
+                season_id=existing.season_id,
                 deadline=existing.deadline,
                 total_points=existing.total_points + stat.total_points,
                 minutes=existing.minutes + stat.minutes,
@@ -233,9 +251,11 @@ def career_avg_points_prior_seasons(
 def career_avg_early_season_points_prior_seasons(
     prior_stats_from_earlier_seasons_only: Sequence[PriorGameweekStat],
     early_season_gameweek_cutoff: int = DEFAULT_EARLY_SEASON_GAMEWEEK_CUTOFF,
+    half_life_seasons: float = DEFAULT_EARLY_SEASON_HALF_LIFE_SEASONS,
 ) -> Decimal | None:
-    """Average points per gameweek across only the EARLY gameweeks (``fpl_event_id <=
-    early_season_gameweek_cutoff``) of every earlier season this player has a record for.
+    """Recency-weighted average points per gameweek across only the EARLY gameweeks
+    (``fpl_event_id <= early_season_gameweek_cutoff``) of every earlier season this player
+    has a record for.
 
     This exists because ``career_avg_points_prior_seasons`` (a full-season average) is the
     wrong number for projecting a fresh season's own opening gameweeks: a player's September
@@ -246,6 +266,18 @@ def career_avg_early_season_points_prior_seasons(
     seasons' early gameweeks are actually available (via ``fpl_code`` cross-season resolution,
     exactly like ``career_avg_points_prior_seasons`` — see that function's own docstring for the
     resolution contract, identical here).
+
+    Recency-weighted ACROSS SEASONS (not a flat average of every early-season row, which was
+    this function's original behavior — see ``DEFAULT_EARLY_SEASON_HALF_LIFE_SEASONS``'s own
+    comment for why an unweighted average is the wrong default): each row is weighted by
+    ``0.5 ** (seasons_ago / half_life_seasons)``, where ``seasons_ago`` is that row's own
+    season's rank among the DISTINCT seasons actually present in this player's data (0 = the
+    most recent season present, 1 = one season before that, ...) — not a fixed calendar
+    distance, so a player missing a season's early gameweeks entirely (e.g. a mid-season
+    debut) doesn't skew everyone else's ranking. All rows within the same season share that
+    season's single weight; only cross-season recency decays, exactly mirroring
+    ``form_weighted_avg_points``'s existing within-season, per-gameweek decay pattern one
+    level up (seasons instead of gameweeks).
 
     ``None`` if the player has no rows falling inside the early-season window in ANY prior
     season — covers both a genuinely new player (no prior-season history at all) and the
@@ -262,7 +294,24 @@ def career_avg_early_season_points_prior_seasons(
     aggregates = _aggregate_by_gameweek(early_stats)
     if not aggregates:
         return None
-    return _round2(Decimal(sum(agg.total_points for agg in aggregates)) / Decimal(len(aggregates)))
+
+    # Rank each DISTINCT season by recency (most-recent-season-present's own latest
+    # deadline first) -- aggregates is already sorted most-recent-gameweek-first, so the
+    # first time a season_id is seen is that season's own most recent early-window row.
+    season_recency_rank: dict[str, int] = {}
+    for agg in aggregates:
+        if agg.season_id not in season_recency_rank:
+            season_recency_rank[agg.season_id] = len(season_recency_rank)
+
+    weighted_sum = Decimal("0")
+    weight_total = Decimal("0")
+    for agg in aggregates:
+        seasons_ago = season_recency_rank[agg.season_id]
+        weight = Decimal(str(0.5 ** (seasons_ago / half_life_seasons)))
+        weighted_sum += weight * Decimal(agg.total_points)
+        weight_total += weight
+
+    return _round2(weighted_sum / weight_total)
 
 
 def form_weighted_avg_points(

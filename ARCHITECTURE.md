@@ -153,7 +153,16 @@ below). `career_avg` here prefers
 `career_avg_early_season_points_prior_seasons` (the player's average
 across only each PRIOR season's own early gameweeks — `fpl_event_id <=
 6` by default, matching `SQUAD_BUILD_HORIZON_LENGTH` — see
-`app.features.engineering.career_avg_early_season_points_prior_seasons`)
+`app.features.engineering.career_avg_early_season_points_prior_seasons`,
+recency-weighted ACROSS SEASONS since a follow-up post-review found the
+original flat average gave a season 6 years ago exactly as much say as
+last season: `0.5 ** (seasons_ago / DEFAULT_EARLY_SEASON_HALF_LIFE_SEASONS)`
+per row, half-life 2.0 seasons by default. `seasons_ago` is a RANK among
+the distinct seasons actually present for that player (0 = most recent
+season present, 1 = one before that, ...), not a fixed calendar distance,
+so a player's own missing seasons don't skew everyone else's ranking; all
+rows within the same season still share one flat weight, only
+cross-season recency decays)
 over the plain full-season `career_avg_points_prior_seasons` whenever
 early-season history exists; some players are well-established slow or
 fast starters relative to their own season-long average (confirmed live
