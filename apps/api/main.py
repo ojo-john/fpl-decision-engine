@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apps.api.auth import require_shared_token
 from apps.api.routers import (
     chips,
+    data,
     gameweeks,
     h2h,
     health,
@@ -55,6 +56,7 @@ def create_app() -> FastAPI:
     app.include_router(learning.router_learning, dependencies=[protected])
     app.include_router(leagues.router, dependencies=[protected])
     app.include_router(models.router, dependencies=[protected])
+    app.include_router(data.router, dependencies=[protected])
     return app
 
 

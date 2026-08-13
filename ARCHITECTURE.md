@@ -75,7 +75,7 @@ the job types that have an HTTP trigger.
 |---|---|---|---|---|
 | `SYSTEM_HEALTH` | `system_health.py` | ✅ | — | `health.yml` (manual) |
 | `RULES_SYNC` | `rules_sync.py` | ✅ | — | part of `DATA_INGESTION`'s own flow; `ingest.yml` |
-| `DATA_INGESTION` | `data_ingestion.py` | ✅ | — | `make ingest`, `scheduled-dispatcher.yml` (cron `0 */4 * * *`), `ingest.yml` |
+| `DATA_INGESTION` | `data_ingestion.py` | ✅ | `POST /data/refresh` | `make ingest`, `scheduled-dispatcher.yml` (cron `0 */4 * * *`), `ingest.yml` |
 | `HISTORICAL_DATA_INGESTION` | `historical_data_ingestion.py` | ✅ | — | CLI / `historical-ingest.yml` (manual) only |
 | `MANAGER_SYNC` | `manager_sync.py` | ✅ | `POST /managers/sync` | |
 | `LEAGUE_SYNC` | `league_sync.py` | ✅ | `POST /leagues/sync` | |
@@ -650,6 +650,31 @@ pytest-only monkeypatched client, neither CI-appropriate as-is (see
 - `tests/fixtures/fpl_api/`: trimmed real API response samples. `tests/
   fixtures/historical/2023-24/`: a small real historical CSV sample for
   testing the historical pipeline without hitting GitHub.
+
+## On-demand data refresh (`POST /data/refresh`)
+
+`DATA_INGESTION` previously had no HTTP trigger at all (CLI/`make ingest`
+and the scheduled dispatcher only). That became a real, live problem:
+`scheduled-dispatcher.yml`'s cron only ever writes to an ephemeral,
+throwaway Postgres spun up fresh for each CI run (see its own comment —
+"this is still NOT the real scheduling logic") and has never once touched
+the actual database backing a real deployment of this app, because this
+app has never been deployed anywhere with a persistent, internet-reachable
+database — only a local `docker compose` stack exists. Confirmed live:
+the local dev database sat 19 days stale mid-transfer-window and missed
+23 real summer signings/transfers, with nothing to catch it short of
+manually running a script.
+
+`POST /data/refresh` is the fix that doesn't require deploying anywhere:
+a manager triggers a fresh `DATA_INGESTION` run themselves, right before
+checking their squad, via a button on the Team page. Synchronous, exactly
+like every other job-triggering endpoint in this codebase — no job-id
+polling. This still relies on someone actually clicking it; see "League
+Watch" below for the parallel, harder constraint (an *automatic*, session-
+independent check needs either a persistent hosted database this app's
+local stack doesn't have, or — for read-only checks against a public API
+that don't need this app's own database at all — a standalone workflow
+like League Watch).
 
 ## League Watch (`.github/workflows/league-watch.yml`)
 

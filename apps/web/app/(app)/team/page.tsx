@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { backendClient } from "@/lib/api-client";
 import { BuildSquadButton } from "@/components/build-squad-button";
+import { DataRefreshButton } from "@/components/data-refresh-button";
 import { SingleFieldActionForm } from "@/components/single-field-action-form";
 import { SquadPreview } from "@/components/squad-preview";
 import { Card, EmptyState, ErrorState } from "@/components/ui";
@@ -17,6 +18,15 @@ export default async function TeamPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      <Card>
+        <h2 style={{ margin: "0 0 0.75rem", fontSize: "0.95rem" }}>Player data</h2>
+        <p style={{ margin: "0 0 0.75rem", color: "var(--text-muted)", fontSize: "0.9rem" }}>
+          Player prices, transfers, and fixtures update on FPL&rsquo;s own side continuously --
+          pull the latest before checking your squad, especially during the transfer window.
+        </p>
+        <DataRefreshButton />
+      </Card>
+
       <Card>
         <h1 style={{ margin: "0 0 0.75rem", fontSize: "1.1rem" }}>Sync your team</h1>
         <SingleFieldActionForm

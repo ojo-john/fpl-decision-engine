@@ -50,7 +50,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from app.jobs.service import execute_job
 from app.learning.attribution import FailureAttributionData, persist_failure_attributions
@@ -916,6 +916,19 @@ def test_gameweek_review_price_signal_recalibration_triggers_and_persists_new_ca
     rules_config_id = _seed_rules_config_id(db_session, season_id)
     model_version_id = _create_champion_model_version(db_session, season.label, _BASELINE_MAE)
     _seed_reviewed_gameweek(db_session, season_id, rules_config_id, model_version_id)
+
+    # _seed_players' own DATA_INGESTION call unconditionally records ONE player_price_signal_observations
+    # row per player (see app.ingestion.normalization.record_price_signal_observations -- runs every
+    # ingestion, "a quiet gameweek is just as necessary for calibration as a real spike"), at the real
+    # wall-clock time the test happens to run. Left in place, that extra observation for the captain
+    # would form one more (player_id, observed_at)-consecutive pair beyond the exact
+    # MIN_CALIBRATION_SAMPLE_SIZE this test seeds below, making `price_signal_recalibration_sample_size`
+    # depend on real time relative to `base_time` -- delete it so this test has full, deterministic
+    # control over every observation row that exists for this season.
+    db_session.execute(
+        delete(PlayerPriceSignalObservation).where(PlayerPriceSignalObservation.season_id == season_id)
+    )
+    db_session.commit()
 
     captain_id = _player_id(db_session, season_id, _CAPTAIN_ELEMENT_ID)
     base_time = datetime(2026, 8, 1, tzinfo=UTC)

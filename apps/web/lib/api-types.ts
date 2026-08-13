@@ -901,6 +901,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/data/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh Data */
+        post: operations["refresh_data_data_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1177,6 +1194,37 @@ export interface components {
             is_budget_notably_concentrated: boolean;
             /** Bench Depth Warnings */
             bench_depth_warnings: string[];
+        };
+        /**
+         * DataRefreshOut
+         * @description Summary of a just-completed DATA_INGESTION run, triggered on demand from the UI.
+         *
+         *     Deliberately a thin summary, not a full echo of the job's own
+         *     ``output_json`` (which also carries the full ``report_markdown`` and a
+         *     per-entity normalization breakdown -- more detail than a "refresh"
+         *     button's caller needs; the full report is still on disk/DB via
+         *     ``ingestion_runs`` for anyone who wants it).
+         */
+        DataRefreshOut: {
+            /**
+             * Ingestion Run Id
+             * Format: uuid
+             */
+            ingestion_run_id: string;
+            /** Status */
+            status: string;
+            /** Season Label */
+            season_label: string | null;
+            /** Data Quality Score */
+            data_quality_score: number | null;
+            /** Optimization Permitted */
+            optimization_permitted: boolean;
+            /** Players Inserted */
+            players_inserted: number;
+            /** Players Updated */
+            players_updated: number;
+            /** Issue Count */
+            issue_count: number;
         };
         /** FailureAttributionOut */
         FailureAttributionOut: {
@@ -3847,6 +3895,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChampionModelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refresh_data_data_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataRefreshOut"];
                 };
             };
             /** @description Validation Error */
