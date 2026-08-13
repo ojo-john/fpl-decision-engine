@@ -34,15 +34,31 @@ conservative, never overstates sell value), and that player's internal id is
 recorded in ``estimated_purchase_price_player_ids_json``.
 
 No-squad-yet handling (added post-review — found live, pre-season): FPL's
-own ``/entry/{id}/`` payload has ``current_event=None`` until that manager
-has a squad set for the season's first gameweek, even though the entry
-itself is a real, reachable 200. Checked explicitly right after the entry
-fetch and refused with ``NO_SQUAD_SET_YET`` before ever attempting the picks
-fetch — passing ``current_event=None`` through to
-``MANAGER_PICKS_URL_TEMPLATE`` would literally request
-``.../event/None/picks/``, which FPL 404s on, previously surfacing as a
-generic, confusing ``MANAGER_FETCH_BLOCKED: http_status_404`` that read like
-a network problem rather than "you haven't picked your team yet."
+own ``/entry/{id}/`` payload has ``current_event=None`` before a gameweek's
+deadline has passed, even though the entry itself is a real, reachable 200.
+Checked explicitly right after the entry fetch and refused with
+``NO_SQUAD_SET_YET`` before ever attempting the picks fetch — passing
+``current_event=None`` through to ``MANAGER_PICKS_URL_TEMPLATE`` would
+literally request ``.../event/None/picks/``, which FPL 404s on, previously
+surfacing as a generic, confusing ``MANAGER_FETCH_BLOCKED: http_status_404``
+that read like a network problem rather than what it actually is.
+
+Corrected understanding (found live, same pre-season window, after a real
+user reported this firing even after genuinely saving a squad on the
+official site): ``current_event=None`` is NOT proof no squad was ever set —
+confirmed directly against FPL's own live API that ``/entry/{id}/event/
+{event}/picks/`` returns 404 for a gameweek's picks for EVERY manager,
+regardless of whether they saved a squad, until that gameweek's OWN
+deadline has actually passed (a documented, intentional FPL platform
+behavior — public picks data is withheld pre-deadline, almost certainly to
+prevent squad-copying before the transfer window closes for everyone at
+once). So this failure is the ordinary, expected, unavoidable state for
+every manager for the ENTIRE pre-season window and right up to a gameweek's
+own deadline — it says nothing about whether the manager has actually
+picked a team, only that FPL hasn't opened that data up yet. The error
+message reflects this: it does not tell the user their save failed or that
+they need to do anything differently, since (from this API's perspective)
+there is nothing more they *can* do before the deadline passes.
 """
 
 import logging
@@ -143,14 +159,17 @@ class ManagerSyncJobRunner(JobRunner):
                 return _blocked_result("manager entry", entry)
             assert isinstance(entry.raw_body, dict)  # entry always returns a JSON object
 
-            # FPL's own entry payload has current_event=None until the manager has a squad set
-            # for the season's first gameweek (confirmed live: a real, pre-season-only manager
-            # returns current_event=None even though /entry/{id}/ itself is a real 200). Every
-            # picks fetch needs a real event number -- MANAGER_PICKS_URL_TEMPLATE would otherwise
-            # literally request .../event/None/picks/, which FPL 404s on, surfacing as a
-            # confusing generic "MANAGER_FETCH_BLOCKED: http_status_404" that looks like a
-            # network problem rather than what it actually is. Caught explicitly, before ever
-            # attempting that fetch, with a clear and actionable message instead.
+            # FPL's own entry payload has current_event=None before a gameweek's deadline has
+            # passed -- for EVERY manager, regardless of whether they've actually saved a squad
+            # (confirmed live directly against FPL's own API: /entry/{id}/event/{event}/picks/
+            # 404s for every manager pre-deadline, not just ones with no squad set -- see this
+            # module's own docstring's "Corrected understanding" section). Every picks fetch
+            # needs a real event number -- MANAGER_PICKS_URL_TEMPLATE would otherwise literally
+            # request .../event/None/picks/, which FPL 404s on, surfacing as a confusing generic
+            # "MANAGER_FETCH_BLOCKED: http_status_404" that looks like a network problem rather
+            # than what it actually is. Caught explicitly, before ever attempting that fetch,
+            # with a message that doesn't wrongly imply the user needs to do anything -- there is
+            # nothing more they can do before the deadline passes.
             current_event = entry.raw_body["current_event"]
             if current_event is None:
                 return JobResult(
@@ -158,8 +177,10 @@ class ManagerSyncJobRunner(JobRunner):
                     output=None,
                     error_code="NO_SQUAD_SET_YET",
                     error_message=(
-                        "This manager has no squad set for the current season yet -- pick your "
-                        "team on the official FPL site first, then sync again."
+                        "FPL doesn't expose any manager's picks until that gameweek's own "
+                        "deadline has passed -- this is expected, not an error, and applies "
+                        "whether or not you've already saved a squad. Sync again once the "
+                        "deadline passes."
                     ),
                 )
 
