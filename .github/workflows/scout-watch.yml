@@ -107,7 +107,7 @@ jobs:
 
           cat > request.json <<EOF
           {
-            "model": "gemini-3.6-flash",
+            "model": "gemini-2.5-flash",
             "input": $PROMPT_JSON,
             "tools": [{"type": "google_search"}]
           }
