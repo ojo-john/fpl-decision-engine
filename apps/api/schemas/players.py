@@ -161,6 +161,12 @@ class PlayerProjectionResponse(BaseModel):
     # flagged (e.g. a player short on match fitness after a long international tournament).
     availability_risk_reason: str | None = None
     availability_risk_severity: Decimal | None = None
+    # Set only when a player_role_notes row is active for this player and gameweek -- see
+    # app.optimization.projection.get_active_role_boost_note. A separate, independent mechanism
+    # from availability_risk_* above (a boost, not a discount -- both can be active at once and
+    # both apply, see that function's own docstring for why they're kept as two mechanisms).
+    role_boost_reason: str | None = None
+    role_boost_severity: Decimal | None = None
     explanation: str
 
 
@@ -183,6 +189,37 @@ class AvailabilityRiskNoteOut(BaseModel):
 
     id: uuid.UUID
     player_id: uuid.UUID
+    reason: str
+    severity: Decimal
+    valid_from_fpl_event_id: int | None
+    valid_until_fpl_event_id: int | None
+    created_at: datetime
+    created_by: str
+
+
+class RoleNoteCreate(BaseModel):
+    """Body for ``POST /players/{player_id}/role-notes``."""
+
+    role: str
+    reason: str
+    # Projection multiplier -- normally > 1.0 (a boost), e.g. 1.15 = increase to 115% of what the
+    # projection would otherwise be. Not hard-validated at the boundary (unlike
+    # AvailabilityRiskNoteCreate's own (0, 1] convention) -- see
+    # packages.database.models.player_role_note's own column comment for why this stays generic.
+    severity: Decimal
+    valid_from_fpl_event_id: int | None = None
+    valid_until_fpl_event_id: int | None = None
+    created_by: str = "manual"
+
+
+class RoleNoteOut(BaseModel):
+    """See ``packages.database.models.player_role_note``."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    player_id: uuid.UUID
+    role: str
     reason: str
     severity: Decimal
     valid_from_fpl_event_id: int | None

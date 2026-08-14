@@ -194,6 +194,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/players/{player_id}/role-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Role Notes
+         * @description Every role note ever recorded for this player, past and present, most-recent-first --
+         *     transparency/audit, not just the currently-active one (see ``GET /{player_id}/projection``
+         *     for what's actually applied to THIS gameweek's projection). Mirrors
+         *     ``list_availability_risk_notes`` exactly -- see ``packages.database.models.player_role_note``
+         *     for why this is a separate table/endpoint rather than the same one.
+         */
+        get: operations["list_role_notes_players__player_id__role_notes_get"];
+        put?: never;
+        /**
+         * Create Role Note
+         * @description Create a curated, sourced set-piece/role-duty note for this player -- see
+         *     ``packages.database.models.player_role_note``'s own docstring for why this is a separate
+         *     mechanism from availability-risk notes, not a reuse of that table.
+         */
+        post: operations["create_role_note_players__player_id__role_notes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/players/{player_id}/role-notes/{note_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Role Note
+         * @description Remove a role note -- e.g. the role changed hands again, or the original source was wrong.
+         */
+        delete: operations["delete_role_note_players__player_id__role_notes__note_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/gameweeks/next-deadline": {
         parameters: {
             query?: never;
@@ -1962,6 +2012,10 @@ export interface components {
             availability_risk_reason?: string | null;
             /** Availability Risk Severity */
             availability_risk_severity?: string | null;
+            /** Role Boost Reason */
+            role_boost_reason?: string | null;
+            /** Role Boost Severity */
+            role_boost_severity?: string | null;
             /** Explanation */
             explanation: string;
         };
@@ -2140,6 +2194,60 @@ export interface components {
             players_only_you_have: components["schemas"]["SquadDifferentialPlayerOut"][] | null;
             /** Players Only Rival Has */
             players_only_rival_has: components["schemas"]["SquadDifferentialPlayerOut"][] | null;
+        };
+        /**
+         * RoleNoteCreate
+         * @description Body for ``POST /players/{player_id}/role-notes``.
+         */
+        RoleNoteCreate: {
+            /** Role */
+            role: string;
+            /** Reason */
+            reason: string;
+            /** Severity */
+            severity: number | string;
+            /** Valid From Fpl Event Id */
+            valid_from_fpl_event_id?: number | null;
+            /** Valid Until Fpl Event Id */
+            valid_until_fpl_event_id?: number | null;
+            /**
+             * Created By
+             * @default manual
+             */
+            created_by: string;
+        };
+        /**
+         * RoleNoteOut
+         * @description See ``packages.database.models.player_role_note``.
+         */
+        RoleNoteOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Player Id
+             * Format: uuid
+             */
+            player_id: string;
+            /** Role */
+            role: string;
+            /** Reason */
+            reason: string;
+            /** Severity */
+            severity: string;
+            /** Valid From Fpl Event Id */
+            valid_from_fpl_event_id: number | null;
+            /** Valid Until Fpl Event Id */
+            valid_until_fpl_event_id: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
         };
         /**
          * SquadDifferentialPlayerOut
@@ -2607,6 +2715,108 @@ export interface operations {
         };
     };
     delete_availability_risk_note_players__player_id__availability_risk_notes__note_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                player_id: string;
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_role_notes_players__player_id__role_notes_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                player_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleNoteOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_role_note_players__player_id__role_notes_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                player_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoleNoteCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleNoteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_role_note_players__player_id__role_notes__note_id__delete: {
         parameters: {
             query?: never;
             header?: {

@@ -13,8 +13,10 @@ from app.optimization.gameweek_resolution import resolve_target_gameweek
 from app.optimization.projection import (
     AVAILABILITY_RISK_NOTED_SUFFIX,
     PROJECTION_FORMULA_VERSION,
+    ROLE_BOOSTED_SUFFIX,
     PlayerProjection,
     get_active_availability_risk_note,
+    get_active_role_boost_note,
     is_cold_start_season,
     project_player,
     project_player_with_champion,
@@ -30,10 +32,13 @@ from apps.api.schemas.players import (
     PlayerPriceMomentumOut,
     PlayerProjectionResponse,
     PlayerSummary,
+    RoleNoteCreate,
+    RoleNoteOut,
 )
 from packages.database.models.player import Player
 from packages.database.models.player_availability_risk_note import PlayerAvailabilityRiskNote
 from packages.database.models.player_price_history import PlayerPriceHistory
+from packages.database.models.player_role_note import PlayerRoleNote
 from packages.database.models.position import Position
 from packages.database.models.price_signal_calibration import PriceSignalCalibration
 from packages.database.models.season import Season
@@ -278,25 +283,34 @@ def _explain_projection(
     next_fixture_difficulty: int | None,
     champion_model_family: str | None,
     availability_risk_reason: str | None,
+    role_boost_reason: str | None,
 ) -> str:
     """A one-line, plain-English account of which code path produced ``projection`` and why --
     the "why this projection" breakdown's human-readable summary. Branches on ``projection.source``
     (see ``app.optimization.projection``'s own source strings) rather than re-deriving state,
     since the source string already IS the authoritative record of which path ran.
 
-    ``app.optimization.projection._apply_availability_risk_notes`` appends
-    ``AVAILABILITY_RISK_NOTED_SUFFIX`` to whatever source the underlying formula produced -- stripped
-    here before delegating to ``_explain_base_projection`` (so every existing branch keeps matching
-    exactly), then a note-specific sentence is appended describing the flagged risk, since a
-    discounted number with no explanation of WHY would be more confusing than the un-noted case."""
-    has_risk_note = projection.source.endswith(AVAILABILITY_RISK_NOTED_SUFFIX)
+    ``app.optimization.projection._apply_availability_risk_notes``/``_apply_role_boost_notes`` can
+    each append their own suffix to whatever source the underlying formula produced (in that
+    order -- risk suffix first, then role suffix, matching ``project_player_with_champion``'s own
+    call order) -- both stripped here before delegating to ``_explain_base_projection`` (so every
+    existing branch keeps matching exactly), then a note-specific sentence is appended per suffix
+    actually present, since a discounted/boosted number with no explanation of WHY would be more
+    confusing than the un-noted case."""
+    has_role_boost = projection.source.endswith(ROLE_BOOSTED_SUFFIX)
+    source_without_role = (
+        projection.source[: -len(ROLE_BOOSTED_SUFFIX)] if has_role_boost else projection.source
+    )
+    has_risk_note = source_without_role.endswith(AVAILABILITY_RISK_NOTED_SUFFIX)
     base_source = (
-        projection.source[: -len(AVAILABILITY_RISK_NOTED_SUFFIX)] if has_risk_note else projection.source
+        source_without_role[: -len(AVAILABILITY_RISK_NOTED_SUFFIX)]
+        if has_risk_note
+        else source_without_role
     )
     base_projection = PlayerProjection(
         projection.player_id, projection.projected_points, base_source, projection.is_eligible
     )
-    base_explanation = _explain_base_projection(
+    explanation = _explain_base_projection(
         base_projection,
         ep_next=ep_next,
         career_avg_points_prior_seasons=career_avg_points_prior_seasons,
@@ -305,8 +319,10 @@ def _explain_projection(
         champion_model_family=champion_model_family,
     )
     if has_risk_note and availability_risk_reason is not None:
-        return f"{base_explanation} Flagged availability risk: {availability_risk_reason}"
-    return base_explanation
+        explanation = f"{explanation} Flagged availability risk: {availability_risk_reason}"
+    if has_role_boost and role_boost_reason is not None:
+        explanation = f"{explanation} Boosted for a confirmed role: {role_boost_reason}"
+    return explanation
 
 
 @router.get("/{player_id}/projection", response_model=PlayerProjectionResponse)
@@ -380,6 +396,11 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
         if target_gameweek_id is not None
         else None
     )
+    active_role_note = (
+        get_active_role_boost_note(db, player.id, target_gameweek_id)
+        if target_gameweek_id is not None
+        else None
+    )
 
     explanation = _explain_projection(
         projection,
@@ -395,6 +416,7 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
         next_fixture_difficulty=next_fixture_difficulty,
         champion_model_family=champion_model_family,
         availability_risk_reason=active_risk_note.reason if active_risk_note is not None else None,
+        role_boost_reason=active_role_note.reason if active_role_note is not None else None,
     )
 
     return PlayerProjectionResponse(
@@ -414,6 +436,8 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
         champion_model_version_id=champion_model_version_id,
         availability_risk_reason=active_risk_note.reason if active_risk_note is not None else None,
         availability_risk_severity=active_risk_note.severity if active_risk_note is not None else None,
+        role_boost_reason=active_role_note.reason if active_role_note is not None else None,
+        role_boost_severity=active_role_note.severity if active_role_note is not None else None,
         explanation=explanation,
     )
 
@@ -488,5 +512,73 @@ def delete_availability_risk_note(
     note = db.get(PlayerAvailabilityRiskNote, note_id)
     if note is None or note.player_id != player_id:
         raise HTTPException(status_code=404, detail=f"Availability risk note {note_id} not found.")
+    db.delete(note)
+    db.commit()
+
+
+@router.get("/{player_id}/role-notes", response_model=list[RoleNoteOut])
+def list_role_notes(player_id: uuid.UUID, db: Session = Depends(get_db)) -> list[RoleNoteOut]:
+    """Every role note ever recorded for this player, past and present, most-recent-first --
+    transparency/audit, not just the currently-active one (see ``GET /{player_id}/projection``
+    for what's actually applied to THIS gameweek's projection). Mirrors
+    ``list_availability_risk_notes`` exactly -- see ``packages.database.models.player_role_note``
+    for why this is a separate table/endpoint rather than the same one."""
+    if db.get(Player, player_id) is None:
+        raise HTTPException(status_code=404, detail=f"Player {player_id} not found.")
+
+    rows = (
+        db.execute(
+            select(PlayerRoleNote)
+            .where(PlayerRoleNote.player_id == player_id)
+            .order_by(PlayerRoleNote.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return [RoleNoteOut.model_validate(row) for row in rows]
+
+
+@router.post("/{player_id}/role-notes", response_model=RoleNoteOut, status_code=201)
+def create_role_note(
+    player_id: uuid.UUID, body: RoleNoteCreate, db: Session = Depends(get_db)
+) -> RoleNoteOut:
+    """Create a curated, sourced set-piece/role-duty note for this player -- see
+    ``packages.database.models.player_role_note``'s own docstring for why this is a separate
+    mechanism from availability-risk notes, not a reuse of that table."""
+    player = db.get(Player, player_id)
+    if player is None:
+        raise HTTPException(status_code=404, detail=f"Player {player_id} not found.")
+
+    if (
+        body.valid_from_fpl_event_id is not None
+        and body.valid_until_fpl_event_id is not None
+        and body.valid_from_fpl_event_id > body.valid_until_fpl_event_id
+    ):
+        raise HTTPException(
+            status_code=422, detail="valid_from_fpl_event_id must not be after valid_until_fpl_event_id."
+        )
+
+    note = PlayerRoleNote(
+        player_id=player_id,
+        season_id=player.season_id,
+        role=body.role,
+        reason=body.reason,
+        severity=body.severity,
+        valid_from_fpl_event_id=body.valid_from_fpl_event_id,
+        valid_until_fpl_event_id=body.valid_until_fpl_event_id,
+        created_by=body.created_by,
+    )
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+    return RoleNoteOut.model_validate(note)
+
+
+@router.delete("/{player_id}/role-notes/{note_id}", status_code=204)
+def delete_role_note(player_id: uuid.UUID, note_id: uuid.UUID, db: Session = Depends(get_db)) -> None:
+    """Remove a role note -- e.g. the role changed hands again, or the original source was wrong."""
+    note = db.get(PlayerRoleNote, note_id)
+    if note is None or note.player_id != player_id:
+        raise HTTPException(status_code=404, detail=f"Role note {note_id} not found.")
     db.delete(note)
     db.commit()

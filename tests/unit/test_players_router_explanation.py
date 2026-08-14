@@ -28,6 +28,7 @@ def test_explain_projection_unavailable_status_excluded():
         next_fixture_difficulty=None,
         champion_model_family=None,
         availability_risk_reason=None,
+        role_boost_reason=None,
     )
 
     assert "unavailable" in explanation.lower()
@@ -44,6 +45,7 @@ def test_explain_projection_cold_start_blend_mentions_both_inputs_and_difficulty
         next_fixture_difficulty=2,
         champion_model_family=None,
         availability_risk_reason=None,
+        role_boost_reason=None,
     )
 
     assert "4.0" in explanation
@@ -63,6 +65,7 @@ def test_explain_projection_cold_start_blend_prefers_early_season_average_when_p
         next_fixture_difficulty=None,
         champion_model_family=None,
         availability_risk_reason=None,
+        role_boost_reason=None,
     )
 
     assert "10.21" in explanation
@@ -81,6 +84,7 @@ def test_explain_projection_cold_start_blend_without_difficulty_omits_difficulty
         next_fixture_difficulty=None,
         champion_model_family=None,
         availability_risk_reason=None,
+        role_boost_reason=None,
     )
 
     assert "difficulty" not in explanation.lower()
@@ -97,6 +101,7 @@ def test_explain_projection_champion_sourced_names_the_model_family():
         next_fixture_difficulty=None,
         champion_model_family="gradient_boosting",
         availability_risk_reason=None,
+        role_boost_reason=None,
     )
 
     assert "gradient_boosting" in explanation
@@ -114,6 +119,7 @@ def test_explain_projection_ep_next_fallback():
         next_fixture_difficulty=None,
         champion_model_family=None,
         availability_risk_reason=None,
+        role_boost_reason=None,
     )
 
     assert "ep_next" in explanation
@@ -131,6 +137,7 @@ def test_explain_projection_ep_next_availability_scaled_notes_the_scaling():
         next_fixture_difficulty=None,
         champion_model_family=None,
         availability_risk_reason=None,
+        role_boost_reason=None,
     )
 
     assert "scaled down" in explanation.lower()
@@ -147,6 +154,7 @@ def test_explain_projection_points_per_game_fallback():
         next_fixture_difficulty=None,
         champion_model_family=None,
         availability_risk_reason=None,
+        role_boost_reason=None,
     )
 
     assert "points-per-game" in explanation.lower()
@@ -163,6 +171,7 @@ def test_explain_projection_no_data_zero_falls_back_to_generic_message():
         next_fixture_difficulty=None,
         champion_model_family=None,
         availability_risk_reason=None,
+        role_boost_reason=None,
     )
 
     assert explanation == "No projection data is available for this player yet."
@@ -182,6 +191,7 @@ def test_explain_projection_availability_risk_noted_appends_the_reason():
         next_fixture_difficulty=None,
         champion_model_family=None,
         availability_risk_reason="Short on match fitness after a long international tournament.",
+        role_boost_reason=None,
     )
 
     assert "ep_next" in explanation
@@ -201,6 +211,7 @@ def test_explain_projection_availability_risk_noted_on_champion_sourced_projecti
         next_fixture_difficulty=None,
         champion_model_family="gradient_boosting",
         availability_risk_reason="Confirmed late return to training.",
+        role_boost_reason=None,
     )
 
     assert "gradient_boosting" in explanation
@@ -222,7 +233,54 @@ def test_explain_projection_suffix_present_but_no_reason_given_omits_the_clause(
         next_fixture_difficulty=None,
         champion_model_family=None,
         availability_risk_reason=None,
+        role_boost_reason=None,
     )
 
     assert "Flagged availability risk" not in explanation
     assert "None" not in explanation
+
+
+def test_explain_projection_role_boosted_appends_the_reason():
+    """ROLE_BOOSTED_SUFFIX must be stripped before the base-source branching, and the active
+    role note's own reason appended -- mirrors the availability-risk-note suffix-stripping tests
+    above, for the separate role-boost mechanism."""
+    projection = _projection("ep_next_role_boosted")
+
+    explanation = _explain_projection(
+        projection,
+        ep_next=4.0,
+        career_avg_points_prior_seasons=None,
+        career_avg_early_season_points_prior_seasons=None,
+        next_fixture_difficulty=None,
+        champion_model_family=None,
+        availability_risk_reason=None,
+        role_boost_reason="Now confirmed as first-choice penalty taker.",
+    )
+
+    assert "ep_next" in explanation
+    assert "Boosted for a confirmed role" in explanation
+    assert "Now confirmed as first-choice penalty taker." in explanation
+
+
+def test_explain_projection_both_suffixes_present_mentions_both_reasons():
+    """When both mechanisms are active at once, the source string carries both suffixes (risk
+    first, then role -- see project_player_with_champion's own call order) and the explanation
+    must mention both, not just whichever is checked first."""
+    projection = _projection("ep_next_availability_risk_noted_role_boosted")
+
+    explanation = _explain_projection(
+        projection,
+        ep_next=4.0,
+        career_avg_points_prior_seasons=None,
+        career_avg_early_season_points_prior_seasons=None,
+        next_fixture_difficulty=None,
+        champion_model_family=None,
+        availability_risk_reason="Short on match fitness after a long international tournament.",
+        role_boost_reason="Now confirmed as first-choice penalty taker.",
+    )
+
+    assert "ep_next" in explanation
+    assert "Flagged availability risk" in explanation
+    assert "Short on match fitness after a long international tournament." in explanation
+    assert "Boosted for a confirmed role" in explanation
+    assert "Now confirmed as first-choice penalty taker." in explanation

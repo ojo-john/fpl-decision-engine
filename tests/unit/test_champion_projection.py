@@ -35,6 +35,13 @@ def _no_availability_risk_note_by_default(monkeypatch):
     monkeypatch.setattr("app.optimization.projection.get_active_availability_risk_note", lambda *a, **k: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_role_boost_note_by_default(monkeypatch):
+    """Same rationale as ``_no_availability_risk_note_by_default`` above, for the separate
+    player_role_notes mechanism's own ``_apply_role_boost_notes`` step."""
+    monkeypatch.setattr("app.optimization.projection.get_active_role_boost_note", lambda *a, **k: None)
+
+
 def _make_player(
     *,
     status: str | None = "a",
@@ -492,3 +499,70 @@ def test_no_active_availability_risk_note_leaves_projection_unchanged(monkeypatc
 
     assert result == project_player(player)
     assert "availability_risk_noted" not in result.source
+
+
+# --- Role-boost-note stacking (app.optimization.projection's own _apply_role_boost_notes) --
+# a separate, independent mechanism from availability-risk notes -- see
+# packages.database.models.player_role_note for the full "why two tables, not one" reasoning. ---
+
+
+def test_role_boost_note_boosts_an_eligible_projection(monkeypatch):
+    player = _make_player(status="a", ep_next="8.0")
+    monkeypatch.setattr(
+        "app.optimization.projection.get_active_role_boost_note",
+        lambda *a, **k: _FakeNote(Decimal("1.2")),
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, None)
+
+    assert result.projected_points == pytest.approx(8.0 * 1.2)
+    assert result.source == "ep_next_role_boosted"
+    assert result.is_eligible is True
+
+
+def test_role_boost_note_never_applies_to_a_hard_excluded_player(monkeypatch):
+    """A role boost must not resurrect/relabel an already-ineligible (i/s/u status) projection --
+    mirrors the identical availability-risk-note guard above."""
+    player = _make_player(status="i", ep_next="99.9")
+    monkeypatch.setattr(
+        "app.optimization.projection.get_active_role_boost_note",
+        lambda *a, **k: _FakeNote(Decimal("1.5")),
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, None)
+
+    assert result.source == "unavailable_status_excluded"
+    assert result.projected_points == 0.0
+    assert result.is_eligible is False
+
+
+def test_no_active_role_boost_note_leaves_projection_unchanged(monkeypatch):
+    """The autouse fixture already covers this (default None), but assert it explicitly once
+    here so the "no note" contract is documented alongside the "note present" tests above."""
+    player = _make_player(status="a", ep_next="8.0")
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, None)
+
+    assert result == project_player(player)
+    assert "role_boosted" not in result.source
+
+
+def test_availability_risk_note_and_role_boost_note_both_apply_when_both_are_active(monkeypatch):
+    """The core reason these are two separate mechanisms, not one: a player carrying a minor
+    knock (risk discount) who has ALSO just been handed penalty duty (role boost) must get BOTH
+    effects compounded, not one silently overriding the other."""
+    monkeypatch.setattr(
+        "app.optimization.projection.get_active_availability_risk_note",
+        lambda *a, **k: _FakeNote(Decimal("0.7"), reason="minor knock"),
+    )
+    monkeypatch.setattr(
+        "app.optimization.projection.get_active_role_boost_note",
+        lambda *a, **k: _FakeNote(Decimal("1.3"), reason="now on penalties"),
+    )
+    player = _make_player(status="a", ep_next="10.0")
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, None)
+
+    assert result.projected_points == pytest.approx(10.0 * 0.7 * 1.3)
+    assert result.source == "ep_next_availability_risk_noted_role_boosted"
+    assert result.is_eligible is True

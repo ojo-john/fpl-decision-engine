@@ -320,6 +320,66 @@ same way a manager makes any other judgment call about their own squad.
   deliberately NOT flagged — limited World Cup minutes, expected back in
   good shape.
 
+**Role notes** (migration `0032`) close a completely different gap, found
+while reading real FPL scout/tips coverage: who takes penalties/corners/
+free-kicks is a real signal that directly affects a player's expected
+points, but it is not exposed anywhere in FPL's own `bootstrap-static` API
+and is not reliably inferable from historical scoring alone (a role can
+change hands mid-season, or a new signing can be handed set-piece duty on
+arrival before it ever shows up in their own scoring history).
+
+**Deliberately a separate table/mechanism from availability risk notes,
+not a reuse of it**, for two reasons:
+
+1. **Direction**: risk notes are always a discount (severity in (0, 1]);
+   role notes are normally a boost (severity > 1.0, though nothing at the
+   DB level hard-enforces that — the multiplication works identically
+   either way). A player could plausibly have an active risk note (a minor
+   knock) AND an active role-boost note (just handed penalties)
+   SIMULTANEOUSLY — both are real, independent facts, and both should
+   apply, multiplied together, not have one silently overwrite the other.
+2. **Multi-note tie-break direction is inverted**:
+   `get_active_availability_risk_note` picks the MOST severe (lowest
+   multiplier) when several risk notes overlap — understating a real risk
+   is worse than overstating it. `get_active_role_boost_note` picks the
+   HIGHEST severity (strongest boost) when several role notes overlap —
+   the underlying fact ("who currently takes penalties") is usually
+   unambiguous once properly sourced, so the strongest/most specific
+   confirmed claim is the more sensible default.
+
+- `packages/database/models/player_role_note.py`: same shape as
+  `player_availability_risk_note` (`role` is an extra free-text column,
+  e.g. `"penalties"`/`"corners"`/`"free_kicks"` — not an enum, nothing
+  branches on the exact string) — same independent-note,
+  no-explicit-deactivation pattern. Role assignments tend to be
+  longer-lived than an injury recovery window, so `valid_until_fpl_event_id`
+  left `NULL` (open-ended) is the common case in practice, unlike risk
+  notes which usually set both ends.
+- `app.optimization.projection.get_active_role_boost_note` (public) /
+  `_apply_role_boost_notes` (private): called strictly AFTER
+  `_apply_availability_risk_notes` in `project_player_with_champion`
+  (multiplication is commutative, so order doesn't change the math, but
+  fixes the order suffixes appear in `PlayerProjection.source` —
+  `AVAILABILITY_RISK_NOTED_SUFFIX` then `ROLE_BOOSTED_SUFFIX` when both
+  apply). `apps.api.routers.players._explain_projection` strips both
+  suffixes (role first, since it's appended last) before delegating to
+  `_explain_base_projection`, then appends a sentence per suffix actually
+  present.
+- CRUD via `apps/api/routers/players.py`: `GET`/`POST`/`DELETE
+  /players/{player_id}/role-notes[/{note_id}]`, identical shape to the
+  availability-risk-notes endpoints. Minimal frontend
+  (`apps/web/components/role-notes.tsx`): a success-green-styled banner
+  (deliberately NOT the risk notes' danger-red styling — this is good
+  news, not bad news) on the projection card when a note is active, plus
+  the same list-everything/inline-add-remove pattern.
+- Seeded (via the real API, on the real dev database) with two real,
+  sourced notes as of 2026-08-14: Pascal Groß (Brighton — note the FPL
+  `web_name` uses the German eszett, not "Gross"; confirmed as Brighton's
+  penalty/corner/free-kick taker per Premier League Scout coverage) and
+  Igor Thiago (Brentford, confirmed keeping penalty duties after a
+  22-goal season), both severity 1.15, `valid_from_fpl_event_id=1`,
+  open-ended.
+
 ## Two separate ingestion pipelines — don't conflate them
 
 This is the single most likely thing to get missed (it was, this session,
@@ -551,6 +611,11 @@ new code needed, just running the existing pipeline.
   official `chance_of_playing_next_round`-driven signal above; see
   "Availability risk notes" under "The optimization gate" above for the
   full rationale and how `project_player_with_champion` applies them.
+- **`player_role_notes`** (migration `0032`) — curated, sourced set-piece
+  (penalty/corner/free-kick) duty notes; a projection BOOST, deliberately
+  a separate table/mechanism from `player_availability_risk_notes` (a
+  discount) rather than a reuse of it — see "Role notes" under "The
+  optimization gate" above for the full "why two mechanisms" rationale.
 
 ## API (`apps/api`)
 
