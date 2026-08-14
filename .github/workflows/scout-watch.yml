@@ -42,18 +42,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: TEMP DEBUG list available models
+      - name: TEMP DEBUG call without grounding tool
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY" | python3 -c "
-          import json, sys
-          data = json.load(sys.stdin)
-          for m in data.get('models', []):
-              name = m.get('name', '')
-              methods = m.get('supportedGenerationMethods', [])
-              print(name, methods)
-          "
+          HTTP_STATUS=$(curl -s -o noools_response.json -w "%{http_code}" -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/interactions" \
+            -H "x-goog-api-key: $GEMINI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"model": "gemini-flash-latest", "input": "Say hello in one word."}')
+          echo "No-tools HTTP status: $HTTP_STATUS"
+          cat noools_response.json
 
       - name: Call Gemini API with Google Search grounding
         env:
