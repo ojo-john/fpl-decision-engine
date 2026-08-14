@@ -42,6 +42,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: TEMP DEBUG list available models
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for m in data.get('models', []):
+              name = m.get('name', '')
+              methods = m.get('supportedGenerationMethods', [])
+              print(name, methods)
+          "
+
       - name: Call Gemini API with Google Search grounding
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
