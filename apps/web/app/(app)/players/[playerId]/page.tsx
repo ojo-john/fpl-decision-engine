@@ -1,5 +1,6 @@
 import { backendClient } from "@/lib/api-client";
 import { AvailabilityRiskNotes } from "@/components/availability-risk-notes";
+import { RoleNotes } from "@/components/role-notes";
 import { Card, ErrorState, PriceMomentumBadge, TableScroll } from "@/components/ui";
 import type { components } from "@/lib/api-types";
 
@@ -33,11 +34,13 @@ export default async function PlayerDetailPage({
     { data: projection },
     { data: priceHistory },
     { data: riskNotes },
+    { data: roleNotes },
   ] = await Promise.all([
     client.GET("/players/{player_id}", { params: { path: { player_id: playerId } } }),
     client.GET("/players/{player_id}/projection", { params: { path: { player_id: playerId } } }),
     client.GET("/players/{player_id}/price-history", { params: { path: { player_id: playerId } } }),
     client.GET("/players/{player_id}/availability-risk-notes", { params: { path: { player_id: playerId } } }),
+    client.GET("/players/{player_id}/role-notes", { params: { path: { player_id: playerId } } }),
   ]);
 
   if (playerResponse.status === 404) {
@@ -95,6 +98,22 @@ export default async function PlayerDetailPage({
             >
               Flagged availability risk (severity {projection.availability_risk_severity}):{" "}
               {projection.availability_risk_reason}
+            </p>
+          )}
+
+          {projection.role_boost_reason && (
+            <p
+              style={{
+                margin: "0.6rem 0 0",
+                padding: "0.5rem 0.6rem",
+                borderRadius: "6px",
+                border: "1px solid var(--success)",
+                color: "var(--success)",
+                fontSize: "0.85rem",
+              }}
+            >
+              Boosted for a confirmed role (severity {projection.role_boost_severity}):{" "}
+              {projection.role_boost_reason}
             </p>
           )}
 
@@ -240,6 +259,7 @@ export default async function PlayerDetailPage({
       </Card>
 
       <AvailabilityRiskNotes playerId={playerId} notes={riskNotes ?? []} />
+      <RoleNotes playerId={playerId} notes={roleNotes ?? []} />
     </div>
   );
 }

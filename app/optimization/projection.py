@@ -26,6 +26,7 @@ from packages.database.models.gameweek import Gameweek
 from packages.database.models.player import Player
 from packages.database.models.player_availability_risk_note import PlayerAvailabilityRiskNote
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
+from packages.database.models.player_role_note import PlayerRoleNote
 from packages.domain.modeling import BASELINE_MODEL_FAMILIES, ModelFamily
 
 logger = logging.getLogger(__name__)
@@ -313,6 +314,82 @@ def _apply_availability_risk_notes(
     )
 
 
+# Appended to PlayerProjection.source whenever _apply_role_boost_notes boosts it -- mirrors
+# AVAILABILITY_RISK_NOTED_SUFFIX; both suffixes can be present at once (order: risk suffix first,
+# then role suffix -- see _apply_role_boost_notes' own docstring for why order doesn't affect the
+# math but is fixed for a deterministic, greppable source string).
+ROLE_BOOSTED_SUFFIX = "_role_boosted"
+
+
+def get_active_role_boost_note(
+    session: Session, player_id: uuid.UUID, target_gameweek_id: uuid.UUID
+) -> PlayerRoleNote | None:
+    """The single strongest active ``player_role_notes`` row for this player and gameweek, or
+    ``None`` if none applies. Public so callers outside this module (e.g. the "why this
+    projection" breakdown) can find the same note ``_apply_role_boost_notes`` would apply,
+    without duplicating the gameweek-number resolution + active-window filtering logic --
+    mirrors ``get_active_availability_risk_note``'s own "public wrapper" precedent.
+
+    Looks up by this gameweek's ``fpl_event_id`` (not ``target_gameweek_id`` directly), exactly
+    like ``get_active_availability_risk_note``. If more than one role note is active for the same
+    player and gameweek, the HIGHEST severity (strongest boost) wins -- the INVERSE tie-break
+    direction from risk notes, deliberately: a risk note's underlying fact is often uncertain
+    (a rotation doubt, not a confirmed absence), so preferring the most cautious read make sense
+    there. A role note's underlying fact ("who currently takes penalties") is usually unambiguous
+    once properly sourced, so preferring the strongest/most specific confirmed claim is the more
+    sensible default here -- see this table's own module docstring for the fuller reasoning.
+    """
+    fpl_event_id = session.execute(
+        select(Gameweek.fpl_event_id).where(Gameweek.id == target_gameweek_id)
+    ).scalar_one_or_none()
+    if fpl_event_id is None:
+        return None
+
+    notes = (
+        session.execute(select(PlayerRoleNote).where(PlayerRoleNote.player_id == player_id)).scalars().all()
+    )
+    active = [
+        note
+        for note in notes
+        if (note.valid_from_fpl_event_id is None or fpl_event_id >= note.valid_from_fpl_event_id)
+        and (note.valid_until_fpl_event_id is None or fpl_event_id <= note.valid_until_fpl_event_id)
+    ]
+    if not active:
+        return None
+    return max(active, key=lambda note: note.severity)
+
+
+def _apply_role_boost_notes(
+    session: Session, target_gameweek_id: uuid.UUID, projection: PlayerProjection
+) -> PlayerProjection:
+    """Apply the active ``player_role_notes`` row (if any) as an additional multiplier.
+
+    Stacks with (does not replace) ``_apply_availability_risk_notes`` -- these are two
+    independent, legitimate reasons a projection might need adjusting in OPPOSITE directions at
+    once (e.g. a player carrying a minor knock who has ALSO just been handed penalty duty). Called
+    strictly AFTER ``_apply_availability_risk_notes`` in ``project_player_with_champion`` so both
+    multipliers compound (multiplication is commutative, so the order doesn't change the final
+    number -- but the ORDER OF SUFFIXES on the source string is fixed by this call order, risk
+    suffix first, for a deterministic, greppable string).
+
+    Same no-op-for-ineligible guard as ``_apply_availability_risk_notes`` -- there's nothing to
+    boost on a hard-excluded (0-point) projection.
+    """
+    if not projection.is_eligible:
+        return projection
+
+    note = get_active_role_boost_note(session, projection.player_id, target_gameweek_id)
+    if note is None:
+        return projection
+
+    return PlayerProjection(
+        projection.player_id,
+        projection.projected_points * float(note.severity),
+        f"{projection.source}{ROLE_BOOSTED_SUFFIX}",
+        is_eligible=True,
+    )
+
+
 def project_player_with_champion(
     session: Session,
     player: Player,
@@ -350,11 +427,14 @@ def project_player_with_champion(
        ``f"ml_champion_{champion.model_family.value}"`` so it's always
        possible to tell, after the fact, which players in a recommendation
        used the trained model versus the fallback formula.
-    7. Whatever the above produces (steps 2-6), a final pass applies any active
-       ``player_availability_risk_notes`` for this player/gameweek as an additional discount —
-       see ``_apply_availability_risk_notes``. This step is NOT skipped for the ``project_player``
-       fallback branches (2, 4, 5): a flagged fitness risk is just as real whether or not a
-       champion model happened to be available.
+    7. Whatever the above produces (steps 2-6), two final passes apply any active
+       ``player_availability_risk_notes`` (a discount — see ``_apply_availability_risk_notes``)
+       and any active ``player_role_notes`` (a boost — see ``_apply_role_boost_notes``) for this
+       player/gameweek, in that order, so both can compound if both are active at once (e.g. a
+       player carrying a minor knock who has ALSO just been handed penalty duty). Neither step is
+       skipped for the ``project_player`` fallback branches (2, 4, 5): a flagged risk or a
+       confirmed role change is just as real whether or not a champion model happened to be
+       available.
     """
     if player.status in _HARD_EXCLUDE_STATUSES:
         return PlayerProjection(player.id, 0.0, "unavailable_status_excluded", is_eligible=False)
@@ -384,4 +464,5 @@ def project_player_with_champion(
                     player.id, prediction, f"ml_champion_{champion.model_family.value}", is_eligible=True
                 )
 
-    return _apply_availability_risk_notes(session, target_gameweek_id, projection)
+    projection = _apply_availability_risk_notes(session, target_gameweek_id, projection)
+    return _apply_role_boost_notes(session, target_gameweek_id, projection)
