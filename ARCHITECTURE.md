@@ -779,6 +779,50 @@ league has real standings and the user is checking the app's own Rivals
 page directly), it can simply be deleted — it has no dependency from
 anything else in this codebase and nothing depends on it.
 
+## FPL Scout Watch (`.github/workflows/scout-watch.yml`)
+
+A second standalone scheduled workflow, same shape as League Watch but a
+genuinely different mechanism underneath: weekly (cron `22 8 * * 1`, plus
+`workflow_dispatch`), it calls the **Gemini API's** Google Search grounding
+tool (not Anthropic's — Gemini's free tier includes real, ongoing search
+grounding, 500 grounded requests/day, no credit card; a once-weekly run
+comfortably costs $0) to research real, current FPL "scout"/tips coverage
+(Premier League's own Scout, Fantasy Football Scout, and similar credible
+outlets) for two things this app's own data can't source on its own:
+judgment-based availability risk FPL's official status hasn't caught yet,
+and confirmed set-piece-duty changes (who takes penalties/corners/free-
+kicks — genuinely absent from `bootstrap-static`, see the "Set-piece duty"
+section above).
+
+**Research + propose only — never applies anything directly**, for the
+same structural reason as the on-demand data refresh and League Watch:
+this app has never been deployed anywhere with a public,
+GitHub-Actions-reachable database, so even if this workflow wanted to
+`POST` a new `player_availability_risk_notes`/`player_role_notes` row
+itself, it has no way to reach the app that would receive it. Every run
+opens a GitHub issue (label `fpl-scout-digest`) with the model's findings,
+formatted as ready-to-apply proposals (player, category, suggested
+severity, suggested gameweek range, sourced reason, source URLs) — a
+human (or an agent, in a later session) reviews and applies whatever's
+genuinely useful via the real `POST /players/{id}/availability-risk-notes`
+/ `POST /players/{id}/role-notes` endpoints, exactly the same way every
+note seeded so far this season was created.
+
+Unlike League Watch, this does **not** diff against previous state and
+stay silent on "no change" — natural-language news content has no clean
+automatable "nothing changed" signal the way a structured JSON API
+response does, so every scheduled run opens a fresh digest issue rather
+than guessing whether last week's findings are still current. The prompt
+itself instructs the model to say "no new finding this week" rather than
+fabricate something plausible-sounding, mirroring this repo's own
+established "accuracy over always having something to report" discipline
+(see the availability-risk-notes seeding sessions this was modeled on).
+
+Requires a `GEMINI_API_KEY` repository secret (a free-tier key created at
+aistudio.google.com — **not** Google Cloud/Vertex AI, a different product
+that always requires billing); the job fails loudly, not silently, if the
+secret is missing.
+
 ## Known real gaps (as of this doc)
 
 - `PROJECTION_GENERATION` job type: enum member only, no handler, deliberately -- no defined

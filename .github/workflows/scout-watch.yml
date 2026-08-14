@@ -1,0 +1,183 @@
+name: FPL Scout Watch
+
+# Weekly, standalone research digest -- reads real FPL "scout"/tips sites (the same
+# ones the user pointed at directly: Premier League's own Scout coverage and Fantasy
+# Football Scout) via the Gemini API's Google Search grounding tool, and opens a
+# GitHub issue proposing player_availability_risk_notes / player_role_notes updates
+# for a human (or an agent, next session) to review and apply.
+#
+# Deliberately "research + propose only", never "apply directly": exactly like
+# league-watch.yml, this workflow cannot reach the app's own local database (this
+# project has never been deployed anywhere with a public, GitHub-reachable
+# database -- see ARCHITECTURE.md's "On-demand data refresh" section for the full
+# constraint) even if it wanted to write a note itself. So every run just produces
+# a digest issue; nothing in the running app changes until someone reads it and
+# applies whatever's genuinely useful via the real POST /players/{id}/availability-
+# risk-notes or POST /players/{id}/role-notes endpoints, the same way every note
+# seeded so far this season was created.
+#
+# Uses Google's Gemini API (not Anthropic's) specifically because its free tier
+# includes real Google Search grounding (500 grounded requests/day, ongoing, no
+# credit card) -- see the GEMINI_API_KEY secret. A once-weekly run using a handful
+# of searches costs nothing. Requires GEMINI_API_KEY as a repo secret; the job
+# fails loudly (not silently) if it's missing.
+#
+# Unlike league-watch.yml, this does NOT try to diff against previous state and
+# stay silent on "no change" -- natural-language news content doesn't have a clean
+# automatable "nothing changed" signal the way a structured JSON API response
+# does, so every scheduled run opens a fresh digest issue (labeled
+# fpl-scout-digest) rather than guessing at whether last week's findings are
+# still current.
+
+on:
+  schedule:
+    - cron: "22 8 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call Gemini API with Google Search grounding
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::GEMINI_API_KEY secret is not set -- cannot run the scout research step."
+            exit 1
+          fi
+
+          PROMPT=$(cat <<'PROMPT_EOF'
+          You are researching real, current Fantasy Premier League (FPL) news for the
+          2026-27 Premier League season, to propose updates to a decision-support app's
+          two curated-note mechanisms:
+
+          1. "Availability risk" notes -- a DISCOUNT (multiplier in (0, 1], e.g. 0.65 =
+             reduced to 65%) applied to a player's projected points for a gameweek range,
+             for judgment-based reasons FPL's own official injury/status data hasn't
+             caught up to yet (e.g. a player short on match sharpness after a long
+             international tournament, carrying a knock not yet officially listed,
+             or a new signing still integrating into a squad).
+          2. "Role" notes -- a BOOST (multiplier normally > 1.0, e.g. 1.15 = increased
+             to 115%) for a player CONFIRMED to have taken on new set-piece duty
+             (penalties, corners, free-kicks) that increases their real expected
+             returns beyond what historical data alone would suggest.
+
+          Research real, current, well-sourced news from Premier League's own Scout
+          coverage (premierleague.com/en/the-scout and related news articles) and
+          Fantasy Football Scout (fantasyfootballscout.co.uk) -- and other credible
+          sources if useful (Sky Sports, BBC Sport, official club statements) --
+          covering: (a) any NEW injury, fitness, or availability concern for a
+          notable Premier League player not yet reflected in official FPL status,
+          (b) any CONFIRMED change in who takes penalties/corners/free-kicks for a
+          club, (c) any other genuinely decision-relevant news for FPL squad
+          building this week.
+
+          For EACH real, sourced finding, output a clearly delimited block in
+          exactly this format so it can be reviewed and applied via this app's own
+          API:
+
+          ---
+          PLAYER: <player name, and club if there's any ambiguity>
+          CATEGORY: <availability_risk | role_boost>
+          SUGGESTED_SEVERITY: <a decimal multiplier, e.g. 0.7 or 1.15 -- your best
+            reasoned estimate, not a precise science>
+          SUGGESTED_GAMEWEEK_RANGE: <e.g. "GW1-3" or "open-ended" if this looks like
+            a longer-term role change rather than a short-term recovery window>
+          REASON: <2-4 sentences, the real sourced explanation, written the way you'd
+            want it to read as a permanent audit-trail note -- include what you found
+            and where>
+          SOURCES: <list the actual URLs/outlets you found this from>
+          ---
+
+          Do NOT fabricate or guess at findings you can't actually source via search
+          -- if you don't find anything genuinely new and well-sourced this week for
+          a particular category, say so plainly ("No new [X] found this week") rather
+          than inventing a plausible-sounding entry. Accuracy matters far more than
+          always having something to report. Aim for quality over quantity -- 2-3
+          well-sourced findings beats 10 speculative ones.
+          PROMPT_EOF
+          )
+
+          PROMPT_JSON=$(python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" <<< "$PROMPT")
+
+          cat > request.json <<EOF
+          {
+            "model": "gemini-3.6-flash",
+            "input": $PROMPT_JSON,
+            "tools": [{"type": "google_search"}]
+          }
+          EOF
+
+          curl -sf -X POST "https://generativelanguage.googleapis.com/v1beta/interactions" \
+            -H "x-goog-api-key: $GEMINI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d @request.json \
+            -o response.json
+          cat response.json
+
+      - name: Extract digest text and build the issue body
+        run: |
+          python3 - <<'EOF'
+          import json
+          from datetime import datetime, timezone
+
+          with open("response.json") as f:
+              data = json.load(f)
+
+          text_parts = []
+          queries = []
+          for step in data.get("steps", []):
+              step_type = step.get("type")
+              if step_type == "google_search_call":
+                  queries.extend(step.get("queries", []))
+              elif step_type == "model_output":
+                  for block in step.get("content", []):
+                      if block.get("text"):
+                          text_parts.append(block["text"])
+
+          digest_text = "\n\n".join(text_parts).strip()
+          if not digest_text:
+              digest_text = (
+                  "_No model output was extracted from the Gemini API response -- "
+                  "see the raw response.json artifact for debugging._"
+              )
+
+          queries_note = ""
+          if queries:
+              queries_note = "\n\n**Searches run:** " + ", ".join(f"`{q}`" for q in queries)
+
+          body = (
+              f"Automated weekly FPL scout-site research digest -- proposals only, "
+              f"nothing has been applied to the app.\n\n"
+              f"Review each finding below and apply anything genuinely useful via "
+              f"`POST /players/{{id}}/availability-risk-notes` or "
+              f"`POST /players/{{id}}/role-notes` against the real running app.\n"
+              f"{queries_note}\n\n---\n\n{digest_text}\n\n---\n"
+              f"_Generated {datetime.now(timezone.utc).isoformat()}_"
+          )
+
+          with open("issue_body.md", "w") as f:
+              f.write(body)
+          EOF
+
+      - name: Open the digest issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "FPL scout digest -- $(date -u +%Y-%m-%d)" \
+            --body-file issue_body.md \
+            --label "fpl-scout-digest"
+
+      - name: Upload raw response for debugging
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-response
+          path: response.json
