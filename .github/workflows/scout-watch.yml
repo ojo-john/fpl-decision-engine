@@ -113,12 +113,17 @@ jobs:
           }
           EOF
 
-          curl -sf -X POST "https://generativelanguage.googleapis.com/v1beta/interactions" \
+          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/interactions" \
             -H "x-goog-api-key: $GEMINI_API_KEY" \
             -H "Content-Type: application/json" \
-            -d @request.json \
-            -o response.json
+            -d @request.json)
+          echo "HTTP status: $HTTP_STATUS"
           cat response.json
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "::error::Gemini API returned HTTP $HTTP_STATUS -- see response.json above for details."
+            exit 1
+          fi
 
       - name: Extract digest text and build the issue body
         run: |
