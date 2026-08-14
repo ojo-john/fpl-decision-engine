@@ -28,6 +28,19 @@ name: FPL Scout Watch
 # does, so every scheduled run opens a fresh digest issue (labeled
 # fpl-scout-digest) rather than guessing at whether last week's findings are
 # still current.
+#
+# Known gotcha, confirmed live against a brand-new key/project at the time this
+# workflow was first built: model/key/endpoint were all correct (a plain,
+# tool-less call returned a clean 200), but the FIRST several grounded requests
+# 429'd with "exceeded your current quota" -- Google's own free-tier Search
+# grounding quota is known to sometimes provision with a delay (or need a fresh
+# key/project) separately from base model access; see
+# https://discuss.ai.google.dev/t/gemini-api-429-resource-exhausted-error-on-tier-1/114413.
+# If this job starts failing with a 429 whose body says "too_many_requests" /
+# "exceeded your current quota" even though GEMINI_API_KEY is definitely set
+# correctly, this is very likely that same provisioning quirk, not a bug in
+# this workflow -- retry later (the weekly schedule will do this on its own)
+# before assuming the request shape itself is wrong.
 
 on:
   schedule:
@@ -42,18 +55,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: TEMP DEBUG call without grounding tool
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          HTTP_STATUS=$(curl -s -o noools_response.json -w "%{http_code}" -X POST \
-            "https://generativelanguage.googleapis.com/v1beta/interactions" \
-            -H "x-goog-api-key: $GEMINI_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"model": "gemini-flash-latest", "input": "Say hello in one word."}')
-          echo "No-tools HTTP status: $HTTP_STATUS"
-          cat noools_response.json
-
       - name: Call Gemini API with Google Search grounding
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
