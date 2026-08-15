@@ -782,17 +782,37 @@ anything else in this codebase and nothing depends on it.
 ## FPL Scout Watch (`.github/workflows/scout-watch.yml`)
 
 A second standalone scheduled workflow, same shape as League Watch but a
-genuinely different mechanism underneath: weekly (cron `22 8 * * 1`, plus
-`workflow_dispatch`), it calls the **Gemini API's** Google Search grounding
-tool (not Anthropic's — Gemini's free tier includes real, ongoing search
-grounding, 500 grounded requests/day, no credit card; a once-weekly run
-comfortably costs $0) to research real, current FPL "scout"/tips coverage
-(Premier League's own Scout, Fantasy Football Scout, and similar credible
-outlets) for two things this app's own data can't source on its own:
-judgment-based availability risk FPL's official status hasn't caught yet,
-and confirmed set-piece-duty changes (who takes penalties/corners/free-
-kicks — genuinely absent from `bootstrap-static`, see the "Set-piece duty"
-section above).
+genuinely different mechanism underneath: twice a week (cron `22 8 * * 1`
+Monday morning for an early-week roundup, `47 21 * * 4` Thursday night for
+a pre-deadline check — most FPL gameweek deadlines fall Friday evening,
+occasionally Saturday, and the most decision-relevant news, press
+conferences and final fitness updates, lands Wed-Fri; a Monday-only run
+would miss exactly that — plus `workflow_dispatch`), it calls the
+**Gemini API's** Google Search grounding tool (not Anthropic's) to research
+real, current FPL "scout"/tips coverage (Premier League's own Scout,
+Fantasy Football Scout, and similar credible outlets) for two things this
+app's own data can't source on its own: judgment-based availability risk
+FPL's official status hasn't caught yet, and confirmed set-piece-duty
+changes (who takes penalties/corners/free-kicks — genuinely absent from
+`bootstrap-static`, see the "Set-piece duty" section above).
+
+Cost, measured from a real run's actual token usage (not estimated): well
+under $0.01/run — 4 grounded searches, ~2,760 tokens total, all within
+Gemini 2.5 Flash's free daily grounding allowance (1,500 requests/day) at
+this call volume. Getting there required real, live debugging (see the
+workflow's own git history/comments for the full trail) that corrected an
+earlier, too-optimistic claim in this doc: Google requires *new* AI Studio
+accounts (a policy change as of March 2026) onto a Prepaid billing plan
+before grounding will actually work at all, even though base
+(non-grounded) calls succeed under a separate free allowance — a genuinely
+free, no-card AI Studio tier does still exist, but not automatically for a
+brand-new project. A minimum ~$10 prepaid balance (one-time; credits last
+a year) was required to unblock this project specifically, alongside two
+unrelated real fixes: the Gemini API needing to be explicitly enabled on
+the underlying Cloud project (a standard one-time Cloud Console step), and
+the docs' example model name (`gemini-3.6-flash`) turning out not to carry
+the same free grounding quota as the one that actually worked
+(`gemini-flash-latest`).
 
 **Research + propose only — never applies anything directly**, for the
 same structural reason as the on-demand data refresh and League Watch:

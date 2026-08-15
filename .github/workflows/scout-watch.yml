@@ -1,10 +1,13 @@
 name: FPL Scout Watch
 
-# Weekly, standalone research digest -- reads real FPL "scout"/tips sites (the same
-# ones the user pointed at directly: Premier League's own Scout coverage and Fantasy
-# Football Scout) via the Gemini API's Google Search grounding tool, and opens a
-# GitHub issue proposing player_availability_risk_notes / player_role_notes updates
-# for a human (or an agent, next session) to review and apply.
+# Twice-weekly (Monday early-week roundup, Thursday night pre-deadline check --
+# most gameweek deadlines fall Friday evening, and the most decision-relevant news
+# lands Wed-Fri, right before them), standalone research digest -- reads real FPL
+# "scout"/tips sites (the same ones the user pointed at directly: Premier League's
+# own Scout coverage and Fantasy Football Scout) via the Gemini API's Google Search
+# grounding tool, and opens a GitHub issue proposing player_availability_risk_notes
+# / player_role_notes updates for a human (or an agent, next session) to review and
+# apply.
 #
 # Deliberately "research + propose only", never "apply directly": exactly like
 # league-watch.yml, this workflow cannot reach the app's own local database (this
@@ -16,11 +19,16 @@ name: FPL Scout Watch
 # risk-notes or POST /players/{id}/role-notes endpoints, the same way every note
 # seeded so far this season was created.
 #
-# Uses Google's Gemini API (not Anthropic's) specifically because its free tier
-# includes real Google Search grounding (500 grounded requests/day, ongoing, no
-# credit card) -- see the GEMINI_API_KEY secret. A once-weekly run using a handful
-# of searches costs nothing. Requires GEMINI_API_KEY as a repo secret; the job
-# fails loudly (not silently) if it's missing.
+# Uses Google's Gemini API (not Anthropic's) -- see the GEMINI_API_KEY secret.
+# Measured from a real run's actual usage: well under $0.01/run (a handful of
+# grounded searches, comfortably within Gemini 2.5 Flash's free daily grounding
+# allowance at this call volume) -- genuinely cheap, though NOT the "no credit
+# card, ever" free tier this doc originally assumed; see ARCHITECTURE.md's own
+# "FPL Scout Watch" section for the real, live-debugged story (new AI Studio
+# projects need a one-time ~$10 prepaid balance and the Gemini API explicitly
+# enabled on the underlying Cloud project before grounding works at all).
+# Requires GEMINI_API_KEY as a repo secret; the job fails loudly (not silently)
+# if it's missing.
 #
 # Unlike league-watch.yml, this does NOT try to diff against previous state and
 # stay silent on "no change" -- natural-language news content doesn't have a clean
@@ -44,7 +52,13 @@ name: FPL Scout Watch
 
 on:
   schedule:
+    # Monday morning -- early-week roundup.
     - cron: "22 8 * * 1"
+    # Thursday night (UTC) -- most FPL gameweek deadlines fall Friday evening
+    # (occasionally Saturday), and the most decision-relevant news (press
+    # conferences, final fitness/team-news updates) lands Wed-Fri, right
+    # before the deadline -- a Monday-only run would miss exactly that.
+    - cron: "47 21 * * 4"
   workflow_dispatch: {}
 
 permissions:
