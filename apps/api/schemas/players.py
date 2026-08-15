@@ -226,3 +226,29 @@ class RoleNoteOut(BaseModel):
     valid_until_fpl_event_id: int | None
     created_at: datetime
     created_by: str
+
+
+class ActiveNoteOut(BaseModel):
+    """One row in ``GET /players/notes/active`` -- every currently-active
+    ``player_availability_risk_notes``/``player_role_notes`` row across every player, for the
+    CURRENT/next unfinished gameweek (not player-scoped like the existing per-player note
+    endpoints). Built for external, read-only consumers that can't reach this app's database
+    directly (e.g. ``.github/workflows/scout-watch.yml``'s dedup step) to know what's already
+    known before proposing something as new.
+
+    ``category`` is ``"availability_risk"`` or ``"role_boost"`` -- a plain str, not an enum,
+    mirroring ``player_role_notes.role``'s own "nothing branches on the exact string" reasoning.
+    ``role`` is only ever set for ``role_boost`` rows (``None`` for ``availability_risk``, which
+    has no equivalent column).
+    """
+
+    player_id: uuid.UUID
+    web_name: str | None
+    category: str
+    role: str | None
+    reason: str
+    severity: Decimal
+    valid_from_fpl_event_id: int | None
+    valid_until_fpl_event_id: int | None
+    created_at: datetime
+    created_by: str

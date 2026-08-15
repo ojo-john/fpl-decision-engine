@@ -1,0 +1,25 @@
+{
+  "_comment": "Manually maintained -- unlike league-814682-watch.json, there is no live FPL API this workflow can poll to auto-sync a squad (that requires the manager's own team endpoint, which needs auth this workflow doesn't have). Update this file by hand whenever a real transfer/chip decision changes the squad. Consumed by .github/workflows/scout-watch.yml's verification step to flag findings about players actually in this squad.",
+  "last_updated_at": "2026-08-15T00:00:00Z",
+  "captain": "Haaland",
+  "starting_xi": [
+    { "web_name": "Roefs", "position": "GKP" },
+    { "web_name": "Gabriel", "position": "DEF" },
+    { "web_name": "Alderete", "position": "DEF" },
+    { "web_name": "Lacroix", "position": "DEF" },
+    { "web_name": "Virgil", "position": "DEF" },
+    { "web_name": "Semenyo", "position": "MID" },
+    { "web_name": "Mbeumo", "position": "MID" },
+    { "web_name": "Stach", "position": "MID" },
+    { "web_name": "Zubimendi", "position": "MID" },
+    { "web_name": "Haaland", "position": "FWD" },
+    { "web_name": "Woltemade", "position": "FWD" }
+  ],
+  "bench": [
+    { "web_name": "Button", "position": "GKP" },
+    { "web_name": "Destan", "position": "FWD" },
+    { "web_name": "Mukasa", "position": "MID" },
+    { "web_name": "D.Essugo", "position": "MID" }
+  ],
+  "note": "Kroupi was swapped out for Rogers earlier this season; the exact bench order/composition above may have shifted slightly since last_updated_at -- treat starting_xi and captain as the highest-confidence fields."
+}

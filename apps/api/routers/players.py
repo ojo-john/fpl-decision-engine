@@ -24,6 +24,7 @@ from app.optimization.projection import (
 from app.players.price_signal import classify_price_momentum
 from apps.api.dependencies import get_db
 from apps.api.schemas.players import (
+    ActiveNoteOut,
     AvailabilityRiskNoteCreate,
     AvailabilityRiskNoteOut,
     PlayerDetail,
@@ -35,6 +36,7 @@ from apps.api.schemas.players import (
     RoleNoteCreate,
     RoleNoteOut,
 )
+from packages.database.models.gameweek import Gameweek
 from packages.database.models.player import Player
 from packages.database.models.player_availability_risk_note import PlayerAvailabilityRiskNote
 from packages.database.models.player_price_history import PlayerPriceHistory
@@ -158,6 +160,118 @@ def list_players(
             )
         )
     return PlayerListResponse(items=items, page=page, page_size=page_size, total=total)
+
+
+def _resolve_relevant_fpl_event_id(db: Session, season_id: uuid.UUID) -> int | None:
+    """The gameweek number "active" note-window checks are evaluated against -- the next
+    unfinished gameweek, mirroring ``apps.api.routers.gameweeks.get_next_deadline``'s own
+    resolution exactly (the real squad-selection deadline is what matters, independent of the
+    optimization gate). ``None`` off-season (every gameweek already finished)."""
+    gameweek = db.execute(
+        select(Gameweek)
+        .where(Gameweek.season_id == season_id, Gameweek.finished.is_(False))
+        .order_by(Gameweek.fpl_event_id)
+        .limit(1)
+    ).scalar_one_or_none()
+    return gameweek.fpl_event_id if gameweek is not None else None
+
+
+def _is_note_active(
+    fpl_event_id: int, valid_from: int | None, valid_until: int | None
+) -> bool:
+    """Same inclusive-window check as ``app.optimization.projection``'s own
+    ``get_active_availability_risk_note``/``get_active_role_boost_note`` -- kept as a tiny,
+    duplicated pure function here rather than imported, since those two are scoped to a single
+    player/gameweek pair and already do their own DB query; this endpoint evaluates the window
+    against every note across every player for one already-resolved gameweek number instead."""
+    return (valid_from is None or fpl_event_id >= valid_from) and (
+        valid_until is None or fpl_event_id <= valid_until
+    )
+
+
+@router.get("/notes/active", response_model=list[ActiveNoteOut])
+def list_active_notes(db: Session = Depends(get_db)) -> list[ActiveNoteOut]:
+    """Every currently-active availability-risk and role-boost note across every player, for the
+    current/next unfinished gameweek -- NOT player-scoped, unlike every other note endpoint on
+    this router. Built for external, read-only consumers that can't reach this app's database
+    directly (see ``.github/workflows/scout-watch.yml``'s dedup step) to know what's already
+    known before proposing something as new. Registered before ``/{player_id}`` so ``notes`` can
+    never be misread as a player id (same defensive route-ordering discipline as
+    ``apps.api.routers.optimization``'s own chips-vs-catch-all precedent -- see that router's own
+    comment -- even though these two paths don't actually collide in segment count).
+
+    Returns an empty list (not 404) when there's no current season or no unfinished gameweek to
+    evaluate against (off-season) -- there's nothing "active" to report in either case, and a
+    consuming script shouldn't need special-case 404 handling for what is, for its purposes, the
+    same as "nothing found".
+    """
+    season_id = db.execute(select(Season.id).where(Season.is_current.is_(True))).scalar_one_or_none()
+    if season_id is None:
+        return []
+
+    fpl_event_id = _resolve_relevant_fpl_event_id(db, season_id)
+    if fpl_event_id is None:
+        return []
+
+    players_by_id = {
+        p.id: p for p in db.execute(select(Player).where(Player.season_id == season_id)).scalars()
+    }
+
+    results: list[ActiveNoteOut] = []
+
+    risk_notes = (
+        db.execute(
+            select(PlayerAvailabilityRiskNote).where(PlayerAvailabilityRiskNote.player_id.in_(players_by_id))
+        )
+        .scalars()
+        .all()
+    )
+    for risk_note in risk_notes:
+        if not _is_note_active(
+            fpl_event_id, risk_note.valid_from_fpl_event_id, risk_note.valid_until_fpl_event_id
+        ):
+            continue
+        player = players_by_id.get(risk_note.player_id)
+        results.append(
+            ActiveNoteOut(
+                player_id=risk_note.player_id,
+                web_name=player.web_name if player is not None else None,
+                category="availability_risk",
+                role=None,
+                reason=risk_note.reason,
+                severity=risk_note.severity,
+                valid_from_fpl_event_id=risk_note.valid_from_fpl_event_id,
+                valid_until_fpl_event_id=risk_note.valid_until_fpl_event_id,
+                created_at=risk_note.created_at,
+                created_by=risk_note.created_by,
+            )
+        )
+
+    role_notes = (
+        db.execute(select(PlayerRoleNote).where(PlayerRoleNote.player_id.in_(players_by_id))).scalars().all()
+    )
+    for role_note in role_notes:
+        if not _is_note_active(
+            fpl_event_id, role_note.valid_from_fpl_event_id, role_note.valid_until_fpl_event_id
+        ):
+            continue
+        player = players_by_id.get(role_note.player_id)
+        results.append(
+            ActiveNoteOut(
+                player_id=role_note.player_id,
+                web_name=player.web_name if player is not None else None,
+                category="role_boost",
+                role=role_note.role,
+                reason=role_note.reason,
+                severity=role_note.severity,
+                valid_from_fpl_event_id=role_note.valid_from_fpl_event_id,
+                valid_until_fpl_event_id=role_note.valid_until_fpl_event_id,
+                created_at=role_note.created_at,
+                created_by=role_note.created_by,
+            )
+        )
+
+    return results
 
 
 @router.get("/{player_id}", response_model=PlayerDetail)

@@ -53,11 +53,13 @@ packages/fpl_client/    Resilient adapter over the LIVE public FPL API
 packages/shared/        pydantic-settings Settings + JSON logging setup
 migrations/             Hand-written Alembic migrations
 scripts/run_job.py      CLI to execute one job synchronously (prints JSON result)
+scripts/export_notes_snapshot.py  CLI to regenerate .github/state/known-notes-snapshot.json from the live API (see scout-watch.yml section)
 tests/unit/ (44 files)  No DB
 tests/integration/ (46) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
 tests/fixtures/          Committed FPL API samples (fpl_api/) + a small real historical CSV set (historical/2023-24/)
-.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml, historical-ingest.yml, feature-generation.yml, train.yml, league-watch.yml (standalone -- see its own section below)
+.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml, historical-ingest.yml, feature-generation.yml, train.yml, league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
+.github/state/            current-squad.json, known-notes-snapshot.json (both consumed by scout-watch.yml; league-814682-watch.json consumed by league-watch.yml)
 ```
 
 ## Job system
@@ -379,6 +381,29 @@ not a reuse of it**, for two reasons:
   Igor Thiago (Brentford, confirmed keeping penalty duties after a
   22-goal season), both severity 1.15, `valid_from_fpl_event_id=1`,
   open-ended.
+
+**`GET /players/notes/active`** (`apps/api/routers/players.py`) — added to
+support Scout Watch's dedup logic (see that section below), the one
+player-notes endpoint that is NOT scoped to a single player. Returns every
+currently-active row from BOTH tables, across every player, as a flat list
+(`ActiveNoteOut`: `player_id`, `web_name`, `category`
+[`"availability_risk"` | `"role_boost"`], `role`, `reason`, `severity`,
+`valid_from_fpl_event_id`, `valid_until_fpl_event_id`, `created_at`,
+`created_by`). "Active" mirrors `get_active_availability_risk_note`/
+`get_active_role_boost_note`'s own window check
+(`_is_note_active` — `(valid_from is None or fpl_event_id >= valid_from) and
+(valid_until is None or fpl_event_id <= valid_until)`) without the
+single-player scoping those functions have, resolved against the current
+season's next unfinished gameweek (`_resolve_relevant_fpl_event_id`, the
+same "lowest `fpl_event_id` with `finished=False`" pattern
+`GET /gameweeks/next-deadline` uses — deliberately independent of the
+optimization gate). Returns `[]`, not a 404, when there's no current season
+or no unfinished gameweek (e.g. between seasons) — an empty list is a valid,
+expected answer, not an error. Covered by
+`tests/unit/test_players_router_active_notes.py` (pure `_is_note_active`
+boundary cases) and `tests/integration/test_api_active_notes.py` (empty/
+missing-season/missing-gameweek/expired/not-yet-started boundary cases,
+then both note categories together).
 
 ## Two separate ingestion pipelines — don't conflate them
 
@@ -827,6 +852,59 @@ human (or an agent, in a later session) reviews and applies whatever's
 genuinely useful via the real `POST /players/{id}/availability-risk-notes`
 / `POST /players/{id}/role-notes` endpoints, exactly the same way every
 note seeded so far this season was created.
+
+**TWO sequential Gemini calls, not one** — added after a real, live run of
+this exact workflow confidently reported that Arsenal's William Saliba
+"underwent back surgery," when independent sources actually confirm
+surgery was explicitly RULED OUT; that error was only caught by manual
+human review, which is exactly the failure mode this workflow exists to
+reduce. Call 1 ("research pass") is unchanged — the model researches and
+drafts findings in the same delimited block format as before. Call 2
+("verification pass") hands those DRAFT findings back to a fresh model
+call, same endpoint/model/`google_search` grounding tool, with an explicit
+instruction to independently re-search and mark each finding
+`CONFIRMED`/`CORRECTED`/`RETRACTED` — not rubber-stamp the draft. The
+GitHub issue body is built from the SECOND pass's output only; a corrected
+finding shows the fix inline via `CORRECTION_NOTE` rather than printing
+both the draft and corrected versions side by side. Still just two calls
+per run, not an elaborate multi-round debate — cost for the pair stays in
+the same well-under-$0.01 range as the original single call (see below).
+
+**Squad-aware and duplicate-aware**: the verification-pass prompt also
+embeds two committed state files, read via a `Checkout repo` step added
+for exactly this (the original single-call version didn't need repo
+contents at all — everything went through `curl`/`gh`):
+
+- `.github/state/current-squad.json` — the user's real decided starting
+  XI, captain, and bench, seeded verbatim (Roefs; Gabriel/Alderete/
+  Lacroix/Virgil; Semenyo/Mbeumo/Stach/Zubimendi;
+  Haaland(C)/Woltemade; bench Button/Destan/Mukasa/D.Essugo). Unlike
+  `league-814682-watch.json`, there is no live FPL API this workflow can
+  poll to auto-sync a squad (that needs the manager's own team endpoint,
+  which needs auth this workflow doesn't have), so this file is manually
+  maintained — its own `_comment` field says so, and says to treat
+  `starting_xi`/`captain` as higher-confidence than `bench` (the note
+  records that Kroupi was already swapped for Rogers once this season,
+  and the bench may have shifted slightly since `last_updated_at`). Every
+  `CONFIRMED`/`CORRECTED` finding for a player in this file is prepended
+  `SQUAD_FLAG: IN YOUR SQUAD` in the issue.
+- `.github/state/known-notes-snapshot.json` — a snapshot of every
+  currently-active note the real app already knows about, generated (not
+  hand-written) from the real dev database via the new
+  `GET /players/notes/active` endpoint (see the availability/role-notes
+  section above) using `scripts/export_notes_snapshot.py --base-url
+  <api> --token <APP_SHARED_TOKEN>` (mirrors `scripts/run_job.py`'s CLI
+  style; `httpx`-based, already a project dependency). As of the session
+  that built this, a real export captured 12 active notes (Rice, Saka,
+  Kroupi, Rogers, Guehi, Senesi, Lacroix, Minteh, Madjo — availability
+  risk; Groß, Igor Thiago, Szoboszlai — role boost). Needs the same
+  periodic manual re-run/re-commit as the squad file — no automatic sync
+  either. A finding that duplicates an already-active note (same player,
+  category, overlapping range, comparable severity/role) gets
+  `DUPLICATE_FLAG: ALREADY KNOWN` plus a `CORRECTION_NOTE` explaining
+  what's already there, instead of being re-proposed as new; a finding
+  that meaningfully updates/contradicts an existing note stays flagged as
+  new but says in `CORRECTION_NOTE` that it supersedes the old one.
 
 Unlike League Watch, this does **not** diff against previous state and
 stay silent on "no change" — natural-language news content has no clean
