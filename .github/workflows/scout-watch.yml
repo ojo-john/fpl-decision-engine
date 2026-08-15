@@ -37,6 +37,29 @@ name: FPL Scout Watch
 # fpl-scout-digest) rather than guessing at whether last week's findings are
 # still current.
 #
+# TWO SEQUENTIAL Gemini calls, not one -- added after a real, live run of this
+# workflow confidently reported that Arsenal's William Saliba "underwent back
+# surgery," when independent sources actually confirm surgery was explicitly
+# RULED OUT. That error was only caught by manual human review. The first call
+# (research pass) drafts findings exactly as before; the second call
+# (verification pass) is handed those draft findings PLUS this repo's own
+# squad/known-notes state and is instructed to independently re-search and
+# confirm/correct/retract each one via fresh search, not just rubber-stamp the
+# draft. The issue body is built from the SECOND pass's output only -- corrected
+# findings show the correction inline (via CORRECTION_NOTE), not both versions
+# side by side. Still just two calls, not an elaborate multi-round debate --
+# measured cost for the pair is well under $0.01.
+#
+# Squad-aware + duplicate-aware: the verification prompt also embeds
+# .github/state/current-squad.json (the user's real decided squad -- manually
+# maintained, see that file's own _comment for why this can't auto-sync the way
+# league-watch.yml's state does) and .github/state/known-notes-snapshot.json (a
+# snapshot of every currently-active note the real app already knows about,
+# regenerated via scripts/export_notes_snapshot.py -- see that script's
+# docstring). Findings about a squad player get a "⚠️ IN YOUR SQUAD" marker;
+# findings that duplicate an already-active note get a "✅ ALREADY KNOWN" marker
+# instead of being re-proposed as new.
+#
 # Known gotcha, confirmed live against a brand-new key/project at the time this
 # workflow was first built: model/key/endpoint were all correct (a plain,
 # tool-less call returned a clean 200), but the FIRST several grounded requests
@@ -69,7 +92,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Call Gemini API with Google Search grounding
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Call Gemini API with Google Search grounding (research pass)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -152,11 +178,10 @@ jobs:
             exit 1
           fi
 
-      - name: Extract digest text and build the issue body
+      - name: Extract research-pass findings
         run: |
           python3 - <<'EOF'
           import json
-          from datetime import datetime, timezone
 
           with open("response.json") as f:
               data = json.load(f)
@@ -175,17 +200,167 @@ jobs:
           digest_text = "\n\n".join(text_parts).strip()
           if not digest_text:
               digest_text = (
-                  "_No model output was extracted from the Gemini API response -- "
-                  "see the raw response.json artifact for debugging._"
+                  "No model output was extracted from the research-pass Gemini "
+                  "response -- see the raw response.json artifact for debugging."
+              )
+
+          with open("step1_findings.md", "w") as f:
+              f.write(digest_text)
+          with open("step1_queries.json", "w") as f:
+              json.dump(queries, f)
+          EOF
+
+      - name: Build verification-pass prompt
+        run: |
+          python3 - <<'EOF'
+          import json
+
+          with open("step1_findings.md") as f:
+              draft_findings = f.read().strip()
+
+          with open(".github/state/current-squad.json") as f:
+              squad = json.load(f)
+
+          with open(".github/state/known-notes-snapshot.json") as f:
+              known_notes = json.load(f)
+
+          squad_json = json.dumps(squad, indent=2)
+          known_notes_json = json.dumps(known_notes, indent=2)
+
+          prompt = f"""You are performing a FRESH, INDEPENDENT verification pass over
+          draft FPL findings a previous research pass produced. Your job is to catch
+          errors before a human sees them: a real earlier run of this exact process
+          confidently reported that Arsenal's William Saliba "underwent back surgery,"
+          when independent sources actually confirm surgery was explicitly RULED OUT.
+          That error only got caught by manual human review. Do not repeat it.
+
+          For EACH draft finding below, use Google Search again -- actually re-verify
+          it against fresh, independent sources, do not just re-read the claim -- and
+          decide:
+          - CONFIRMED: independently corroborated by fresh search.
+          - CORRECTED: sources disagree with some detail -- keep the finding but fix
+            it, and explain exactly what changed and why.
+          - RETRACTED: you cannot find independent corroboration, or sources actively
+            contradict it.
+
+          Then cross-reference each CONFIRMED or CORRECTED finding's player against
+          two lists and prepend the matching marker(s):
+
+          1. SQUAD_FLAG -- this is the user's real current FPL squad (starting XI +
+             bench). If the finding's player appears here, use "IN YOUR SQUAD",
+             otherwise use "".
+
+          {squad_json}
+
+          2. DUPLICATE_FLAG -- these are notes ALREADY ACTIVE in the app right now.
+             If the finding's player + category is already covered by one of these
+             (same player, same category, overlapping gameweek range, comparable
+             severity/role), use "ALREADY KNOWN" and say in CORRECTION_NOTE what's
+             already there instead of re-proposing it as new. If the finding
+             meaningfully updates or contradicts an existing note, keep STATUS as
+             CONFIRMED or CORRECTED, leave DUPLICATE_FLAG "", and say in
+             CORRECTION_NOTE that it supersedes the existing note. Otherwise use "".
+
+          {known_notes_json}
+
+          Output EXACTLY one block per draft finding (including RETRACTED ones, so
+          the audit trail is clear) in this format:
+
+          ---
+          STATUS: <CONFIRMED | CORRECTED | RETRACTED>
+          PLAYER: <player name, and club if there's any ambiguity>
+          SQUAD_FLAG: <IN YOUR SQUAD | (empty)>
+          DUPLICATE_FLAG: <ALREADY KNOWN | (empty)>
+          CATEGORY: <availability_risk | role_boost>
+          SUGGESTED_SEVERITY: <a decimal multiplier, e.g. 0.7 or 1.15>
+          SUGGESTED_GAMEWEEK_RANGE: <e.g. "GW1-3" or "open-ended">
+          REASON: <2-4 sentences, the real sourced explanation, written the way you'd
+            want it to read as a permanent audit-trail note>
+          CORRECTION_NOTE: <if STATUS is CORRECTED or RETRACTED, or DUPLICATE_FLAG is
+            "ALREADY KNOWN", explain exactly what changed/why versus the draft below
+            or what the existing note already says; otherwise "n/a">
+          SOURCES: <the actual URLs/outlets you found this from during this pass>
+          ---
+
+          If the draft findings below say nothing new was found, confirm that plainly
+          rather than inventing anything. Draft findings to verify:
+
+          {draft_findings}
+          """
+
+          with open("verification_prompt.txt", "w") as f:
+              f.write(prompt)
+          EOF
+
+      - name: Call Gemini API with Google Search grounding (verification pass)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          PROMPT_JSON=$(python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" < verification_prompt.txt)
+
+          cat > request2.json <<EOF
+          {
+            "model": "gemini-flash-latest",
+            "input": $PROMPT_JSON,
+            "tools": [{"type": "google_search"}]
+          }
+          EOF
+
+          HTTP_STATUS=$(curl -s -o response2.json -w "%{http_code}" -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/interactions" \
+            -H "x-goog-api-key: $GEMINI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d @request2.json)
+          echo "HTTP status: $HTTP_STATUS"
+          cat response2.json
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "::error::Gemini API (verification pass) returned HTTP $HTTP_STATUS -- see response2.json above for details."
+            exit 1
+          fi
+
+      - name: Extract verified findings and build the issue body
+        run: |
+          python3 - <<'EOF'
+          import json
+          from datetime import datetime, timezone
+
+          with open("response2.json") as f:
+              data = json.load(f)
+
+          with open("step1_queries.json") as f:
+              queries = json.load(f)
+
+          text_parts = []
+          for step in data.get("steps", []):
+              step_type = step.get("type")
+              if step_type == "google_search_call":
+                  queries.extend(step.get("queries", []))
+              elif step_type == "model_output":
+                  for block in step.get("content", []):
+                      if block.get("text"):
+                          text_parts.append(block["text"])
+
+          digest_text = "\n\n".join(text_parts).strip()
+          if not digest_text:
+              digest_text = (
+                  "_No model output was extracted from the verification-pass Gemini "
+                  "response -- see the raw response2.json artifact for debugging._"
               )
 
           queries_note = ""
           if queries:
-              queries_note = "\n\n**Searches run:** " + ", ".join(f"`{q}`" for q in queries)
+              queries_note = "\n\n**Searches run (both passes):** " + ", ".join(
+                  f"`{q}`" for q in queries
+              )
 
           body = (
-              f"Automated weekly FPL scout-site research digest -- proposals only, "
-              f"nothing has been applied to the app.\n\n"
+              f"Automated FPL scout-site research digest -- proposals only, nothing "
+              f"has been applied to the app. Findings below have already been through "
+              f"a second, independent verification pass (fresh search re-check against "
+              f"this repo's current squad and already-active notes) -- see "
+              f"CORRECTION_NOTE on any finding that was corrected or retracted "
+              f"relative to the first draft, and SQUAD_FLAG / DUPLICATE_FLAG for "
+              f"squad and duplicate-note cross-references.\n\n"
               f"Review each finding below and apply anything genuinely useful via "
               f"`POST /players/{{id}}/availability-risk-notes` or "
               f"`POST /players/{{id}}/role-notes` against the real running app.\n"
@@ -207,9 +382,11 @@ jobs:
             --body-file issue_body.md \
             --label "fpl-scout-digest"
 
-      - name: Upload raw response for debugging
+      - name: Upload raw responses for debugging
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gemini-response
-          path: response.json
+          name: gemini-responses
+          path: |
+            response.json
+            response2.json
