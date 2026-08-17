@@ -16,6 +16,8 @@ from app.features.engineering import (
     rest_days,
     rolling_avg_minutes,
     rolling_avg_points,
+    rolling_defensive_contribution,
+    rolling_goal_involvement_overperformance,
     season_avg_points_to_date,
     sum_points_for_gameweek,
 )
@@ -37,6 +39,11 @@ def _stat(
     season_id: str = "season-a",
     gameweek_key: str | None = None,
     fpl_event_id: int = 1,
+    goals_scored: int = 0,
+    assists: int = 0,
+    expected_goals: Decimal | None = None,
+    expected_assists: Decimal | None = None,
+    defensive_contribution: int | None = None,
 ) -> PriorGameweekStat:
     return PriorGameweekStat(
         season_id=season_id,
@@ -47,6 +54,11 @@ def _stat(
         was_home=was_home,
         fixture_kickoff_time=kickoff,
         fpl_event_id=fpl_event_id,
+        goals_scored=goals_scored,
+        assists=assists,
+        expected_goals=expected_goals,
+        expected_assists=expected_assists,
+        defensive_contribution=defensive_contribution,
     )
 
 
@@ -382,6 +394,10 @@ def test_sum_points_for_gameweek_empty_sums_to_zero():
 
 
 def test_unrelated_none_fields_do_not_break_points_or_minutes_calculations():
+    """expected_goals/expected_assists/defensive_contribution are only read by
+    rolling_goal_involvement_overperformance/rolling_defensive_contribution — every
+    points/minutes-based function here must stay indifferent to them, present or absent.
+    """
     stats = [
         PriorGameweekStat(
             season_id="season-a",
@@ -404,6 +420,8 @@ def test_unrelated_none_fields_do_not_break_points_or_minutes_calculations():
             fixture_kickoff_time=None,
             fpl_event_id=2,
             expected_goals=Decimal("0.42"),  # present for a later-era season
+            expected_assists=Decimal("0.10"),
+            defensive_contribution=3,
         ),
     ]
     assert rolling_avg_points(stats, window=2) == Decimal("6.00")
@@ -412,3 +430,115 @@ def test_unrelated_none_fields_do_not_break_points_or_minutes_calculations():
     home_avg, away_avg = home_away_avg_points(stats)
     assert home_avg == Decimal("5.00")
     assert away_avg == Decimal("7.00")
+
+
+# --- rolling_goal_involvement_overperformance ------------------------------------------------------
+
+
+def test_goal_involvement_overperformance_none_when_no_prior_history():
+    assert rolling_goal_involvement_overperformance([], window=5) is None
+
+
+def test_goal_involvement_overperformance_none_when_no_gameweek_has_xg_data():
+    """Every prior gameweek is schema-drift xG-null (e.g. entirely 2020-21/2021-22 history) —
+    must be None, not a false 0, since there is no baseline to compare actual output against."""
+    stats = [_stat(1, points=5, goals_scored=1, assists=0, expected_goals=None, expected_assists=None)]
+    assert rolling_goal_involvement_overperformance(stats, window=5) is None
+
+
+def test_goal_involvement_overperformance_skips_gameweeks_missing_xg_not_zero_fills():
+    """A mix of xG-covered and xG-drift gameweeks: the drift gameweek is excluded from the
+    window entirely, not counted as a 0-overperformance gameweek (which would dilute the real
+    signal from the gameweeks that do carry xG)."""
+    stats = [
+        _stat(1, points=10, goals_scored=2, assists=0, expected_goals=None, expected_assists=None),
+        _stat(
+            2,
+            points=8,
+            goals_scored=1,
+            assists=0,
+            expected_goals=Decimal("0.50"),
+            expected_assists=Decimal("0.00"),
+        ),
+    ]
+    # Only gameweek 2 has xG data: actual (1+0) - expected (0.50+0.00) = 0.50.
+    assert rolling_goal_involvement_overperformance(stats, window=5) == Decimal("0.50")
+
+
+def test_goal_involvement_overperformance_window_limits_to_most_recent_xg_covered_gameweeks():
+    zero = Decimal("0")
+    stats = [
+        _stat(1, points=1, goals_scored=0, assists=0, expected_goals=Decimal("1.00"), expected_assists=zero),
+        _stat(2, points=1, goals_scored=1, assists=0, expected_goals=Decimal("0.20"), expected_assists=zero),
+        _stat(3, points=1, goals_scored=1, assists=0, expected_goals=Decimal("0.20"), expected_assists=zero),
+    ]
+    # window=2 keeps only the two MOST RECENT xG-covered gameweeks (3, 2): overperformance
+    # (1-0.20) + (1-0.20) = 1.60, averaged over 2 = 0.80.
+    assert rolling_goal_involvement_overperformance(stats, window=2) == Decimal("0.80")
+
+
+def test_goal_involvement_overperformance_double_gameweek_poisons_to_none_if_either_leg_missing_xg():
+    """A Double Gameweek where one fixture leg has xG data and the other doesn't must not silently
+    sum only the covered leg (which would understate the real combined expectation) -- the whole
+    gameweek's xG is unknown, so it's excluded, exactly like a fully-missing gameweek."""
+    stats = [
+        _stat(
+            1,
+            points=6,
+            goals_scored=1,
+            assists=0,
+            gameweek_key="dgw",
+            expected_goals=Decimal("0.30"),
+            expected_assists=Decimal("0"),
+        ),
+        _stat(
+            1,
+            points=4,
+            goals_scored=1,
+            assists=0,
+            gameweek_key="dgw",
+            expected_goals=None,
+            expected_assists=None,
+        ),
+    ]
+    assert rolling_goal_involvement_overperformance(stats, window=5) is None
+
+
+# --- rolling_defensive_contribution -----------------------------------------------------------------
+
+
+def test_defensive_contribution_none_when_no_prior_history():
+    assert rolling_defensive_contribution([], window=5) is None
+
+
+def test_defensive_contribution_none_when_no_gameweek_has_the_stat():
+    """Entirely pre-2025-26 history -- the stat didn't exist yet, must be None, not a false 0."""
+    stats = [_stat(1, points=5, defensive_contribution=None)]
+    assert rolling_defensive_contribution(stats, window=5) is None
+
+
+def test_defensive_contribution_skips_gameweeks_missing_it_not_zero_fills():
+    stats = [
+        _stat(1, points=5, defensive_contribution=None),
+        _stat(2, points=5, defensive_contribution=8),
+        _stat(3, points=5, defensive_contribution=12),
+    ]
+    # Only gameweeks 2, 3 carry the stat: (8 + 12) / 2 = 10.00.
+    assert rolling_defensive_contribution(stats, window=5) == Decimal("10.00")
+
+
+def test_defensive_contribution_window_limits_to_most_recent_covered_gameweeks():
+    stats = [
+        _stat(1, points=5, defensive_contribution=2),
+        _stat(2, points=5, defensive_contribution=20),
+        _stat(3, points=5, defensive_contribution=20),
+    ]
+    # window=2 keeps only gameweeks 3, 2 (most recent): (20 + 20) / 2 = 20.00.
+    assert rolling_defensive_contribution(stats, window=2) == Decimal("20.00")
+
+
+def test_defensive_contribution_zero_is_a_real_value_not_treated_as_missing():
+    """A player with real defensive_contribution rows who simply made zero defensive actions in
+    those matches must average to a real 0.00, not None -- 0 is a known value, not an unknown one."""
+    stats = [_stat(1, points=1, defensive_contribution=0), _stat(2, points=1, defensive_contribution=0)]
+    assert rolling_defensive_contribution(stats, window=5) == Decimal("0.00")

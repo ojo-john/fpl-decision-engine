@@ -681,6 +681,33 @@ new code needed, just running the existing pipeline.
   fixture difficulty (from `Fixture.home_difficulty`/`away_difficulty`,
   themselves derived from FPL's own `Team.strength_*` ratings, which persist
   season-to-season), etc. Persisted to `player_features`.
+  - `goal_involvement_overperformance_5gw` (migration 0035) — a
+    regression-to-mean signal absent from every other column here (all
+    points/minutes history): `(goals + assists) - (expected_goals +
+    expected_assists)`, averaged over the most recent 5 gameweeks that
+    actually carry xG data (`app.features.engineering
+    .rolling_goal_involvement_overperformance`). xG/xA are schema-drift-null
+    for every 2020-21/2021-22 `player_gameweek_stats` row and fully populated
+    from 2022-23 onward (verified against real ingested data) — a gameweek
+    missing xG is excluded from the window, never zero-filled.
+  - `defensive_contribution_5gw` (migration 0035) — a rolling average of
+    FPL's own real 2025-26+ CBIT threshold-bonus stat
+    (`app.features.engineering.rolling_defensive_contribution`) — genuine
+    points-scoring data, not just an external stat, previously ingested into
+    `player_gameweek_stats.defensive_contribution` but never used as a
+    feature anywhere. Schema-drift-null before 2025-26 (the season this FPL
+    rule was introduced), fully populated for 2025-26.
+  - Both are purely additive columns — `FEATURE_VERSION` was NOT bumped
+    (matches the precedent set by `career_avg_early_season_points_prior_seasons`,
+    migration 0030, also additive-only): existing rows just show `NULL` for
+    these two columns until `FEATURE_GENERATION` is re-run for that season,
+    read correctly as "unknown", not "zero". `app.modeling.candidates
+    ._feature_record` iterates `PlayerFeatures.__table__.columns` generically,
+    so both reach the training matrix automatically with no candidates.py
+    changes needed — this was previously true of `expected_goals` too, except
+    no function ever populated it (see `app/features/engineering.py`'s
+    module docstring history) — the real gap this closes was "ingested but
+    never computed as a feature", not "computed but not wired to the model".
 - **`app/modeling`**: `MODEL_TRAINING` walk-forward-validates 7 candidate
   `ModelFamily` values — 4 pure-formula baselines
   (`BASELINE_SEASON_AVERAGE`/`BASELINE_RECENT_AVERAGE`/
