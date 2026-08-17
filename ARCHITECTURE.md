@@ -697,13 +697,41 @@ new code needed, just running the existing pipeline.
     `player_gameweek_stats.defensive_contribution` but never used as a
     feature anywhere. Schema-drift-null before 2025-26 (the season this FPL
     rule was introduced), fully populated for 2025-26.
-  - Both are purely additive columns — `FEATURE_VERSION` was NOT bumped
+  - `gameweek_schedule_gap_days` (migration 0036) — a GAMEWEEK-level (not
+    player-specific) structural signal: days since the previous gameweek's
+    own `deadline_time`, in the same season
+    (`app.features.engineering.gameweek_schedule_gap_days`). Deliberately
+    distinct from the existing player-specific `rest_days` column — `rest_days`
+    is ambiguous between an individual player being rested/rotated (a neutral
+    signal) and the whole league pausing at once for an international
+    window/major tournament (a real fatigue risk, but only for players who
+    were actually away on duty); this feature disambiguates by being the same
+    value for every player in a given gameweek. Systematizes what this
+    session otherwise did entirely by hand (manually-typed World Cup fatigue
+    notes for Rice/Saka/Guéhi/Senesi/Lacroix/Rogers, all GW1-3 2026-27) —
+    generalized to any real scheduling disruption, not just a World Cup
+    specifically, with zero new external data dependency (purely derived from
+    already-ingested `gameweeks.deadline_time`). Real, verified effect
+    (checked 2026-08-17 against all 6 real historical seasons in this app's
+    own database): a `>=12`-day gap reliably separates genuine disruptions
+    (international windows consistently ~14 days; the real Qatar World Cup
+    mid-season pause in 2022-23 shows 44 days) from ordinary in-season
+    variation (max 11 days outside real disruptions). Players who started
+    (`>=60` minutes) the gameweek immediately before such a gap averaged 2.836
+    points / 69.5 minutes in the gameweek immediately after it, versus 3.541
+    points / 85.8 minutes for the general population of all `>=60`-minute
+    appearances (n=5597 vs n=47291). Stores the raw day-count, not a
+    pre-thresholded boolean, so the trained model can learn its own
+    dose-response rather than a hand-picked cutoff being baked into the data.
+    `NULL` for a season's own gameweek 1 (no previous gameweek to compare
+    against — a different, already-handled cold-start signal).
+  - All three are purely additive columns — `FEATURE_VERSION` was NOT bumped
     (matches the precedent set by `career_avg_early_season_points_prior_seasons`,
     migration 0030, also additive-only): existing rows just show `NULL` for
-    these two columns until `FEATURE_GENERATION` is re-run for that season,
+    these columns until `FEATURE_GENERATION` is re-run for that season,
     read correctly as "unknown", not "zero". `app.modeling.candidates
     ._feature_record` iterates `PlayerFeatures.__table__.columns` generically,
-    so both reach the training matrix automatically with no candidates.py
+    so all three reach the training matrix automatically with no candidates.py
     changes needed — this was previously true of `expected_goals` too, except
     no function ever populated it (see `app/features/engineering.py`'s
     module docstring history) — the real gap this closes was "ingested but

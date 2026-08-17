@@ -86,6 +86,7 @@ def _build_player_features_values(
     next_fixture_difficulty: int | None,
     next_fixture_was_home: bool | None,
     rest_days_value: int | None,
+    gameweek_schedule_gap_days_value: int | None,
     price_at_time: int | None,
     ownership_at_time: int | None,
     position_short_name: str | None,
@@ -134,6 +135,7 @@ def _build_player_features_values(
         "next_fixture_difficulty": next_fixture_difficulty,
         "next_fixture_was_home": next_fixture_was_home,
         "rest_days": rest_days_value,
+        "gameweek_schedule_gap_days": gameweek_schedule_gap_days_value,
         "price_at_time": Decimal(price_at_time) if price_at_time is not None else None,
         "ownership_at_time": ownership_at_time,
         "position_short_name": position_short_name,
@@ -154,6 +156,13 @@ def compute_features_for_player_gameweek(
         raise ValueError(f"gameweek {gameweek_id} not found")
 
     target_deadline = target_gw.deadline_time
+
+    previous_gameweek_deadline = session.execute(
+        select(Gameweek.deadline_time)
+        .where(Gameweek.season_id == player.season_id, Gameweek.deadline_time < target_deadline)
+        .order_by(Gameweek.deadline_time.desc())
+        .limit(1)
+    ).scalar_one_or_none()
 
     current_rows = session.execute(
         select(
@@ -302,6 +311,9 @@ def compute_features_for_player_gameweek(
         if target_fixture_kickoff_time is not None
         else None
     )
+    gameweek_schedule_gap_days_value = engineering.gameweek_schedule_gap_days(
+        target_deadline, previous_gameweek_deadline
+    )
 
     target_gw_points = [row.total_points for row in current_rows if row.gameweek_id == gameweek_id]
 
@@ -318,6 +330,7 @@ def compute_features_for_player_gameweek(
         next_fixture_difficulty=next_fixture_difficulty,
         next_fixture_was_home=next_fixture_was_home,
         rest_days_value=rest_days_value,
+        gameweek_schedule_gap_days_value=gameweek_schedule_gap_days_value,
         price_at_time=price_at_time,
         ownership_at_time=ownership_at_time,
         position_short_name=position_short_name,
@@ -355,6 +368,14 @@ def generate_features_for_season(
     )
     if not gameweeks or not players:
         return NormalizationCounts(inserted=0, updated=0, quarantined=0)
+
+    # gameweeks is already ordered by deadline_time -- the previous gameweek for gameweeks[i] is
+    # simply gameweeks[i - 1]; None for gameweeks[0] (this season's own gameweek 1, no previous
+    # gameweek to compare against — see engineering.gameweek_schedule_gap_days's own docstring).
+    previous_gameweek_deadline_by_id: dict[uuid.UUID, datetime | None] = {
+        gameweek.id: (gameweeks[index - 1].deadline_time if index > 0 else None)
+        for index, gameweek in enumerate(gameweeks)
+    }
 
     player_ids = [player.id for player in players]
 
@@ -540,6 +561,9 @@ def generate_features_for_season(
                 if target_fixture_kickoff_time is not None
                 else None
             )
+            gameweek_schedule_gap_days_value = engineering.gameweek_schedule_gap_days(
+                target_deadline, previous_gameweek_deadline_by_id[gameweek.id]
+            )
 
             values = _build_player_features_values(
                 player_id=player.id,
@@ -554,6 +578,7 @@ def generate_features_for_season(
                 next_fixture_difficulty=next_fixture_difficulty,
                 next_fixture_was_home=next_fixture_was_home,
                 rest_days_value=rest_days_value,
+                gameweek_schedule_gap_days_value=gameweek_schedule_gap_days_value,
                 price_at_time=price_at_time,
                 ownership_at_time=ownership_at_time,
                 position_short_name=position_short_name,
