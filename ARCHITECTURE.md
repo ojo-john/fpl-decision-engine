@@ -396,9 +396,8 @@ cold-start branch already gets. Falls back to `baseline` untouched
 (never raises) if price/position can't be resolved or no bucket table
 has ever been computed yet.
 
-New `cold_start_validation_runs` columns (migration 0036, chained after
-0035 — see that migration's own docstring for the reconciliation note
-if a concurrent agent also claimed "0036"): `n_true_rookie_observations`,
+New `cold_start_validation_runs` columns (migration 0039, chained after
+0038): `n_true_rookie_observations`,
 `price_prior_sweep_json`, `default_price_prior_weight`/`_mae`,
 `best_price_prior_weight`/`_mae`, `price_prior_caveat`,
 `price_comparable_buckets_json`. `COLD_START_PROJECTION_VALIDATION`'s

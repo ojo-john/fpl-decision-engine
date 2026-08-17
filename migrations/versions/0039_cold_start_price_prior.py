@@ -6,16 +6,13 @@ price-comparable-bucket lookup table app.optimization.projection._price_informed
 reads at prediction time. See packages/database/models/cold_start_validation_run.py's own updated
 docstring and app/modeling/cold_start_validation.py for the full design.
 
-NOTE for whoever reconciles this with main: this worktree branched off main at commit 308adf6 (the
-latest merged migration there is 0035_goal_involvement_and_defensive_contribution.py). Other agents
-working in parallel this session may have independently claimed "0036" too -- if so, this migration
-needs the same renumber-and-rebase treatment 0033/0034/0035 already went through (see those
-migrations' own docstrings for the established pattern: keep whichever landed on main first,
-renumber the other to chain after it, re-run alembic upgrade head against both .env.test and the
-real dev database once reconciled).
+Renumbered at merge time from this worktree's original "0036" (branched off main at 308adf6, before
+0036-0038 -- gameweek_schedule_gap_days, start_probability_models, position_segmentation_validation_runs
+-- landed). Rebased onto 0038, since this migration extends cold_start_validation_runs (created by
+0034) with new columns and must chain after everything else that touched migrations/versions/ tonight.
 
-Revision ID: 0036
-Revises: 0035
+Revision ID: 0039
+Revises: 0038
 Create Date: 2026-08-17
 
 """
@@ -27,8 +24,8 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
 # revision identifiers, used by Alembic.
-revision: str = "0036"
-down_revision: str | None = "0035"
+revision: str = "0039"
+down_revision: str | None = "0038"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
