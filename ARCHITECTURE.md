@@ -457,7 +457,7 @@ new code needed, just running the existing pipeline.
   fixture difficulty (from `Fixture.home_difficulty`/`away_difficulty`,
   themselves derived from FPL's own `Team.strength_*` ratings, which persist
   season-to-season), etc. Persisted to `player_features`.
-  - `goal_involvement_overperformance_5gw` (migration 0033) — a
+  - `goal_involvement_overperformance_5gw` (migration 0035) — a
     regression-to-mean signal absent from every other column here (all
     points/minutes history): `(goals + assists) - (expected_goals +
     expected_assists)`, averaged over the most recent 5 gameweeks that
@@ -466,7 +466,7 @@ new code needed, just running the existing pipeline.
     for every 2020-21/2021-22 `player_gameweek_stats` row and fully populated
     from 2022-23 onward (verified against real ingested data) — a gameweek
     missing xG is excluded from the window, never zero-filled.
-  - `defensive_contribution_5gw` (migration 0033) — a rolling average of
+  - `defensive_contribution_5gw` (migration 0035) — a rolling average of
     FPL's own real 2025-26+ CBIT threshold-bonus stat
     (`app.features.engineering.rolling_defensive_contribution`) — genuine
     points-scoring data, not just an external stat, previously ingested into
