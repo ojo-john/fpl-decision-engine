@@ -5,7 +5,7 @@ reading the actual code, not the existing docs — **README.md,
 docs/operations.md, docs/learning-loop.md, docs/architecture/README.md, and
 nearly every `app/*/__init__.py` docstring are stale**, frozen at
 "Milestone 0/1" language ("placeholder", "empty as of Milestone 0") while
-the real code has moved through roughly 8 milestones. Concretely: 17 of 18
+the real code has moved through roughly 8 milestones. Concretely: 18 of 19
 `JobType` values have real, tested handlers; only `PROJECTION_GENERATION`
 is genuinely unbuilt (deliberately -- no defined consumer/table to write
 to, see below). **Do not infer capability from a
@@ -48,7 +48,7 @@ app/chips/             Chip window resolution, user chip inventory, chip scenari
 app/h2h/                Rival-state derivation, H2H matchup Monte Carlo simulation, strategy comparison
 app/learning/           Recursive learning: outcome ingestion, counterfactuals, failure attribution, signals
 packages/domain/        Framework-agnostic enums shared everywhere (JobType, ModelFamily, RulesStatus, ...)
-packages/database/      Base, engine/session, all 44 ORM models
+packages/database/      Base, engine/session, all 48 ORM models
 packages/fpl_client/    Resilient adapter over the LIVE public FPL API
 packages/shared/        pydantic-settings Settings + JSON logging setup
 migrations/             Hand-written Alembic migrations
@@ -84,6 +84,7 @@ the job types that have an HTTP trigger.
 | `LEAGUE_SYNC` | `league_sync.py` | ✅ | `POST /leagues/sync` | |
 | `FEATURE_GENERATION` | `feature_generation.py` | ✅ | — | `make features`, `feature-generation.yml`, `train.yml` |
 | `MODEL_TRAINING` | `model_training.py` | ✅ | — | `make train`, `train.yml`; also triggered **in-process** by `GAMEWEEK_REVIEW` on a sustained MAE breach |
+| `START_PROBABILITY_MODEL_TRAINING` | `start_probability_training.py` | ✅ | `POST /models/start-probability-training` | a SEPARATE, additive auxiliary classifier — never touches `model_versions`/the champion; see "Modeling / learning loop" below |
 | `PROJECTION_GENERATION` | — | ❌ | — | genuinely unbuilt; `project_player`/`project_player_with_champion` in `app/optimization/projection.py` are called directly by other jobs instead |
 | `SQUAD_OPTIMIZATION` | `squad_optimization.py` | ✅ | `POST /optimize/initial-squad` | |
 | `LINEUP_OPTIMIZATION` | `lineup_optimization.py` | ✅ | `POST /optimize/lineup` | |
@@ -749,6 +750,41 @@ new code needed, just running the existing pipeline.
   surfaces it; `app/optimization/projection.project_player_with_champion`
   uses it when present, falling back to the plain heuristic
   (`ep_next` → `points_per_game` → 0) otherwise.
+- **`START_PROBABILITY_MODEL_TRAINING`** (`app/jobs/handlers
+  /start_probability_training.py`, `app/modeling/start_probability.py`): a
+  SEPARATE, additive auxiliary classifier — P(player starts this gameweek,
+  proxied as `minutes >= 60`, summed across a Double Gameweek's fixture
+  rows) — trained via the same walk-forward fold machinery as
+  `MODEL_TRAINING` (`app.modeling.walk_forward`), but never touching
+  `model_versions`/the champion at all. Persists to its own
+  `start_probability_models` table (migration 0037), a curated feature
+  subset (`FEATURE_COLUMNS`: rolling minutes/points history, rest days,
+  position — deliberately excludes price/ownership/fixture difficulty, see
+  that module's own docstring), and a `HistGradientBoostingClassifier` for
+  the same NaN-native reason `MODEL_TRAINING`'s own gradient-boosting
+  candidate is chosen. **`is_active` defaults to `False` and is never
+  flipped by the training job itself** — activating a row to actually
+  influence live projections is a deliberate, human-reviewed decision
+  (direct DB update, no `POST .../activate` endpoint exists), based on that
+  run's own real, walk-forward-backtested `aggregate_auc`/
+  `aggregate_accuracy`/`aggregate_f1`/`aggregate_log_loss`. `POST
+  /models/start-probability-training` triggers a run; `GET
+  /models/start-probability[/{id}]` reads persisted rows.
+  When (and only when) a row IS activated,
+  `app.optimization.start_probability_loader.load_active_start_probability_model`
+  loads it, and `project_player_with_champion` accepts it as an optional
+  `start_probability_model` parameter (default `None` — every pre-existing
+  caller is completely unaffected): if provided, it scales whatever
+  projection the champion/cold-start path already produced by the
+  predicted P(start), appended as a `_start_probability_adjusted` source
+  suffix, applied BEFORE the `player_availability_risk_notes`/
+  `player_role_notes` multiplier stack so a manually-authored note can
+  still further adjust a model-informed projection. Built specifically to
+  replace what was previously only doable by hand — manually-typed
+  availability-risk-note severities reasoned from prose scouting reports
+  (e.g. real notes this session for Woltemade/Osula) — with a learned
+  signal from the same rolling-minutes history already computed for the
+  main model.
 - **`app/learning`** (Milestone 7, "recursive learning"): after a
   recommendation's outcome is known, `outcome_ingestion.py` records actuals,
   `counterfactuals.py` compares the followed recommendation against

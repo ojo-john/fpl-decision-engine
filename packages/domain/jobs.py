@@ -23,6 +23,11 @@ class JobType(str, Enum):
     LEAGUE_SYNC = "league_sync"
     FEATURE_GENERATION = "feature_generation"
     MODEL_TRAINING = "model_training"
+    # A separate, additive auxiliary classifier (P(player starts)) applied as an optional
+    # multiplicative adjustment at projection time -- never bakes into or replaces the main
+    # points-regression champion trained by MODEL_TRAINING. See
+    # app/jobs/handlers/start_probability_training.py's own module docstring.
+    START_PROBABILITY_MODEL_TRAINING = "start_probability_model_training"
     PROJECTION_GENERATION = "projection_generation"
     SQUAD_OPTIMIZATION = "squad_optimization"
     LINEUP_OPTIMIZATION = "lineup_optimization"
