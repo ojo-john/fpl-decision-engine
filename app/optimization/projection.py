@@ -35,7 +35,14 @@ logger = logging.getLogger(__name__)
 # cold-start season (see _is_cold_start_season) instead of trusting the champion model's raw
 # prediction, which is systematically too low for that specific input shape -- a real behavior
 # change to the formula's output, not an internal refactor.
-PROJECTION_FORMULA_VERSION = 2
+# v3: the cold-start decision moved from _is_cold_start_season (whole-season, zero
+# player_gameweek_stats rows ANYWHERE) to _is_cold_start_player (this specific player, zero
+# player_gameweek_stats rows of their OWN) -- see _is_cold_start_player's own docstring. The old
+# season-wide check meant the moment even one player anywhere had one gameweek of real data, every
+# OTHER player switched to the champion model too, including ones still sitting on the exact same
+# all-NaN-rolling-features input shape v2 was written to route around. Another real behavior
+# change, not a refactor.
+PROJECTION_FORMULA_VERSION = 3
 
 # Baseline families whose prediction is a direct, one-argument lookup against
 # an already-computed feature row. BASELINE_RULES_EP_NEXT is deliberately
@@ -141,7 +148,18 @@ def _is_cold_start_season(session: Session, season_id: uuid.UUID) -> bool:
     overwhelmingly a "this specific player isn't playing much" signal
     (mid-season churn/injury/rotation), not "it's literally the first
     gameweek of the season for everyone" — a real, structural blind spot,
-    not a data or feature-engineering bug. See ``project_player_with_champion``.
+    not a data or feature-engineering bug.
+
+    NOT consulted by ``project_player_with_champion`` any more (see
+    ``_is_cold_start_player``, which subsumes this check at a finer grain) —
+    kept as its own function/public wrapper because it still answers a real,
+    distinct, season-wide question other callers legitimately need: "has
+    this season produced any data at all yet" (e.g. ``POST /optimize/preview``'s
+    ``is_cold_start_gameweek`` informational flag, `apps.api.routers.optimization
+    .preview_squad`). A season-wide "yes" always implies every individual
+    player is also individually cold-start (there are zero rows for anyone,
+    so certainly zero for any one player) — the reverse is not true, which is
+    exactly the gap ``_is_cold_start_player`` closes.
     """
     return (
         session.execute(
@@ -158,6 +176,51 @@ def is_cold_start_season(session: Session, season_id: uuid.UUID) -> bool:
     (``apps.api.routers.players.get_player_projection``), which needs this alongside
     ``project_player_with_champion``'s own output to explain which code path produced it."""
     return _is_cold_start_season(session, season_id)
+
+
+def _is_cold_start_player(session: Session, player_id: uuid.UUID) -> bool:
+    """True when literally zero ``player_gameweek_stats`` rows exist for THIS SPECIFIC player
+    this season yet — the same "zero rows means every rolling/within-season feature is
+    unconditionally None" predicate ``_is_cold_start_season`` applies, just scoped to one player
+    instead of the whole season.
+
+    This is the real fix for a gap in ``_is_cold_start_season`` alone: that check is season-wide,
+    so the moment even ONE player anywhere in the season has one gameweek of real data ingested,
+    EVERY player switches from the cold-start blend to the champion model's raw prediction —
+    including players who themselves still have zero or almost no current-season history (a
+    summer signing who debuts a few gameweeks late, a player returning from a long-term injury
+    mid-season, a player whose own team had a postponed opening fixture). Those players sit on
+    exactly the same all-rolling-features-NaN input shape ``_is_cold_start_season`` was written to
+    route around — the champion was never meaningfully trained on that shape, and nothing about
+    *other* players having data changes that for *this* one.
+
+    Threshold is a hard cutover at exactly 1 row, deliberately mirroring ``_is_cold_start_season``'s
+    own all-or-nothing threshold rather than inventing a new "how many games is enough" rule: one
+    real ``player_gameweek_stats`` row is enough to make every rolling-window feature
+    (``rolling_avg_points_3gw``/``5gw``/``10gw``, ``season_avg_points_to_date``,
+    ``form_weighted_avg_points``, one of ``home_avg_points``/``away_avg_points``) non-null instead
+    of uniformly ``NaN`` — see ``app.features.engineering``, every one of those functions returns a
+    real average (over however many rows exist, even just one) rather than ``None`` once given any
+    row at all. That NaN-vs-real-value distinction, not sample size/noise, is the documented root
+    cause of the champion's systematic under-prediction, so it's also the correct cutover point
+    here — a smoothed multi-gameweek transition would be solving a different (noise-reduction)
+    problem this fix isn't scoped to.
+    """
+    return (
+        session.execute(
+            select(PlayerGameweekStats.id).where(PlayerGameweekStats.player_id == player_id).limit(1)
+        ).first()
+        is None
+    )
+
+
+def is_cold_start_player(session: Session, player_id: uuid.UUID) -> bool:
+    """Public wrapper around ``_is_cold_start_player``, mirroring ``is_cold_start_season``'s own
+    "public wrapper around a private helper" precedent — for callers outside this module (e.g.
+    the ``/players/{player_id}/projection`` "why this projection" breakdown) that need to know
+    whether THIS player individually triggered the cold-start blend, distinct from
+    ``is_cold_start_season``'s whole-season question."""
+    return _is_cold_start_player(session, player_id)
 
 
 def _cold_start_projection(
@@ -405,7 +468,10 @@ def project_player_with_champion(
        resurrect a player ``project_player`` would exclude.
     2. If ``champion`` is ``None`` (no trained model exists yet): falls back
        to ``project_player(player)`` entirely, unchanged.
-    3. If this is a cold-start season (see ``_is_cold_start_season``): the
+    3. If THIS PLAYER is individually cold-start (see ``_is_cold_start_player``
+       — zero ``player_gameweek_stats`` rows of their own this season, so
+       every rolling/within-season feature is ``NaN``, regardless of whether
+       other players elsewhere in the season already have data): the
        champion's own rolling-form-driven predictions are systematically,
        substantially too low for this specific input shape — falls back to
        ``_cold_start_projection(player)`` (a blend of FPL's own ``ep_next``
@@ -441,7 +507,7 @@ def project_player_with_champion(
 
     if champion is None:
         projection = project_player(player)
-    elif _is_cold_start_season(session, player.season_id):
+    elif _is_cold_start_player(session, player.id):
         projection = _cold_start_projection(session, player, target_gameweek_id)
     else:
         try:

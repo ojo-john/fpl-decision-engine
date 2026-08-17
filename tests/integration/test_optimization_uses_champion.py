@@ -37,6 +37,9 @@ import uuid
 from sqlalchemy import delete, select, update
 
 from app.jobs.service import execute_job
+from app.optimization.champion_loader import load_current_champion
+from app.optimization.gameweek_resolution import resolve_target_gameweek
+from app.optimization.projection import is_cold_start_season, project_player_with_champion
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.model_version import ModelVersion
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
@@ -48,25 +51,32 @@ from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.optimization import TargetGameweekStatus
 
 
-def _seed_one_gameweek_stat_row_so_this_is_not_a_cold_start(db_session, season_id):
+def _seed_one_gameweek_stat_row_per_player_so_this_is_not_a_cold_start(db_session, season_id):
     """project_player_with_champion refuses to trust the champion at all for a cold-start
-    season (zero player_gameweek_stats rows -- see app.optimization.projection's own
-    _is_cold_start_season). This test is specifically about the champion BEING consulted, so
-    it needs to look like a season with at least one gameweek already played, not literal GW1."""
-    player = db_session.execute(select(Player).where(Player.season_id == season_id).limit(1)).scalar_one()
+    player (zero player_gameweek_stats rows OF THEIR OWN -- see app.optimization.projection's
+    own _is_cold_start_player). Seeds a row for EVERY player in the season (not just one) so
+    every squad-optimization candidate is individually eligible for the champion path -- a
+    single seeded row used to be enough back when the cold-start check was season-wide
+    (_is_cold_start_season: "has ANYONE played yet"), but under the current per-player check
+    only the one seeded player would be champion-eligible, and the solver has no reason to
+    actually pick that specific player into its top-15 -- this test is about the champion path
+    being reachABLE for a normal, real candidate pool, not about which exact player gets picked.
+    """
+    players = db_session.execute(select(Player).where(Player.season_id == season_id)).scalars().all()
     gameweek = db_session.execute(
         select(Gameweek).where(Gameweek.season_id == season_id).limit(1)
     ).scalar_one()
-    db_session.add(
-        PlayerGameweekStats(
-            player_id=player.id,
-            season_id=season_id,
-            gameweek_id=gameweek.id,
-            total_points=2,
-            xp_estimate=2.0,
-            data_source="test",
+    for player in players:
+        db_session.add(
+            PlayerGameweekStats(
+                player_id=player.id,
+                season_id=season_id,
+                gameweek_id=gameweek.id,
+                total_points=2,
+                xp_estimate=2.0,
+                data_source="test",
+            )
         )
-    )
     db_session.commit()
 
 
@@ -117,7 +127,7 @@ def test_squad_optimization_uses_champion_projection_when_present(
     current_season_id = db_session.execute(
         select(Season.id).where(Season.label == season_label)
     ).scalar_one()
-    _seed_one_gameweek_stat_row_so_this_is_not_a_cold_start(db_session, current_season_id)
+    _seed_one_gameweek_stat_row_per_player_so_this_is_not_a_cold_start(db_session, current_season_id)
 
     # Not strictly required by project_player_with_champion (it computes a
     # live feature row on the fly via app.features.service, never reads a
@@ -184,3 +194,70 @@ def test_squad_optimization_falls_back_to_formula_when_no_champion_exists(
     for rp in run_players:
         assert rp.projection_source.endswith("_heuristic")
         assert "ml_champion_" not in rp.projection_source
+
+
+def test_project_player_with_champion_uses_cold_start_blend_for_a_player_with_no_rows_of_their_own(
+    db_session,
+    patched_historical_fpl_client,
+    patched_fpl_client_optimization_with_active_gameweek,
+):
+    """The architectural gap this closes: app.optimization.projection._is_cold_start_season checks
+    the whole SEASON, so the moment even one player anywhere had one gameweek of real data, every
+    OTHER player -- including ones with zero rows of their own -- used to get routed to the
+    champion model's raw prediction, an input shape (every rolling/within-season feature still
+    NaN) it was never meaningfully trained on. _is_cold_start_player fixes this by deciding per
+    player instead. Seeds a current-season row for exactly ONE player, then asserts a SECOND,
+    untouched player still gets the cold-start blend even though the season overall is no longer
+    a cold-start season."""
+    _seed_historical_champion(db_session)
+
+    ingestion_job = execute_job(db_session, job_type=JobType.DATA_INGESTION, trigger_type=TriggerType.LOCAL)
+    assert ingestion_job.status == JobStatus.SUCCEEDED
+    season_label = ingestion_job.output_json["season_label"]
+    current_season_id = db_session.execute(
+        select(Season.id).where(Season.label == season_label)
+    ).scalar_one()
+
+    players = (
+        db_session.execute(select(Player).where(Player.season_id == current_season_id).order_by(Player.id))
+        .scalars()
+        .all()
+    )
+    warm_player, cold_player = players[0], players[1]
+    gameweek = db_session.execute(
+        select(Gameweek).where(Gameweek.season_id == current_season_id).limit(1)
+    ).scalar_one()
+    db_session.add(
+        PlayerGameweekStats(
+            player_id=warm_player.id,
+            season_id=current_season_id,
+            gameweek_id=gameweek.id,
+            total_points=2,
+            xp_estimate=2.0,
+            data_source="test",
+        )
+    )
+    db_session.commit()
+
+    # The season overall has genuinely moved on -- proves the test below isn't accidentally
+    # exercising the (already well-covered) whole-season cold-start path instead.
+    assert is_cold_start_season(db_session, current_season_id) is False
+
+    champion = load_current_champion(db_session)
+    assert champion is not None
+    target_gameweek_id, status = resolve_target_gameweek(db_session, current_season_id)
+    assert status == TargetGameweekStatus.RESOLVED
+
+    cold_result = project_player_with_champion(db_session, cold_player, target_gameweek_id, champion)
+    assert not cold_result.source.startswith("ml_champion_"), (
+        f"player with zero player_gameweek_stats rows of their own must never reach the champion "
+        f"model just because SOME other player in the season has data; got source="
+        f"{cold_result.source!r}"
+    )
+
+    warm_result = project_player_with_champion(db_session, warm_player, target_gameweek_id, champion)
+    assert warm_result.source.startswith("ml_champion_"), (
+        f"player WITH a current-season row of their own must be champion-eligible, proving the "
+        f"cutover is a real per-player boundary rather than every player falling back to the "
+        f"cold-start blend; got source={warm_result.source!r}"
+    )

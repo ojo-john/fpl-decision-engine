@@ -143,6 +143,10 @@ export default async function PlayerDetailPage({
               <span style={{ color: "var(--text-muted)" }}>Cold-start season</span>
               <span>{projection.is_cold_start_season ? "yes" : "no"}</span>
             </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: "var(--text-muted)" }}>Cold-start player</span>
+              <span>{projection.is_cold_start_player ? "yes" : "no"}</span>
+            </div>
             {projection.champion_model_family && (
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <span style={{ color: "var(--text-muted)" }}>Model</span>

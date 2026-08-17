@@ -149,7 +149,7 @@ def test_champion_none_falls_back_to_project_player_for_excluded_player():
 def test_feature_computation_raising_falls_back(monkeypatch):
     player = _make_player(status="a", ep_next="8.8")
     champion = _make_champion(ModelFamily.BASELINE_SEASON_AVERAGE)
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: False)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: False)
 
     def _raise(*args, **kwargs):
         raise ValueError("no fixture context for this brand-new player")
@@ -168,7 +168,7 @@ def test_feature_computation_raising_falls_back(monkeypatch):
 def test_baseline_champion_none_lookup_falls_back_for_this_player(monkeypatch):
     player = _make_player(status="a", ep_next="8.8")
     champion = _make_champion(ModelFamily.BASELINE_SEASON_AVERAGE)
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: False)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: False)
     # A feature row with no season/career average at all -- a genuinely
     # brand-new player, per predict_season_average's own documented None case.
     feature_row = _make_feature_row(
@@ -191,7 +191,7 @@ def test_baseline_champion_none_lookup_falls_back_for_this_player(monkeypatch):
 def test_baseline_champion_with_value_is_source_tagged(monkeypatch):
     player = _make_player(status="a", ep_next="8.8")
     champion = _make_champion(ModelFamily.BASELINE_SEASON_AVERAGE)
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: False)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: False)
     feature_row = _make_feature_row(player, season_avg_points_to_date=Decimal("6.50"))
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
@@ -208,7 +208,7 @@ def test_baseline_champion_with_value_is_source_tagged(monkeypatch):
 def test_rules_ep_next_baseline_champion_calls_baseline_lookup(monkeypatch):
     player = _make_player(status="a", ep_next="8.8")
     champion = _make_champion(ModelFamily.BASELINE_RULES_EP_NEXT)
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: False)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: False)
     feature_row = _make_feature_row(player)
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
@@ -235,7 +235,7 @@ def test_tree_champion_returns_mocked_prediction(monkeypatch):
         prediction=7.25,
     )
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=stub_model)
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: False)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: False)
     feature_row = _make_feature_row(player, season_avg_points_to_date=Decimal("6.50"))
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
@@ -254,7 +254,7 @@ def test_tree_champion_nan_prediction_falls_back(monkeypatch):
     player = _make_player(status="a", ep_next="8.8")
     stub_model = _StubTreeModel(feature_names=["season_avg_points_to_date"], prediction=math.nan)
     champion = _make_champion(ModelFamily.DECISION_TREE, sklearn_model=stub_model)
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: False)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: False)
     feature_row = _make_feature_row(player)
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
@@ -267,10 +267,16 @@ def test_tree_champion_nan_prediction_falls_back(monkeypatch):
     assert result.source == "ep_next"
 
 
-# --- 7. Cold-start season: never consults the champion model, blends ep_next with career avg ---
+# --- 7. Cold-start player: never consults the champion model, blends ep_next with career avg ---
+# _is_cold_start_player is mocked directly here (same no-DB style as every other branch in
+# this file) -- these tests are about _cold_start_projection's own blend behavior once that
+# branch is taken, regardless of WHY it was taken (this player individually vs. the whole
+# season) -- see tests/integration/test_optimization_uses_champion.py for a real,
+# DB-backed test of the actual per-player-vs-season-wide distinction _is_cold_start_player
+# exists to make.
 
 
-def test_cold_start_season_never_consults_the_champion_model(monkeypatch):
+def test_cold_start_player_never_consults_the_champion_model(monkeypatch):
     player = _make_player(status="a", ep_next="8.8")
     # A champion that would return an absurdly high prediction if consulted -- proves the
     # cold-start check routes around the model entirely, mirroring the hard-excluded-status
@@ -279,7 +285,7 @@ def test_cold_start_season_never_consults_the_champion_model(monkeypatch):
     # test below).
     stub_model = _StubTreeModel(feature_names=["season_avg_points_to_date"], prediction=999.0)
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=stub_model)
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
         lambda *a, **k: _make_feature_row(player, career_avg_points_prior_seasons=None),
@@ -292,10 +298,10 @@ def test_cold_start_season_never_consults_the_champion_model(monkeypatch):
     assert stub_model.received_columns is None
 
 
-def test_cold_start_season_blends_ep_next_with_career_average_when_present(monkeypatch):
+def test_cold_start_player_blends_ep_next_with_career_average_when_present(monkeypatch):
     player = _make_player(status="a", ep_next="4.0")
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
         lambda *a, **k: _make_feature_row(player, career_avg_points_prior_seasons=Decimal("6.36")),
@@ -308,13 +314,13 @@ def test_cold_start_season_blends_ep_next_with_career_average_when_present(monke
     assert result.source == "cold_start_blend_ep_next_and_career_avg"
 
 
-def test_cold_start_season_prefers_early_season_average_over_full_season_average(monkeypatch):
+def test_cold_start_player_prefers_early_season_average_over_full_season_average(monkeypatch):
     """A player whose season-opening form differs from their full-season average (a real,
     well-known slow/fast-starter pattern) should be blended using the early-season-specific
     number, not the full-season one that papers over the difference."""
     player = _make_player(status="a", ep_next="4.0")
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
         lambda *a, **k: _make_feature_row(
@@ -331,13 +337,13 @@ def test_cold_start_season_prefers_early_season_average_over_full_season_average
     assert result.source == "cold_start_blend_ep_next_and_career_avg"
 
 
-def test_cold_start_season_falls_back_to_full_season_average_with_no_early_season_history(monkeypatch):
+def test_cold_start_player_falls_back_to_full_season_average_with_no_early_season_history(monkeypatch):
     """A player with real prior-season history, but none of it early-season (e.g. every prior
     season they have a record for started with a mid-season transfer) -- must fall back to the
     full-season average rather than treating "no early-season data" as "no data at all"."""
     player = _make_player(status="a", ep_next="4.0")
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
         lambda *a, **k: _make_feature_row(
@@ -352,10 +358,10 @@ def test_cold_start_season_falls_back_to_full_season_average_with_no_early_seaso
     assert result.projected_points == pytest.approx((4.0 + 6.36) / 2)
 
 
-def test_cold_start_season_easy_fixture_scales_the_blend_up(monkeypatch):
+def test_cold_start_player_easy_fixture_scales_the_blend_up(monkeypatch):
     player = _make_player(status="a", ep_next="4.0")
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
         lambda *a, **k: _make_feature_row(
@@ -370,10 +376,10 @@ def test_cold_start_season_easy_fixture_scales_the_blend_up(monkeypatch):
     assert result.source == "cold_start_blend_ep_next_and_career_avg"
 
 
-def test_cold_start_season_hard_fixture_scales_the_blend_down(monkeypatch):
+def test_cold_start_player_hard_fixture_scales_the_blend_down(monkeypatch):
     player = _make_player(status="a", ep_next="4.0")
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
         lambda *a, **k: _make_feature_row(
@@ -387,10 +393,10 @@ def test_cold_start_season_hard_fixture_scales_the_blend_down(monkeypatch):
     assert result.projected_points == pytest.approx(base_blend * 0.85)
 
 
-def test_cold_start_season_neutral_fixture_difficulty_leaves_the_blend_unchanged(monkeypatch):
+def test_cold_start_player_neutral_fixture_difficulty_leaves_the_blend_unchanged(monkeypatch):
     player = _make_player(status="a", ep_next="4.0")
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
         lambda *a, **k: _make_feature_row(
@@ -403,11 +409,11 @@ def test_cold_start_season_neutral_fixture_difficulty_leaves_the_blend_unchanged
     assert result.projected_points == pytest.approx((4.0 + 6.36) / 2)
 
 
-def test_cold_start_season_falls_back_to_ep_next_alone_with_no_career_history(monkeypatch):
+def test_cold_start_player_falls_back_to_ep_next_alone_with_no_career_history(monkeypatch):
     """A brand-new-to-FPL player: no earlier-season row exists to blend with at all."""
     player = _make_player(status="a", ep_next="4.0")
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
         lambda *a, **k: _make_feature_row(player, career_avg_points_prior_seasons=None),
@@ -419,10 +425,10 @@ def test_cold_start_season_falls_back_to_ep_next_alone_with_no_career_history(mo
     assert result.source == "ep_next"
 
 
-def test_cold_start_season_feature_computation_raising_falls_back_to_ep_next_alone(monkeypatch):
+def test_cold_start_player_feature_computation_raising_falls_back_to_ep_next_alone(monkeypatch):
     player = _make_player(status="a", ep_next="4.0")
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
-    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
 
     def _raise(*args, **kwargs):
         raise ValueError("no fixture context")

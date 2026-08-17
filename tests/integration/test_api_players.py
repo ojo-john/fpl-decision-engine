@@ -10,10 +10,12 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.jobs.service import execute_job
+from packages.database.models.gameweek import Gameweek
 from packages.database.models.player import Player
+from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.price_signal_calibration import PriceSignalCalibration
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
@@ -122,10 +124,11 @@ def test_get_player_projection_shape(db_session, patched_fpl_client_optimization
     assert body["is_eligible"] is True
     assert body["projection_formula_version"] >= 1
     # "Why this projection" breakdown fields (added post-review) -- this fixture has every
-    # gameweek finished (no active gameweek), so is_cold_start_season is always False here
-    # regardless of player_gameweek_stats state -- see get_player_projection's own
-    # target_gameweek_id is None short-circuit.
+    # gameweek finished (no active gameweek), so is_cold_start_season/is_cold_start_player are
+    # always False here regardless of player_gameweek_stats state -- see get_player_projection's
+    # own target_gameweek_id is None short-circuit.
     assert body["is_cold_start_season"] is False
+    assert body["is_cold_start_player"] is False
     assert body["champion_model_family"] is None
     assert body["champion_model_version_id"] is None
     assert isinstance(body["explanation"], str) and body["explanation"] != ""
@@ -149,6 +152,9 @@ def test_get_player_projection_cold_start_breakdown(
     assert response.status_code == 200
     body = response.json()
     assert body["is_cold_start_season"] is True
+    # Zero player_gameweek_stats rows exist anywhere in this season, so every individual player
+    # (including this one) is necessarily also individually cold-start.
+    assert body["is_cold_start_player"] is True
     # No champion has ever been selected in this test's own seeding path, so the cold-start
     # blend never actually engages (project_player_with_champion only consults
     # _cold_start_projection once a champion exists) -- champion_model_family must stay None.
@@ -158,6 +164,47 @@ def test_get_player_projection_cold_start_breakdown(
     # next_fixture_difficulty is a schedule fact, resolvable even with zero current-season
     # history -- present for a player with an upcoming fixture in this fixture's data.
     assert body["next_fixture_difficulty"] is None or isinstance(body["next_fixture_difficulty"], int)
+
+
+def test_get_player_projection_is_cold_start_player_true_even_when_season_is_no_longer_cold_start(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """The gap app.optimization.projection._is_cold_start_player closes: is_cold_start_season is
+    season-wide, so as soon as ANY player anywhere has a current-season row, it flips to False --
+    but a DIFFERENT, untouched player must still be reported as individually cold-start. Seeds a
+    row for one player only, then asserts the breakdown for a SECOND, unseeded player."""
+    ingestion_job = _seed(db_session)
+    season_label = ingestion_job.output_json["season_label"]
+    season_id = db_session.execute(select(Season.id).where(Season.label == season_label)).scalar_one()
+
+    players = (
+        db_session.execute(select(Player).where(Player.season_id == season_id).order_by(Player.id))
+        .scalars()
+        .all()
+    )
+    warm_player, cold_player = players[0], players[1]
+    gameweek = db_session.execute(
+        select(Gameweek).where(Gameweek.season_id == season_id).limit(1)
+    ).scalar_one()
+    db_session.add(
+        PlayerGameweekStats(
+            player_id=warm_player.id,
+            season_id=season_id,
+            gameweek_id=gameweek.id,
+            total_points=2,
+            xp_estimate=2.0,
+            data_source="test",
+        )
+    )
+    db_session.commit()
+
+    client = authed_client()
+    response = client.get(f"/players/{cold_player.id}/projection")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_cold_start_season"] is False
+    assert body["is_cold_start_player"] is True
 
 
 # --- GET /players/{id}/price-history ---------------------------------------------------------

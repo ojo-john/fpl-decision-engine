@@ -27,6 +27,7 @@ def test_explain_projection_unavailable_status_excluded():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason=None,
         role_boost_reason=None,
     )
@@ -44,6 +45,7 @@ def test_explain_projection_cold_start_blend_mentions_both_inputs_and_difficulty
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=2,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason=None,
         role_boost_reason=None,
     )
@@ -64,6 +66,7 @@ def test_explain_projection_cold_start_blend_prefers_early_season_average_when_p
         career_avg_early_season_points_prior_seasons=10.21,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason=None,
         role_boost_reason=None,
     )
@@ -83,11 +86,37 @@ def test_explain_projection_cold_start_blend_without_difficulty_omits_difficulty
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason=None,
         role_boost_reason=None,
     )
 
     assert "difficulty" not in explanation.lower()
+
+
+def test_explain_projection_cold_start_blend_for_a_single_player_omits_new_season_wording():
+    """is_cold_start_season=False (this player individually cold-start mid-season -- e.g. a late
+    debut or a return from a long absence -- while the SEASON overall has real data elsewhere)
+    must not claim "first gameweek of a new season", which would be actively misleading -- see
+    app.optimization.projection._is_cold_start_player."""
+    projection = _projection("cold_start_blend_ep_next_and_career_avg")
+
+    explanation = _explain_projection(
+        projection,
+        ep_next=4.0,
+        career_avg_points_prior_seasons=6.36,
+        career_avg_early_season_points_prior_seasons=None,
+        next_fixture_difficulty=None,
+        champion_model_family=None,
+        is_cold_start_season=False,
+        availability_risk_reason=None,
+        role_boost_reason=None,
+    )
+
+    assert "4.0" in explanation
+    assert "6.36" in explanation
+    assert "new season" not in explanation.lower()
+    assert "no current-season data yet for this player" in explanation.lower()
 
 
 def test_explain_projection_champion_sourced_names_the_model_family():
@@ -100,6 +129,7 @@ def test_explain_projection_champion_sourced_names_the_model_family():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family="gradient_boosting",
+        is_cold_start_season=True,
         availability_risk_reason=None,
         role_boost_reason=None,
     )
@@ -118,6 +148,7 @@ def test_explain_projection_ep_next_fallback():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason=None,
         role_boost_reason=None,
     )
@@ -136,6 +167,7 @@ def test_explain_projection_ep_next_availability_scaled_notes_the_scaling():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason=None,
         role_boost_reason=None,
     )
@@ -153,6 +185,7 @@ def test_explain_projection_points_per_game_fallback():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason=None,
         role_boost_reason=None,
     )
@@ -170,6 +203,7 @@ def test_explain_projection_no_data_zero_falls_back_to_generic_message():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason=None,
         role_boost_reason=None,
     )
@@ -190,6 +224,7 @@ def test_explain_projection_availability_risk_noted_appends_the_reason():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason="Short on match fitness after a long international tournament.",
         role_boost_reason=None,
     )
@@ -210,6 +245,7 @@ def test_explain_projection_availability_risk_noted_on_champion_sourced_projecti
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family="gradient_boosting",
+        is_cold_start_season=True,
         availability_risk_reason="Confirmed late return to training.",
         role_boost_reason=None,
     )
@@ -232,6 +268,7 @@ def test_explain_projection_suffix_present_but_no_reason_given_omits_the_clause(
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason=None,
         role_boost_reason=None,
     )
@@ -253,6 +290,7 @@ def test_explain_projection_role_boosted_appends_the_reason():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason=None,
         role_boost_reason="Now confirmed as first-choice penalty taker.",
     )
@@ -275,6 +313,7 @@ def test_explain_projection_both_suffixes_present_mentions_both_reasons():
         career_avg_early_season_points_prior_seasons=None,
         next_fixture_difficulty=None,
         champion_model_family=None,
+        is_cold_start_season=True,
         availability_risk_reason="Short on match fitness after a long international tournament.",
         role_boost_reason="Now confirmed as first-choice penalty taker.",
     )
