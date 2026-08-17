@@ -930,25 +930,22 @@ new code needed, just running the existing pipeline.
   `position_segmentation_validation_runs` table (migration `0038`); absence
   of a run never blocks a promotion (informational, like
   `historical_backtest_replay`, the one gate still genuinely unimplemented).
-  Real result against this session's 6 real historical seasons (2020-21
-  through 2025-26, `feature_version=1`, n=136,189 total observations): DEF
-  (-1.1%), MID (-2.2%), and FWD (-1.2%) all show the global model already at
-  least as good as a position-specific split (`mae_gap_pct` negative — no
-  meaningful blind spot). GKP showed a large apparent gap (+35%,
-  `global_mae=0.049` vs `position_specific_mae=0.032`) that is **not**
-  trustworthy evidence: a real, freshly-discovered data-quality issue (see
-  "Known real gaps" below — goalkeepers are inconsistently labeled `"GK"`
-  vs. `"GKP"` in `player_features.position_short_name` across every single
-  historical season) means this evaluation only ever saw the small `"GKP"`-
-  labeled minority (1,968 of ~19,941 real goalkeeper rows), 99% of which
-  score exactly 0 (backup keepers who never played) — the tiny absolute MAE
-  and large relative gap are most likely an artifact of that near-total
-  zero-inflation on a tiny, unrepresentative slice, not a real per-position
-  modeling opportunity. **No production constant or the live champion was
-  changed as a result of this evaluation** — it's real, honest evidence that
-  the existing single-global-model architecture doesn't have a demonstrated
-  case for splitting by position (once the GKP mislabeling is fixed, this
-  should be re-run before treating GKP's number as meaningful either way).
+  **Re-run 2026-08-17 after fixing the GK/GKP mislabeling bug** (see "Known
+  real gaps" below) against this session's 6 real historical seasons
+  (2020-21 through 2025-26, `feature_version=1`, n=151,412 total
+  observations, GKP now correctly covering 16,901 real goalkeeper rows
+  instead of the old, mislabeling-truncated 1,968): DEF (-1.0%), MID (-1.4%),
+  FWD (-1.2%), and now GKP too (-3.1%, `global_mae=0.658` vs
+  `position_specific_mae=0.679`) ALL show the global model already at least
+  as good as a position-specific split (`mae_gap_pct` negative every time —
+  no meaningful blind spot anywhere, GKP included). This supersedes the
+  original run's untrustworthy GKP number (a spurious +35% artifact of the
+  mislabeling bug's near-total zero-inflation on a tiny unrepresentative
+  slice) with a real, consistent, trustworthy result. **No production
+  constant or the live champion was changed as a result of this
+  evaluation** — real, honest evidence that the existing single-global-model
+  architecture doesn't have a demonstrated case for splitting by position,
+  now confirmed across all 4 positions rather than 3 of 4.
 - **`app/learning`** (Milestone 7, "recursive learning"): after a
   recommendation's outcome is known, `outcome_ingestion.py` records actuals,
   `counterfactuals.py` compares the followed recommendation against
@@ -1453,24 +1450,48 @@ documents it directly.
   night were reconciled the same way: `goal_involvement`/`defensive_contribution` -> `0035`,
   `gameweek_schedule_gap_days` -> `0036`, `start_probability_models` -> `0037`,
   `position_segmentation_validation_runs` -> `0038`.
-- **Real, freshly-discovered data-quality issue (found 2026-08-17, not yet fixed): goalkeeper
-  position labels are inconsistent in `player_features.position_short_name`.** Every one of the 6
-  real historical seasons (2020-21 through 2025-26) has BOTH `"GK"` (the large majority — e.g.
-  17,973 real rows for `feature_version=1`) and `"GKP"` (a small minority — 1,968 rows) present
-  simultaneously for what should be the same position. `app.modeling.candidates.KNOWN_POSITIONS =
-  ("GKP", "DEF", "MID", "FWD")` only recognizes `"GKP"` — every `"GK"`-labeled row (the actual
-  majority of real goalkeeper data) silently gets encoded as "unknown position" (all
-  `position_*` one-hot columns zero) by `_one_hot_position`, not bucketed to goalkeeper at all.
-  This affects the EXISTING, currently-live champion model's own training data, not just the new
-  `POSITION_SEGMENTATION_VALIDATION` job that surfaced it — the champion has likely never seen a
-  correctly-labeled majority of real goalkeeper rows. Two smaller, related stray labels also exist
-  (`"AM"` — 320 rows, 2024-25 only; `"MNG"` — 440 rows, 2024-25 only, almost certainly FPL's real
-  2024-25 "Manager" position type) that `KNOWN_POSITIONS` also doesn't recognize. Root cause not
-  yet investigated (likely a normalization mismatch between `app.ingestion.historical_normalization`
-  and `app.ingestion.live_stats_normalization`, or a genuine upstream data-source inconsistency) --
-  needs its own dedicated fix (harmonize the label at ingestion time, most likely) and a full
-  `FEATURE_GENERATION` + `MODEL_TRAINING` re-run afterward before the live champion's own
-  goalkeeper handling can be trusted.
+- **Resolved data-quality issue (found and fixed 2026-08-17): goalkeeper position labels were
+  inconsistent in `player_gameweek_stats.position_short_name_at_time`/`player_features
+  .position_short_name`.** Root cause: `gws/merged_gw.csv`'s own free-text `"position"` column
+  uses `"GK"` for goalkeepers, inconsistently — the SAME real goalkeeper (e.g. Altay Bayindir,
+  Håkon Valdimarsson) was labeled `"GK"` in some gameweeks and `"GKP"` in others, within the same
+  season, across all 6 real historical seasons. `app.modeling.candidates.KNOWN_POSITIONS = ("GKP",
+  "DEF", "MID", "FWD")` only recognizes `"GKP"`, so every `"GK"`-labeled row (the large majority —
+  e.g. 2023-24: 3406 `"GK"` vs only 394 `"GKP"`) was silently one-hot-encoded as "unknown
+  position", not goalkeeper — affecting every model ever trained on this historical data,
+  including the live champion, not just the `POSITION_SEGMENTATION_VALIDATION` job that surfaced
+  it. Fixed in `app.ingestion.historical_normalization._normalize_position_short_name` (aliases
+  `"GK"` → `"GKP"` at ingestion time; the live ingestion path was never affected — it derives
+  `position_short_name_at_time` from the `Position` table, already canonical). `HISTORICAL_DATA
+  _INGESTION` (`season_label=all`) and `FEATURE_GENERATION` (`season_label=all`) were re-run
+  against the real dev database to backfill every existing row (upsert-safe, keyed on
+  `player_id`/`gameweek_id`/`fixture_id`) — verified via `information_schema` query: zero `"GK"`
+  rows remain, `"GKP"` counts now equal the old `"GK"` + `"GKP"` totals exactly (e.g. 2023-24:
+  3800). Two smaller stray labels (`"AM"`/`"MNG"`, 2024-25 only, 320/440 rows) were investigated
+  and confirmed NOT a bug — real Assistant Manager/Manager fantasy picks (verified against real
+  ingested names: Guardiola, Arteta, Postecoglou, ...), correctly excluded from `KNOWN_POSITIONS`
+  since they aren't real player positions. The live champion has NOT yet been retrained on the
+  corrected data — see the `MODEL_TRAINING`/promotion sections above for why a fresh training run
+  is safe to do (creates a `SHADOW_CHALLENGER`, never auto-promotes) but the decision whether to
+  do so, and whether to act on it, is left to explicit human review.
+- **Resolved, real bug (found and fixed 2026-08-17): `jobs.job_type`/`status`/`trigger_type` were
+  silently too narrow on the real dev database.** These are `native_enum=False` `VARCHAR` columns
+  whose real width in an already-migrated database is frozen at whatever the enum looked like the
+  FIRST TIME migration `0001` ran there — not automatically kept in sync with later additions
+  (see `0006`'s own precedent for this exact bug class, which widened `ingestion_runs.run_type`
+  but explicitly reasoned `jobs.job_type` didn't need it *at the time*). Three job types added
+  this session (`start_probability_model_training`/`cold_start_projection_validation`/
+  `position_segmentation_validation`, 32 chars each) exceeded the real dev database's frozen
+  `VARCHAR(25)` `job_type` column — every real invocation failed with a DB-level truncation
+  error. Invisible to every integration test run this session, since a fresh test database
+  created via `alembic upgrade head` auto-sizes the column against the CURRENT enum and never
+  exhibits this bug. Fixed via migration `0041` (widens all three `jobs` columns to `VARCHAR(50)`)
+  plus a new regression test (`tests/unit/test_job_enums.py`) asserting every enum member fits
+  the real column width — fails loudly in CI the moment a future addition would exceed it, rather
+  than silently succeeding in tests while failing in production. This is a real, systemic risk
+  class shared by ~25+ other `native_enum=False` columns across this schema (every other
+  `SAEnum(...)` call without an explicit `length=` in `packages/database/models/*.py`) — this fix
+  covers the two tables confirmed broken tonight, not a full schema-wide audit.
 `FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and
 the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`
 targets are now real, individual targets (previously combined into one

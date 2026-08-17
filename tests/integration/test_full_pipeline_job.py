@@ -12,7 +12,7 @@ already has historical data backfilled once). No real network access happens
 in this module.
 """
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.jobs.service import execute_job
 from packages.database.models.model_version import ModelVersion
@@ -71,6 +71,18 @@ def test_full_pipeline_happy_path_runs_all_three_steps(
         select(ModelVersion.id).where(ModelVersion.is_champion.is_(True))
     ).all()
     assert len(champions) == 1
+
+    # Delete this run's own player_features rows for the live-mocked "current" season immediately
+    # after confirming the run itself succeeded (its own contents are never otherwise read by this
+    # test) -- mirrors test_optimization_uses_champion.py's own established precedent for the
+    # exact same risk: without this cleanup, these rows leak into
+    # app.modeling.walk_forward.usable_season_labels_with_features, a GLOBAL (not season-scoped)
+    # lookup MODEL_TRAINING/BACKTEST/POSITION_SEGMENTATION_VALIDATION all rely on to mean "exactly
+    # the intentionally-seeded historical season(s)" -- a real cross-test-pollution bug, surfaced
+    # this session as a spurious extra season label (e.g. "2296-97") appearing in another test's
+    # own "usable_seasons == [...]" assertion.
+    db_session.execute(delete(PlayerFeatures).where(PlayerFeatures.season_id == season_id))
+    db_session.commit()
 
 
 def test_full_pipeline_stops_at_the_first_failing_step(

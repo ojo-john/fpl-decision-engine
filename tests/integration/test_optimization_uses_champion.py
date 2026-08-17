@@ -227,12 +227,23 @@ def test_project_player_with_champion_uses_cold_start_blend_for_a_player_with_no
     gameweek = db_session.execute(
         select(Gameweek).where(Gameweek.season_id == current_season_id).limit(1)
     ).scalar_one()
-    # Explicitly clear any pre-existing rows for these two players first, mirroring this file's
-    # own "no champion" test's precedent (see module docstring) rather than assuming a pristine
-    # DB -- this project's integration tests run against a shared, never-truncated Postgres, and
-    # ``current_season_id``/its players are reused (get-or-create by season label) across every
-    # test in the suite that seeds this same "current" season, so an earlier test run may have
-    # already given one of these two positionally-selected players a stats row of their own.
+    # Explicitly clear any pre-existing rows/state for these two players first, mirroring this
+    # file's own "no champion" test's precedent (see module docstring) rather than assuming a
+    # pristine DB -- this project's integration tests run against a shared, never-truncated
+    # Postgres, and ``current_season_id``/its players are reused (get-or-create by season label)
+    # across every test in the suite that seeds this same "current" season, so an earlier test run
+    # may have already given one of these two positionally-selected players a stats row of their
+    # own, OR (real, observed failure) an excluded ``status`` (e.g. an injury/availability-scaling
+    # test elsewhere mutates an arbitrary player's own ``status``/``chance_of_playing_next_round``
+    # on this same shared season) -- either would make ``warm_player``'s projection resolve to
+    # ``"unavailable_status_excluded"`` instead of the champion path this test is actually about,
+    # a failure mode unrelated to the per-player cold-start boundary being tested here. Forcing
+    # both players back to a known-available state makes this test's own assertions test exactly
+    # what they claim to, regardless of what any other test in the same run left behind.
+    warm_player.status = "a"
+    warm_player.chance_of_playing_next_round = None
+    cold_player.status = "a"
+    cold_player.chance_of_playing_next_round = None
     db_session.execute(
         delete(PlayerGameweekStats).where(
             PlayerGameweekStats.player_id.in_([warm_player.id, cold_player.id]),

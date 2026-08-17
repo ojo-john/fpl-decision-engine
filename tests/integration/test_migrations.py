@@ -382,8 +382,27 @@ def _clear_optimization_runs(engine) -> None:
     ``StringDataRightTruncation`` rather than silently truncating). These
     tests don't care about that data — the tables get dropped entirely a step
     or two later in the same downgrade chain — so it's safe to clear it first.
+
+    ``recommendation_audits.optimization_run_id`` also references
+    ``optimization_runs.id`` (nullably, without ``ondelete=CASCADE``) — real
+    tests added this session (e.g. the position-segmentation/start-probability
+    job tests) run a full SQUAD_OPTIMIZATION -> RECOMMENDATION_GENERATION flow
+    as setup and leave that row behind on this shared database, so the delete
+    below now fails with a real ``ForeignKeyViolation`` unless that reference
+    is broken first. ``recommendation_outcomes.recommendation_audit_id`` is a
+    NOT NULL FK onto ``recommendation_audits`` (no cascade), so the audit row
+    itself can't just be deleted either — its own outcome (if any) must go
+    first. ``learning_reports.recommendation_outcome_id`` is the next link in
+    that same non-cascading chain (nulled out, same pattern as
+    ``_clear_ingestion_runs`` below) — ``recommendation_outcomes`` deletion
+    itself cascades to ``counterfactual_results``/``failure_attributions``/
+    ``note_effectiveness_evaluations`` (all declared ``ondelete=CASCADE``), so
+    those don't need their own explicit clear.
     """
     with engine.begin() as conn:
+        conn.execute(text("UPDATE learning_reports SET recommendation_outcome_id = NULL"))
+        conn.execute(text("DELETE FROM recommendation_outcomes"))
+        conn.execute(text("UPDATE recommendation_audits SET optimization_run_id = NULL"))
         conn.execute(text("DELETE FROM optimization_runs"))
 
 
@@ -422,6 +441,44 @@ def _clear_player_gameweek_stats(engine) -> None:
         conn.execute(text("DELETE FROM player_gameweek_stats"))
 
 
+def _clear_jobs(engine) -> None:
+    """Delete all ``jobs`` rows.
+
+    Migration 0041's downgrade re-narrows ``job_type``/``status``/``trigger_type`` back to their
+    original, pre-widening lengths -- if any other integration test already persisted a `Job` row
+    with one of the 3 job types added this session (32 chars each, e.g.
+    ``"position_segmentation_validation"``) on this shared, non-ephemeral test database, that
+    narrowing fails outright (Postgres raises ``StringDataRightTruncation``). Same rationale as
+    ``_clear_optimization_runs``/``_clear_ingestion_runs``/``_clear_player_gameweek_stats`` above.
+
+    Unlike those three, ~15 tables reference ``jobs.id`` (nullably, none ``ondelete=CASCADE`` --
+    it's an optional "which job produced this row" audit trail, not core referential integrity),
+    and that list grows every time a new job-producing table is added (3 more were added this
+    session alone: ``cold_start_validation_runs``/``position_segmentation_validation_runs``/
+    ``start_probability_models``). Hardcoding each one here would silently rot the next time a
+    table like that is added, reintroducing exactly this bug -- so this queries
+    ``information_schema`` for every FK column actually pointing at ``jobs.id`` right now and
+    nulls all of them dynamically, instead.
+    """
+    with engine.begin() as conn:
+        referencing_columns = conn.execute(
+            text("""
+                SELECT tc.table_name, kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                JOIN information_schema.constraint_column_usage ccu
+                    ON tc.constraint_name = ccu.constraint_name AND tc.table_schema = ccu.table_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                    AND ccu.table_name = 'jobs'
+                    AND ccu.column_name = 'id'
+            """)
+        ).fetchall()
+        for table_name, column_name in referencing_columns:
+            conn.execute(text(f'UPDATE "{table_name}" SET "{column_name}" = NULL'))  # noqa: S608
+        conn.execute(text("DELETE FROM jobs"))
+
+
 def test_upgrade_creates_milestone_3_layer2_tables_with_expected_columns(require_database):
     """Covers ``player_features`` (Milestone 3 Layer 2)."""
     from packages.database.session import engine
@@ -437,6 +494,7 @@ def test_upgrade_creates_milestone_3_layer2_tables_with_expected_columns(require
                 f"{table_name} missing columns: {expected_columns - columns}"
             )
 
+        _clear_jobs(engine)
         _run_alembic("downgrade", "0008")
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
@@ -465,6 +523,7 @@ def test_upgrade_creates_milestone_3_layer1_tables_with_expected_columns(require
 
         _clear_ingestion_runs(engine)
         _clear_player_gameweek_stats(engine)
+        _clear_jobs(engine)
         _run_alembic("downgrade", "0005")
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
@@ -494,6 +553,7 @@ def test_upgrade_creates_milestone_2_tables_with_expected_columns(require_databa
         _clear_optimization_runs(engine)
         _clear_ingestion_runs(engine)
         _clear_player_gameweek_stats(engine)
+        _clear_jobs(engine)
         _run_alembic("downgrade", "0003")
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
@@ -523,6 +583,7 @@ def test_upgrade_creates_jobs_table_with_expected_columns(require_database):
         _clear_optimization_runs(engine)
         _clear_ingestion_runs(engine)
         _clear_player_gameweek_stats(engine)
+        _clear_jobs(engine)
         _run_alembic("downgrade", "base")
         inspector = inspect(engine)
         assert "jobs" not in inspector.get_table_names()
@@ -548,6 +609,7 @@ def test_upgrade_creates_milestone_1_tables_with_expected_columns(require_databa
         _clear_optimization_runs(engine)
         _clear_ingestion_runs(engine)
         _clear_player_gameweek_stats(engine)
+        _clear_jobs(engine)
         _run_alembic("downgrade", "base")
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())

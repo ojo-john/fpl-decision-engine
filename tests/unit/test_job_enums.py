@@ -60,3 +60,35 @@ def test_job_status_values():
 
 def test_trigger_type_values():
     assert {member.name: member.value for member in TriggerType} == EXPECTED_TRIGGER_TYPE_VALUES
+
+
+# Real bug (found 2026-08-17): jobs.job_type/status/trigger_type are native_enum=False VARCHAR
+# columns whose real width in an already-migrated database is frozen at whatever the enum looked
+# like the FIRST TIME migration 0001 ran there -- NOT automatically kept in sync with later
+# additions to these enums. Three job types added this session (32 chars each) silently exceeded
+# the real dev database's frozen VARCHAR(25) job_type column -- every real invocation failed with
+# a DB-level truncation error, invisible to a fresh test database (which auto-sizes the column
+# against the CURRENT enum on every `alembic upgrade head`). See migration 0041, which widens all
+# three columns to 50. This test is the guard against it happening again: fails loudly, in CI,
+# against ANY database state, the moment a future enum member would exceed that width -- instead
+# of silently succeeding in tests while failing for real in production.
+_JOBS_TABLE_COLUMN_WIDTHS = {"job_type": 50, "status": 50, "trigger_type": 50}
+
+
+def test_job_type_values_fit_the_real_jobs_table_column_width():
+    max_len = max(len(member.value) for member in JobType)
+    assert max_len <= _JOBS_TABLE_COLUMN_WIDTHS["job_type"], (
+        f"JobType.{max((m for m in JobType), key=lambda m: len(m.value)).name} is {max_len} chars -- "
+        f"exceeds jobs.job_type's real column width ({_JOBS_TABLE_COLUMN_WIDTHS['job_type']}). "
+        "Add a migration widening the column before adding this member."
+    )
+
+
+def test_job_status_values_fit_the_real_jobs_table_column_width():
+    max_len = max(len(member.value) for member in JobStatus)
+    assert max_len <= _JOBS_TABLE_COLUMN_WIDTHS["status"]
+
+
+def test_trigger_type_values_fit_the_real_jobs_table_column_width():
+    max_len = max(len(member.value) for member in TriggerType)
+    assert max_len <= _JOBS_TABLE_COLUMN_WIDTHS["trigger_type"]
