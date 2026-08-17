@@ -243,7 +243,7 @@ rather than reimplementing it:
   dimension's results were treated as directional, not conclusive,
   evidence for exactly that reason.
 
-Persists one `cold_start_validation_runs` row per run (migration 0033;
+Persists one `cold_start_validation_runs` row per run (migration 0034;
 `ColdStartValidationRunStatus`, same "only SUCCEEDED is ever actually
 persisted" shape as `BacktestRunStatus`) with all three sweeps' full
 results plus the "best" and "current-default's-own" MAE for each
@@ -1025,21 +1025,13 @@ secret is missing.
   consumer/table for it to write to (`project_player`/`project_player_with_champion` are
   already called directly by every job that needs a projection, computed live, never cached).
 - No official-API season-aggregate history (`element-summary/{id}/history_past`) ingestion — moot in practice since `HISTORICAL_DATA_INGESTION` already provides strictly richer (gameweek-level, not just season-total) historical data from a different source.
-- **Open migration collision (as of 2026-08-17, not yet resolved):** revision id `0033` was
-  independently claimed by two concurrent, unrelated pieces of work — this doc's own
-  `0033_cold_start_validation_runs.py` and a separate, unrelated `note_effectiveness_evaluations`
-  table (built in parallel, in a different worktree) — both declaring `down_revision = "0032"`.
-  Both were found already applied (as literal, colliding `alembic_version = "0033"` rows) against
-  the SAME shared local dev Postgres and the SAME real dev database (`fpl_decision_engine`), even
-  though neither worktree's own `migrations/versions/` directory contains the other's file. This
-  doc's own real-MAE numbers above were obtained via a read-only diagnostic script against the
-  real dev database's real data (no `session.add`/`commit`, no schema touched) specifically to
-  avoid writing `cold_start_validation_runs` against a real database whose migration history is in
-  this contested state. **Before `cold_start_validation_runs` exists for real** (dev or prod), a
-  human/coordinator must reconcile the two `0033` migrations — renumber one to chain after the
-  other (`alembic merge heads`, or a manual renumber + `down_revision` fix) — and re-run
-  `alembic upgrade head` against both the real dev database and whatever `fpl_decision_engine_test`
-  each worktree normally shares.
+- **Resolved migration collision (2026-08-17):** revision id `0033` was independently claimed by
+  two concurrent, unrelated pieces of work built in separate worktrees — `note_effectiveness_evaluations`
+  and `cold_start_validation_runs` — both declaring `down_revision = "0032"`. Reconciled at merge
+  time: `note_effectiveness_evaluations` (merged into `main` first) kept revision `0033`;
+  `cold_start_validation_runs` was renumbered to `0034` with `down_revision = "0033"`, restoring a
+  single linear chain. `alembic upgrade head` re-run against both the real dev database and
+  `fpl_decision_engine_test` after the renumber.
 
 `FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and
 the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`

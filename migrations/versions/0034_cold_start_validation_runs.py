@@ -6,20 +6,16 @@ evaluate a trained model_versions row). One insert-only row per COLD_START_PROJE
 run -- see packages/database/models/cold_start_validation_run.py for the full column docstrings and
 design rationale, and app/modeling/cold_start_validation.py for the evaluation harness itself.
 
-NOTE for whoever reconciles this with main: this worktree's own migration chain here is
-self-consistent (0033 following 0032). However, the shared local dev Postgres this worktree's
-DATABASE_URL originally pointed at (``fpl_decision_engine_test``) was found, mid-session, to
-already have a DIFFERENT "0033" migration applied by a concurrent, unrelated agent session (a
-"note_effectiveness_evaluations" table also based on 0032) -- a real revision-id collision the
-two branches' migration histories will have to resolve (``alembic merge heads`` or a manual
-renumber) before both can land on main. To avoid interfering with that concurrent work, this
-session's own test/verification runs were performed against an isolated database dedicated to
-this worktree instead of the shared ``fpl_decision_engine_test`` (see this repo's own
-ARCHITECTURE.md cold-start-validation section / this session's final report for the exact name
-used) -- never against the shared one, and never against the real dev database either.
+Reconciled at merge time: this worktree's migration originally claimed revision id "0033"
+(following 0032), which collided with a different, concurrently-developed "0033"
+(``note_effectiveness_evaluations``, also based on 0032) that landed on main first. Renumbered
+to 0034 and rebased onto that migration so both tables coexist on one linear chain. This
+worktree's own test/verification runs during development were performed against an isolated
+database dedicated to this worktree, never the shared ``fpl_decision_engine_test`` or the real
+dev database, specifically to avoid interfering with that concurrent work.
 
-Revision ID: 0033
-Revises: 0032
+Revision ID: 0034
+Revises: 0033
 Create Date: 2026-08-17
 
 """
@@ -33,8 +29,8 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from packages.domain.learning import ColdStartValidationRunStatus
 
 # revision identifiers, used by Alembic.
-revision: str = "0033"
-down_revision: str | None = "0032"
+revision: str = "0034"
+down_revision: str | None = "0033"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
