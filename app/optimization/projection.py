@@ -123,6 +123,22 @@ COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT = 0.075
 # section for the full real numbers.
 COLD_START_PRICE_PRIOR_BLEND_WEIGHT = 0.7
 
+# NOT used: an Elo-expected-score-based fixture adjustment (real ClubElo.com ratings, via
+# app.ingestion.team_strength / PlayerFeatures.next_fixture_elo_differential) was built and
+# really validated (see scripts/validate_elo_fixture_adjustment.py) against a real, completed
+# season (2025-26, GW1-6, n=3035 real player-gameweek observations, career_avg_early_season
+# alone as the base signal). Real result: EVERY tested scale (0.0 through 1.0) produced a WORSE
+# MAE than the existing FPL-difficulty adjustment below (best: 1.5592 at difficulty; worst
+# tested Elo scale, 1.0: 1.5926 -- monotonically increasing with scale, i.e. the more weight
+# given to Elo, the worse the real prediction accuracy got). The existing FPL-difficulty
+# adjustment is kept unchanged as a result -- real evidence did not support switching to (or
+# blending in) Elo for THIS specific formula, even though Elo is a more continuously-updated
+# signal in principle. next_fixture_elo_differential is still computed and persisted (see
+# app.features.service) since it reaches the TRAINED champion model's own feature matrix
+# automatically (app.modeling.candidates) -- a gradient-boosted model can learn its own weight
+# for it, unlike this hand-written formula's single fixed coefficient, so the negative result
+# here is specific to this formula, not a verdict on the Elo signal's value overall.
+
 
 @dataclass(frozen=True)
 class PlayerProjection:
@@ -386,7 +402,10 @@ def _cold_start_projection(
     target gameweek's specific fixture, already resolved home/away-aware by
     ``app.features.service``) is the one signal this fallback can compute that genuinely does
     vary per gameweek even with zero current-season history, so it's applied as a modest
-    (±15% across the full 1-5 range, neutral at difficulty 3) multiplier on the blend.
+    (±15% across the full 1-5 range, neutral at difficulty 3) multiplier on the blend. A real
+    ClubElo.com-Elo-differential-based alternative was built and validated and found NOT to
+    improve on this — see this module's "NOT used" constants-section comment for the real
+    evidence.
 
     A player with NO earlier-season history at all (``career_avg`` — both the early-season and
     full-season versions — is ``None``: a genuinely new-to-FPL signing, not just missing an

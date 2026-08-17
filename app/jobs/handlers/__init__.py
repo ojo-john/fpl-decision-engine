@@ -20,6 +20,7 @@ from app.jobs.handlers import (
     squad_optimization,  # noqa: F401  (import registers the handler)
     start_probability_training,  # noqa: F401  (import registers the handler)
     system_health,  # noqa: F401  (import registers the handler)
+    team_strength_sync,  # noqa: F401  (import registers the handler)
     transfer_optimization,  # noqa: F401  (import registers the handler)
 )
 
@@ -43,5 +44,6 @@ __all__ = [
     "squad_optimization",
     "start_probability_training",
     "system_health",
+    "team_strength_sync",
     "transfer_optimization",
 ]

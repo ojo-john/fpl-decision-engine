@@ -12,6 +12,7 @@ EXPECTED_JOB_TYPE_VALUES = {
     "HISTORICAL_DATA_INGESTION": "historical_data_ingestion",
     "MANAGER_SYNC": "manager_sync",
     "LEAGUE_SYNC": "league_sync",
+    "TEAM_STRENGTH_SYNC": "team_strength_sync",
     "FEATURE_GENERATION": "feature_generation",
     "MODEL_TRAINING": "model_training",
     "START_PROBABILITY_MODEL_TRAINING": "start_probability_model_training",

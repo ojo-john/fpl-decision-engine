@@ -21,6 +21,7 @@ from app.jobs.handlers.rules_sync import RulesSyncJobRunner
 from app.jobs.handlers.squad_optimization import SquadOptimizationJobRunner
 from app.jobs.handlers.start_probability_training import StartProbabilityModelTrainingJobRunner
 from app.jobs.handlers.system_health import SystemHealthJobRunner
+from app.jobs.handlers.team_strength_sync import TeamStrengthSyncJobRunner
 from app.jobs.handlers.transfer_optimization import TransferOptimizationJobRunner
 from app.jobs.registry import JobHandlerNotImplementedError, get_handler
 from packages.domain.jobs import JobType
@@ -37,6 +38,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.LINEUP_OPTIMIZATION,
     JobType.MANAGER_SYNC,
     JobType.LEAGUE_SYNC,
+    JobType.TEAM_STRENGTH_SYNC,
     JobType.TRANSFER_OPTIMIZATION,
     JobType.H2H_SIMULATION,
     JobType.CHIP_SIMULATION,
@@ -95,6 +97,10 @@ def test_transfer_optimization_resolves_to_its_runner():
 
 def test_league_sync_resolves_to_its_runner():
     assert get_handler(JobType.LEAGUE_SYNC) is LeagueSyncJobRunner
+
+
+def test_team_strength_sync_resolves_to_its_runner():
+    assert get_handler(JobType.TEAM_STRENGTH_SYNC) is TeamStrengthSyncJobRunner
 
 
 def test_h2h_simulation_resolves_to_its_runner():

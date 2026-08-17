@@ -2,9 +2,10 @@
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import Boolean as SABoolean
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -37,6 +38,13 @@ class Team(Base):
     position: Mapped[int | None] = mapped_column(Integer)
     unavailable: Mapped[bool] = mapped_column(SABoolean, nullable=False, default=False)
     last_synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    # Real, continuously-updated team-strength rating from ClubElo.com (see
+    # app.ingestion.team_strength.TeamStrengthSyncJobRunner) -- distinct from `strength*` above,
+    # which are FPL's own bootstrap-static fields. NULL until TEAM_STRENGTH_SYNC has run at least
+    # once, or if this specific team couldn't be matched to a ClubElo club name that run.
+    elo_rating: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    elo_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
