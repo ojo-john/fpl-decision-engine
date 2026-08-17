@@ -17,6 +17,8 @@ from app.features.engineering import PriorGameweekStat
 from app.modeling.cold_start_validation import (
     EarlyGameweekActual,
     PlayerSeasonObservation,
+    PriceComparableBucket,
+    lookup_price_comparable_bucket,
     sweep_blend_ratio_candidates,
     sweep_difficulty_coefficient_candidates,
     sweep_half_life_candidates,
@@ -182,3 +184,59 @@ def test_sweep_blend_ratio_candidates_picks_lower_mae_when_ep_next_proxy_is_more
 
     # More weight on the (here, exact) ep_next proxy should win.
     assert by_candidate[0.3].mae < by_candidate[0.7].mae
+
+
+# --- lookup_price_comparable_bucket: boundary/failure cases first -----------------------------------
+#
+# The DB-backed bucket-BUILDING step (_bucket_pool_entries, compute_price_comparable_buckets,
+# build_true_rookie_observations, sweep_price_prior_blend_weight_candidates) requires real
+# Season/Gameweek/Player/PlayerGameweekStats rows and is covered by
+# tests/integration/test_cold_start_projection_validation_job.py instead, mirroring this file's own
+# existing "DB-backed building vs pure sweep" split for the other three sweeps above.
+
+_DEF_BUCKETS = (
+    PriceComparableBucket(
+        position_short_name="DEF", price_low=40, price_high=45, avg_early_season_points=1.0, n_observations=10
+    ),
+    PriceComparableBucket(
+        position_short_name="DEF", price_low=46, price_high=60, avg_early_season_points=2.5, n_observations=10
+    ),
+)
+
+
+def test_lookup_price_comparable_bucket_no_buckets_for_position_returns_none():
+    assert lookup_price_comparable_bucket(_DEF_BUCKETS, "GK", price=45) is None
+
+
+def test_lookup_price_comparable_bucket_empty_bucket_list_returns_none():
+    assert lookup_price_comparable_bucket([], "DEF", price=45) is None
+
+
+def test_lookup_price_comparable_bucket_price_below_every_bucket_extrapolates_to_lowest():
+    result = lookup_price_comparable_bucket(_DEF_BUCKETS, "DEF", price=20)
+
+    assert result is not None
+    assert result.price_low == 40 and result.price_high == 45
+
+
+def test_lookup_price_comparable_bucket_price_above_every_bucket_extrapolates_to_highest():
+    result = lookup_price_comparable_bucket(_DEF_BUCKETS, "DEF", price=999)
+
+    assert result is not None
+    assert result.price_low == 46 and result.price_high == 60
+
+
+def test_lookup_price_comparable_bucket_price_within_a_bucket_range_matches_it():
+    result = lookup_price_comparable_bucket(_DEF_BUCKETS, "DEF", price=50)
+
+    assert result is not None
+    assert result.avg_early_season_points == 2.5
+
+
+def test_lookup_price_comparable_bucket_price_at_exact_boundary_is_inclusive():
+    # 45 is the upper (inclusive) edge of the first bucket and NOT inside the second (46-60) --
+    # must resolve to the first, not silently fall through to extrapolation.
+    result = lookup_price_comparable_bucket(_DEF_BUCKETS, "DEF", price=45)
+
+    assert result is not None
+    assert result.avg_early_season_points == 1.0

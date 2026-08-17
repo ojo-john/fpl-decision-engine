@@ -12,6 +12,15 @@ of that module's sweeps against it (half-life, fixture-difficulty coefficient, e
 blend ratio) and persists one ``cold_start_validation_runs`` row. See that module's own docstring
 for the full evaluation design, leakage discipline, and the ep_next proxy caveat.
 
+Also builds a fourth, structurally independent observation set
+(``build_true_rookie_observations`` -- players with literally zero prior-season history, the exact
+population the main observation set excludes) and its own price-informed-fallback blend-weight
+sweep, plus computes and persists the LIVE price-comparable-bucket lookup table
+(``compute_price_comparable_buckets``) that ``app.optimization.projection
+._price_informed_true_rookie_projection`` reads at prediction time. Never allowed to fail this
+job's main three sweeps if the true-rookie population happens to be empty for the currently-usable
+seasons (a real, legitimate state, not an error) -- see the ``run`` method's own handling.
+
 Persistence: "build fully in memory, insert once" (mirrors ``BACKTEST``'s own precedent exactly --
 pure computation over already-persisted, read-only historical data, no other side-effecting steps to
 sequence).
@@ -35,16 +44,22 @@ from app.modeling.cold_start_validation import (
     BLEND_RATIO_SWEEP_CANDIDATES,
     DIFFICULTY_COEFFICIENT_SWEEP_CANDIDATES,
     EARLY_SEASON_HALF_LIFE_SWEEP_CANDIDATES,
+    PRICE_PRIOR_BLEND_WEIGHT_SWEEP_CANDIDATES,
     BlendRatioSweepResult,
     HalfLifeSweepResult,
+    PricePriorSweepResult,
     build_player_season_observations,
+    build_true_rookie_observations,
+    compute_price_comparable_buckets,
     sweep_blend_ratio_candidates,
     sweep_difficulty_coefficient_candidates,
     sweep_half_life_candidates,
+    sweep_price_prior_blend_weight_candidates,
 )
 from app.optimization.projection import (
     COLD_START_BLEND_CAREER_AVG_WEIGHT,
     COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT,
+    COLD_START_PRICE_PRIOR_BLEND_WEIGHT,
 )
 from packages.database.models.cold_start_validation_run import ColdStartValidationRun
 from packages.database.session import SessionLocal
@@ -59,6 +74,18 @@ _BLEND_RATIO_CAVEAT = (
     "ep_next has no true historical pre-season snapshot -- the proxy used here is the most recent "
     "strictly-prior season's own END-OF-SEASON ep_next value, not a summer-transfer/team-news-aware "
     "pre-season estimate. Treat this sweep as directional, not conclusive, evidence."
+)
+
+# Worse than _BLEND_RATIO_CAVEAT: a true rookie has no PRIOR season at all, so this sweep's own
+# ep_next proxy can only be the TARGET season's own end-of-season snapshot -- see
+# sweep_price_prior_blend_weight_candidates's own docstring for the full reasoning and why a result
+# favoring the price prior is stronger evidence than a result favoring ep_next alone.
+_PRICE_PRIOR_CAVEAT = (
+    "This population (true rookies) has no prior-season ep_next to use as a proxy at all, so the "
+    "ep_next side of this blend uses the TARGET season's own end-of-season snapshot -- materially "
+    "more hindsight-biased than the main blend-ratio sweep's already-caveated proxy. A result "
+    "favoring the price prior is strong, conservative evidence; a result favoring ep_next alone "
+    "should be treated with skepticism given this bias."
 )
 
 # Sort key sentinel for min(..., key=...) below: a candidate with an undefined MAE (see each sweep
@@ -97,6 +124,11 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
                 if "blend_ratio_candidates" in parameters
                 else list(BLEND_RATIO_SWEEP_CANDIDATES)
             )
+            price_prior_candidates = (
+                [float(c) for c in parameters["price_prior_weight_candidates"]]
+                if "price_prior_weight_candidates" in parameters
+                else list(PRICE_PRIOR_BLEND_WEIGHT_SWEEP_CANDIDATES)
+            )
 
             observations, usable_seasons = build_player_season_observations(session)
             if len(usable_seasons) < 2:
@@ -124,6 +156,20 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
             half_life_results = sweep_half_life_candidates(observations, half_life_candidates)
             difficulty_results = sweep_difficulty_coefficient_candidates(observations, difficulty_candidates)
             blend_results = sweep_blend_ratio_candidates(observations, blend_candidates)
+
+            # Structurally independent population (career_avg is None -- zero prior-season history
+            # at all, disjoint from `observations` above, which all require non-empty prior_stats)
+            # -- never allowed to fail this job even if zero true rookies are evaluable (a small,
+            # real population that can legitimately be empty for some historical seasons).
+            true_rookie_observations, _ = build_true_rookie_observations(session)
+            price_prior_results = (
+                sweep_price_prior_blend_weight_candidates(
+                    session, true_rookie_observations, usable_seasons, price_prior_candidates
+                )
+                if true_rookie_observations
+                else []
+            )
+            price_comparable_buckets, _ = compute_price_comparable_buckets(session)
             completed_at = datetime.now(UTC)
 
             # half_life_results is guaranteed >=1 defined-MAE entry whenever observations is
@@ -165,6 +211,20 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
             )
             default_blend = self._match_blend(blend_results, COLD_START_BLEND_CAREER_AVG_WEIGHT)
 
+            # Same "can legitimately be empty" handling as the difficulty/blend dimensions above.
+            scored_price_prior = [r for r in price_prior_results if r.mae is not None]
+            best_price_prior = (
+                min(
+                    scored_price_prior,
+                    key=lambda r: r.mae if r.mae is not None else _UNDEFINED_MAE_SORT_VALUE,
+                )
+                if scored_price_prior
+                else None
+            )
+            default_price_prior = self._match_price_prior(
+                price_prior_results, COLD_START_PRICE_PRIOR_BLEND_WEIGHT
+            )
+
             row = ColdStartValidationRun(
                 job_id=uuid.UUID(ctx.job_id),
                 run_status=ColdStartValidationRunStatus.SUCCEEDED,
@@ -196,6 +256,18 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
                 else None,
                 best_blend_mae=_to_decimal(best_blend.mae) if best_blend else None,
                 blend_ratio_caveat=_BLEND_RATIO_CAVEAT,
+                n_true_rookie_observations=len(true_rookie_observations),
+                price_prior_sweep_json=[asdict(r) for r in price_prior_results] or None,
+                default_price_prior_weight=_to_decimal(COLD_START_PRICE_PRIOR_BLEND_WEIGHT),
+                default_price_prior_weight_mae=_to_decimal(default_price_prior.mae)
+                if default_price_prior
+                else None,
+                best_price_prior_weight=_to_decimal(best_price_prior.price_prior_weight)
+                if best_price_prior
+                else None,
+                best_price_prior_weight_mae=_to_decimal(best_price_prior.mae) if best_price_prior else None,
+                price_prior_caveat=_PRICE_PRIOR_CAVEAT,
+                price_comparable_buckets_json=[asdict(b) for b in price_comparable_buckets] or None,
                 started_at=started_at,
                 completed_at=completed_at,
             )
@@ -219,6 +291,14 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
                     "best_blend_career_avg_weight": best_blend.career_avg_weight if best_blend else None,
                     "best_blend_mae": best_blend.mae if best_blend else None,
                     "blend_ratio_caveat": _BLEND_RATIO_CAVEAT,
+                    "n_true_rookie_observations": len(true_rookie_observations),
+                    "price_prior_sweep": [asdict(r) for r in price_prior_results],
+                    "best_price_prior_weight": best_price_prior.price_prior_weight
+                    if best_price_prior
+                    else None,
+                    "best_price_prior_weight_mae": best_price_prior.mae if best_price_prior else None,
+                    "price_prior_caveat": _PRICE_PRIOR_CAVEAT,
+                    "n_price_comparable_buckets": len(price_comparable_buckets),
                 },
                 error_code=None,
                 error_message=None,
@@ -241,3 +321,9 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
     @staticmethod
     def _match_blend(results: list[BlendRatioSweepResult], value: float) -> BlendRatioSweepResult | None:
         return next((r for r in results if r.career_avg_weight == value), None)
+
+    @staticmethod
+    def _match_price_prior(
+        results: list[PricePriorSweepResult], value: float
+    ) -> PricePriorSweepResult | None:
+        return next((r for r in results if r.price_prior_weight == value), None)

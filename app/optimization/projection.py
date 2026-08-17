@@ -22,11 +22,14 @@ from app.features.service import compute_features_for_player_gameweek
 from app.modeling import baselines
 from app.modeling import start_probability as sp
 from app.modeling.candidates import align_columns, build_feature_row
+from app.modeling.cold_start_validation import PriceComparableBucket, lookup_price_comparable_bucket
 from app.optimization.champion_loader import LoadedChampion
 from app.optimization.start_probability_loader import LoadedStartProbabilityModel
+from packages.database.models.cold_start_validation_run import ColdStartValidationRun
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.player import Player
 from packages.database.models.player_availability_risk_note import PlayerAvailabilityRiskNote
+from packages.database.models.player_features import PlayerFeatures
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.player_role_note import PlayerRoleNote
 from packages.domain.modeling import BASELINE_MODEL_FAMILIES, ModelFamily
@@ -44,7 +47,11 @@ logger = logging.getLogger(__name__)
 # OTHER player switched to the champion model too, including ones still sitting on the exact same
 # all-NaN-rolling-features input shape v2 was written to route around. Another real behavior
 # change, not a refactor.
-PROJECTION_FORMULA_VERSION = 3
+# v4: a true rookie (career_avg is None -- zero prior-season history at all, not just a missing
+# early-season window) now gets _price_informed_true_rookie_projection's price-comparable blend
+# instead of ep_next returned completely untouched -- see that function's own docstring and
+# COLD_START_PRICE_PRIOR_BLEND_WEIGHT's real-evidence comment below. Another real behavior change.
+PROJECTION_FORMULA_VERSION = 4
 
 # Baseline families whose prediction is a direct, one-argument lookup against
 # an already-computed feature row. BASELINE_RULES_EP_NEXT is deliberately
@@ -95,6 +102,26 @@ COLD_START_BLEND_CAREER_AVG_WEIGHT = 0.5
 # is already at the empirical minimum, so it was left unchanged. See ARCHITECTURE.md's
 # cold-start-validation section for the full real numbers.
 COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT = 0.075
+
+# Weight on the price-comparable-bucket estimate for a TRUE ROOKIE (career_avg is None -- zero
+# strictly-prior-season history at all, not just a missing early-season window) in its own blend
+# with baseline.projected_points (ep_next gets 1 - weight). 0.0 means "use ep_next alone,
+# unchanged" -- today's actual behavior, since this population previously got no independent
+# signal at all. See app.modeling.cold_start_validation.sweep_price_prior_blend_weight_candidates
+# for the real sweep and its own documented, WORSE-than-COLD_START_BLEND_CAREER_AVG_WEIGHT's caveat
+# (a true rookie has no prior-season ep_next to fall back on for a leakage-safe historical proxy,
+# unlike every other cold-start player).
+#
+# Empirically checked (2026-08-17) against the real dev database's true-rookie population (n=735
+# real observations, {0.0, 0.3, 0.5, 0.7, 1.0} swept): real MAE was 1.0067 at weight=0.0 (pure
+# ep_next -- today's PRE-this-feature behavior for this population) versus 0.8673/0.8178/0.8031/
+# 0.8417 for 0.3/0.5/0.7/1.0 -- LOWEST at 0.7, a ~20% MAE reduction over ep_next alone. Given
+# sweep_price_prior_blend_weight_candidates's own documented caveat that weight=0.0's MAE here is
+# ALREADY optimistically biased in ep_next's favor (its own proxy has more hindsight than the live
+# formula's genuinely pre-season ep_next would), this is if anything a CONSERVATIVE case for
+# enabling the price prior, not an inflated one. See ARCHITECTURE.md's cold-start-validation
+# section for the full real numbers.
+COLD_START_PRICE_PRIOR_BLEND_WEIGHT = 0.7
 
 
 @dataclass(frozen=True)
@@ -255,6 +282,70 @@ def is_cold_start_player(session: Session, player_id: uuid.UUID) -> bool:
     return _is_cold_start_player(session, player_id)
 
 
+def _load_current_price_comparable_buckets(session: Session) -> list[PriceComparableBucket]:
+    """The most recently computed ``price_comparable_buckets_json`` artifact from
+    ``cold_start_validation_runs`` -- mirrors ``app.optimization.champion_loader
+    .load_current_champion``'s own "query the most recent real artifact, degrade gracefully if
+    none exists yet" precedent. Returns ``[]`` (never raises) if no run has ever populated this
+    column yet -- a normal, expected state (fresh environment, ``COLD_START_PROJECTION_VALIDATION``
+    never run) exactly like a missing champion, not an error.
+    """
+    row_json = session.execute(
+        select(ColdStartValidationRun.price_comparable_buckets_json)
+        .where(ColdStartValidationRun.price_comparable_buckets_json.is_not(None))
+        .order_by(ColdStartValidationRun.completed_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if not row_json:
+        return []
+    return [PriceComparableBucket(**bucket) for bucket in row_json]
+
+
+def _price_informed_true_rookie_projection(
+    session: Session, player: Player, feature_row: PlayerFeatures, baseline: PlayerProjection
+) -> PlayerProjection:
+    """The fallback for a player with LITERALLY ZERO prior-season history (``career_avg is None``
+    in ``_cold_start_projection`` -- both the early-season and full-season career averages are
+    unavailable, not just the early-season one). Previously returned ``baseline`` (``ep_next``)
+    completely untouched; this is the single least-informed population getting the least scrutiny.
+
+    Blends a price-comparable-bucket estimate (see ``app.modeling.cold_start_validation
+    .compute_price_comparable_buckets`` for how the lookup table itself is built, and
+    ``sweep_price_prior_blend_weight_candidates`` for the real historical evidence behind
+    ``COLD_START_PRICE_PRIOR_BLEND_WEIGHT``) with ``baseline`` at that validated weight, then
+    applies the SAME fixture-difficulty adjustment ``_cold_start_projection`` already applies to
+    every other cold-start player -- this population deserves that adjustment just as much, it was
+    simply unreachable before because the function returned early.
+
+    Falls back to ``baseline`` untouched (never raises, never degrades the caller) if this
+    player's price/position can't be resolved from ``feature_row``, or if no price-comparable
+    lookup table has ever been computed yet (``COLD_START_PROJECTION_VALIDATION`` never run) --
+    exactly mirroring every other graceful-degradation branch in this module.
+    """
+    if feature_row.price_at_time is None or feature_row.position_short_name is None:
+        return baseline
+
+    buckets = _load_current_price_comparable_buckets(session)
+    bucket = lookup_price_comparable_bucket(
+        buckets, feature_row.position_short_name, int(feature_row.price_at_time)
+    )
+    if bucket is None:
+        return baseline
+
+    blended = (
+        COLD_START_PRICE_PRIOR_BLEND_WEIGHT * bucket.avg_early_season_points
+        + (1 - COLD_START_PRICE_PRIOR_BLEND_WEIGHT) * baseline.projected_points
+    )
+
+    difficulty = feature_row.next_fixture_difficulty
+    if difficulty is not None:
+        blended *= 1 + (3 - difficulty) * COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT
+
+    return PlayerProjection(
+        player.id, blended, "cold_start_price_informed_true_rookie_blend", is_eligible=True
+    )
+
+
 def _cold_start_projection(
     session: Session, player: Player, target_gameweek_id: uuid.UUID
 ) -> PlayerProjection:
@@ -297,9 +388,12 @@ def _cold_start_projection(
     vary per gameweek even with zero current-season history, so it's applied as a modest
     (±15% across the full 1-5 range, neutral at difficulty 3) multiplier on the blend.
 
-    Falls back to the plain ``project_player`` estimate alone when no earlier-season history
-    exists for this player at all (a brand-new-to-FPL signing — nothing to blend with) or when
-    the feature row can't be computed for any reason (never allowed to fail the caller).
+    A player with NO earlier-season history at all (``career_avg`` — both the early-season and
+    full-season versions — is ``None``: a genuinely new-to-FPL signing, not just missing an
+    early-season window) is handed off to ``_price_informed_true_rookie_projection`` instead of
+    returning ``project_player``'s estimate untouched — see that function's own docstring. Falls
+    back to the plain ``project_player`` estimate alone only when the feature row can't be
+    computed for any reason (never allowed to fail the caller).
     """
     baseline = project_player(player)
     if not baseline.is_eligible:
@@ -323,7 +417,7 @@ def _cold_start_projection(
         else feature_row.career_avg_points_prior_seasons
     )
     if career_avg is None:
-        return baseline
+        return _price_informed_true_rookie_projection(session, player, feature_row, baseline)
 
     blended = (
         COLD_START_BLEND_CAREER_AVG_WEIGHT * float(career_avg)

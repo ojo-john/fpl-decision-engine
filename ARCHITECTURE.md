@@ -328,6 +328,96 @@ improvement is live immediately, without needing `FEATURE_GENERATION` to
 be re-run. A re-run is only needed to backfill the new column on
 already-computed historical `player_features` rows.
 
+#### Price-informed fallback for true-rookie players (zero prior-season history)
+
+A real, distinct gap in `_cold_start_projection` beyond the half-life/
+difficulty/blend-ratio calibration above: when `career_avg` is `None` —
+BOTH the early-season and full-season career averages are unavailable,
+meaning this player has literally ZERO strictly-prior-season
+`player_gameweek_stats` rows at all (a genuinely new-to-FPL signing or
+promoted-team debutant, not just a player missing an early-season
+window) — the function used to return `project_player`'s own `ep_next`
+estimate completely untouched. This is the single least-informed
+population in the whole formula getting the LEAST scrutiny, not more;
+`build_player_season_observations` (above) structurally EXCLUDES this
+population (it requires non-empty `prior_stats`), so it was invisible to
+the original validation work too.
+
+`app/modeling/cold_start_validation.py` adds a parallel, disjoint
+observation set and evaluation path for exactly this population:
+
+- `build_true_rookie_observations` — the mirror-image filter of
+  `build_player_season_observations`: requires EMPTY `prior_stats`
+  instead of non-empty. For price/position, uses this player's own
+  EARLIEST early-season `player_gameweek_stats` row in the TARGET season
+  itself (`value_at_time`/`position_short_name_at_time`) — mirroring
+  `app.features.service.compute_features_for_player_gameweek`'s own
+  documented precedent for this exact "no strictly-prior row" case: a
+  player's price/position going into a gameweek deadline is public,
+  pre-deadline-knowable information, not leakage.
+- `compute_price_comparable_buckets` — the LIVE artifact:
+  position-scoped price-quantile buckets (5 per position,
+  `PRICE_COMPARABLE_BUCKETS_PER_POSITION`, collapsing to fewer/larger
+  buckets if a position has less real data than that), each with a real
+  average early-season points value, POOLED across every usable
+  historical season (not leakage-scoped — this predicts a FUTURE season,
+  the same "train on everything available" principle the champion model
+  itself already follows for live predictions). Persisted to
+  `cold_start_validation_runs.price_comparable_buckets_json`;
+  `app.optimization.projection._load_current_price_comparable_buckets`
+  loads the most recent row's copy at prediction time, mirroring
+  `load_current_champion`'s own "load the most recent real artifact,
+  degrade gracefully if none exists yet" precedent (`[]` — never raises
+  — if `COLD_START_PROJECTION_VALIDATION` has never run).
+- `sweep_price_prior_blend_weight_candidates` — real MAE/Spearman for
+  blending the bucket estimate with an ep_next proxy, per candidate
+  weight (`{0.0, 0.3, 0.5, 0.7, 1.0}`). Leakage-safe: unlike the live
+  artifact, evaluating target season S here uses buckets built ONLY from
+  seasons strictly before S — one bucket table per eval season, rebuilt
+  fresh, mirroring `build_player_season_observations`'s own per-season
+  discipline. **A real, WORSE caveat than the existing blend-ratio
+  sweep's own**: a true rookie has no prior season at all, so there is no
+  leakage-safe prior-season `ep_next` to fall back on the way the main
+  blend-ratio sweep does — the only resolvable proxy is the TARGET
+  season's own end-of-season `ep_next` snapshot, meaning the
+  `weight=0.0` control here is compared against a number with
+  substantially MORE hindsight than a genuinely pre-season `ep_next`
+  would have. This makes `weight=0.0`'s own MAE optimistic — biased IN
+  FAVOR of the pre-existing (do-nothing) behavior — so a result showing
+  the price prior beating it anyway is conservative, not inflated,
+  evidence.
+
+`app.optimization.projection._price_informed_true_rookie_projection`
+replaces the old "return baseline untouched" branch: looks up this
+player's bucket via `feature_row.price_at_time`/`position_short_name`
+(both already computed by the existing `compute_features_for_player_gameweek`
+call `_cold_start_projection` makes — no extra query needed beyond the
+bucket-table lookup itself), blends at `COLD_START_PRICE_PRIOR_BLEND_WEIGHT`,
+then applies the SAME fixture-difficulty adjustment every other
+cold-start branch already gets. Falls back to `baseline` untouched
+(never raises) if price/position can't be resolved or no bucket table
+has ever been computed yet.
+
+New `cold_start_validation_runs` columns (migration 0039, chained after
+0038): `n_true_rookie_observations`,
+`price_prior_sweep_json`, `default_price_prior_weight`/`_mae`,
+`best_price_prior_weight`/`_mae`, `price_prior_caveat`,
+`price_comparable_buckets_json`. `COLD_START_PROJECTION_VALIDATION`'s
+own `run()` now also builds this second observation set and persists
+these fields on the same row, never allowed to fail the job's main three
+sweeps if the true-rookie population happens to be empty for the
+currently-usable seasons.
+
+**Real results** (run 2026-08-17 against the real dev database, n=735
+real true-rookie observations): `weight=0.0` (pure `ep_next`, the
+PRE-this-feature behavior) had real MAE 1.0067; `0.3`/`0.5`/`0.7`/`1.0`
+had 0.8673/0.8178/0.8031/0.8417 — LOWEST at `weight=0.7`, roughly a 20%
+MAE reduction versus `ep_next` alone, despite the control being
+optimistically biased in `ep_next`'s favor per the caveat above.
+`COLD_START_PRICE_PRIOR_BLEND_WEIGHT` was set to **0.7** (a real,
+evidence-backed change — unlike the three constants above, which were
+left unchanged because the evidence didn't support moving them).
+
 Both `SQUAD_OPTIMIZATION` and `/optimize/preview` rank candidates by
 points summed across the next `SQUAD_BUILD_HORIZON_LENGTH` (6) unfinished
 gameweeks (`app.optimization.gameweek_resolution.resolve_horizon_gameweeks`

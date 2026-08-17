@@ -24,6 +24,16 @@ module applies to ``app.features.engineering.career_avg_early_season_points_prio
    checked and why the available proxy is a materially different, weaker signal than what the live
    formula actually blends with).
 
+A fourth, structurally different piece of validation lives here too: ``build_true_rookie_observations``
+/ ``compute_price_comparable_buckets`` / ``sweep_price_prior_blend_weight_candidates`` validate a
+price-informed fallback for the population ``build_player_season_observations`` above deliberately
+EXCLUDES -- players with LITERALLY ZERO strictly-prior-season history (``prior_stats`` empty, not
+just missing an EARLY-season window). ``_cold_start_projection``'s ``career_avg is None`` branch
+returns ``project_player``'s own ``ep_next``-first estimate completely untouched for this population
+today -- the single least-informed group of players currently gets the LEAST scrutiny, not more. See
+each function's own docstring for the leakage design and an important, EXTRA caveat beyond the
+ep_next-blend one above (see ``sweep_price_prior_blend_weight_candidates``).
+
 Leakage discipline
 -------------------
 Every prediction for target season S is computed using ONLY strictly-prior-season data, enforced by
@@ -55,16 +65,26 @@ __all__ = [
     "FLAT_CONTROL_HALF_LIFE_SEASONS",
     "DIFFICULTY_COEFFICIENT_SWEEP_CANDIDATES",
     "BLEND_RATIO_SWEEP_CANDIDATES",
+    "PRICE_COMPARABLE_BUCKETS_PER_POSITION",
+    "PRICE_PRIOR_BLEND_WEIGHT_SWEEP_CANDIDATES",
     "PlayerSeasonObservation",
     "EarlyGameweekActual",
     "HalfLifeSweepResult",
     "DifficultyCoefficientSweepResult",
     "BlendRatioSweepResult",
+    "TrueRookieObservation",
+    "PriceComparablePoolEntry",
+    "PriceComparableBucket",
+    "PricePriorSweepResult",
     "usable_season_labels_with_gameweek_stats",
     "build_player_season_observations",
     "sweep_half_life_candidates",
     "sweep_difficulty_coefficient_candidates",
     "sweep_blend_ratio_candidates",
+    "build_true_rookie_observations",
+    "compute_price_comparable_buckets",
+    "sweep_price_prior_blend_weight_candidates",
+    "lookup_price_comparable_bucket",
 ]
 
 # A season 2 seasons ago weighted half as much as the most recent one, etc. -- see
@@ -87,6 +107,20 @@ DIFFICULTY_COEFFICIENT_SWEEP_CANDIDATES: tuple[float, ...] = (0.0, 0.025, 0.05, 
 # Weight on career_avg in the ep_next/career_avg blend; ep_next gets (1 - weight). 0.5 is today's
 # flat average. See sweep_blend_ratio_candidates's own docstring for the ep_next proxy caveat.
 BLEND_RATIO_SWEEP_CANDIDATES: tuple[float, ...] = (0.3, 0.4, 0.5, 0.6, 0.7)
+
+# Quantile buckets per position for the price-comparable lookup table -- pools every player (any
+# prior-history status) with resolvable early-season data, not just true rookies (their own sample
+# across 6 real seasons is too small, tens not hundreds, to bucket reliably on its own). 5 (quintiles)
+# balances real per-bucket sample size against granularity; a position with fewer real entries than
+# this collapses to fewer, larger buckets automatically (see _bucket_pool_entries) rather than ever
+# producing an unreliable, near-empty bucket.
+PRICE_COMPARABLE_BUCKETS_PER_POSITION = 5
+
+# Weight on the price-comparable-bucket estimate in the price-prior/ep_next blend (ep_next gets
+# 1 - weight); 0.0 is today's production behavior (career_avg is None -> baseline untouched). See
+# sweep_price_prior_blend_weight_candidates's own docstring for why this is a WEAKER evidentiary
+# footing than BLEND_RATIO_SWEEP_CANDIDATES's own already-caveated ep_next proxy.
+PRICE_PRIOR_BLEND_WEIGHT_SWEEP_CANDIDATES: tuple[float, ...] = (0.0, 0.3, 0.5, 0.7, 1.0)
 
 
 @dataclass(frozen=True)
@@ -146,6 +180,69 @@ class DifficultyCoefficientSweepResult:
 @dataclass(frozen=True)
 class BlendRatioSweepResult:
     career_avg_weight: float
+    ep_next_weight: float
+    mae: float | None
+    spearman: float | None
+    n_observations: int
+
+
+@dataclass(frozen=True)
+class TrueRookieObservation:
+    """One real (player, target season) evaluation pair for a player with LITERALLY ZERO
+    strictly-prior-season ``player_gameweek_stats`` rows -- the exact population
+    ``_cold_start_projection``'s ``career_avg is None`` branch serves, and which
+    ``build_player_season_observations`` deliberately EXCLUDES (it requires non-empty
+    ``prior_stats``; a genuinely new player has none). See ``build_true_rookie_observations``.
+    """
+
+    fpl_code: int
+    season_label: str
+    actual_early_season_avg: float
+    # This player's price/position as of their EARLIEST early-season gameweek row in the TARGET
+    # season itself (there is, by definition, no prior-season row to draw either from) -- the
+    # closest real, non-leaky proxy for "price at the point a genuinely new player would first
+    # need a projection". See _load_earliest_early_gameweek_price_and_position's own docstring.
+    price_at_prediction_time: int
+    position_short_name: str
+    # The TARGET season's own ep_next snapshot for this player, or None -- see
+    # sweep_price_prior_blend_weight_candidates's own docstring for why this (not a prior
+    # season's ep_next, which cannot exist for a true rookie) is the only available proxy, and
+    # why it is MORE leaky than BLEND_RATIO_SWEEP_CANDIDATES's own already-caveated one.
+    ep_next_same_season_proxy: float | None = None
+
+
+@dataclass(frozen=True)
+class PriceComparablePoolEntry:
+    """One real (position, price, actual_early_season_avg) triple from a usable season, for ANY
+    player with resolvable early-season data -- the raw material ``_bucket_pool_entries`` groups
+    into buckets. Deliberately not scoped to true rookies alone: a market sets a new signing's
+    price using the full population of comparably-priced/comparably-rated players as its
+    reference point, not just other rookies, and true rookies alone are far too rare across 6 real
+    seasons to bucket reliably on their own (see ``PRICE_COMPARABLE_BUCKETS_PER_POSITION``).
+    """
+
+    season_label: str
+    position_short_name: str
+    price: int
+    actual_early_season_avg: float
+
+
+@dataclass(frozen=True)
+class PriceComparableBucket:
+    """One real (position, price range) -> average early-season output bucket. ``price_low``/
+    ``price_high`` are inclusive and drawn from the real entries in the bucket (not evenly-spaced
+    synthetic cutoffs) -- see ``_bucket_pool_entries``."""
+
+    position_short_name: str
+    price_low: int
+    price_high: int
+    avg_early_season_points: float
+    n_observations: int
+
+
+@dataclass(frozen=True)
+class PricePriorSweepResult:
+    price_prior_weight: float
     ep_next_weight: float
     mae: float | None
     spearman: float | None
@@ -303,6 +400,353 @@ def _most_recent_prior_ep_next(
         if value is not None:
             return value
     return None
+
+
+def _load_earliest_early_gameweek_price_and_position(
+    session: Session, season_ids: Sequence[uuid.UUID], early_season_gameweek_cutoff: int
+) -> dict[tuple[int, uuid.UUID], tuple[int, str]]:
+    """This player's (price, position) as of their EARLIEST early-season gameweek row (lowest
+    ``fpl_event_id <= cutoff``) in the given seasons -- mirrors
+    ``app.features.service.compute_features_for_player_gameweek``'s own documented precedent for
+    exactly the "player has no strictly-prior row" case: "a player's price ... going into a
+    gameweek's deadline is public, pre-deadline-knowable information ... not leakage", so using
+    THIS season's own earliest resolvable row is the correct, real, non-leaky signal -- not a
+    stale prior-season value (which cannot exist for a true rookie) and not ``players.now_cost``
+    (a season-END snapshot for historical seasons, per ``sweep_blend_ratio_candidates``'s own
+    documented caveat on the identical underlying data-vintage problem for ``ep_next``).
+
+    Skips rows with a null ``value_at_time``/``position_short_name_at_time`` (real,
+    schema-drift-affected nullable columns -- see ``PlayerGameweekStats``'s own module docstring)
+    rather than ever falling back to a zero/None value silently.
+    """
+    if not season_ids:
+        return {}
+    rows = session.execute(
+        select(
+            Player.fpl_code,
+            Player.season_id,
+            Gameweek.fpl_event_id,
+            PlayerGameweekStats.value_at_time,
+            PlayerGameweekStats.position_short_name_at_time,
+        )
+        .join(PlayerGameweekStats, PlayerGameweekStats.player_id == Player.id)
+        .join(Gameweek, Gameweek.id == PlayerGameweekStats.gameweek_id)
+        .where(
+            Player.fpl_code.is_not(None),
+            Player.is_quarantined.is_(False),
+            Player.season_id.in_(season_ids),
+            Gameweek.fpl_event_id <= early_season_gameweek_cutoff,
+            PlayerGameweekStats.value_at_time.is_not(None),
+            PlayerGameweekStats.position_short_name_at_time.is_not(None),
+        )
+    ).all()
+
+    earliest: dict[tuple[int, uuid.UUID], tuple[int, int, str]] = {}
+    for row in rows:
+        key = (row.fpl_code, row.season_id)
+        existing = earliest.get(key)
+        if existing is None or row.fpl_event_id < existing[0]:
+            earliest[key] = (row.fpl_event_id, row.value_at_time, row.position_short_name_at_time)
+    return {key: (value, position) for key, (_, value, position) in earliest.items()}
+
+
+def _price_comparable_pool_entries(
+    season_labels: Sequence[str],
+    season_id_by_label: dict[str, uuid.UUID],
+    stats_by_fpl_code: dict[int, list[PriorGameweekStat]],
+    price_position_by_key: dict[tuple[int, uuid.UUID], tuple[int, str]],
+    early_season_gameweek_cutoff: int,
+) -> list[PriceComparablePoolEntry]:
+    """Real (position, price, actual_early_season_avg) triples for every player with resolvable
+    early-season data across ``season_labels`` -- the shared building block both
+    ``compute_price_comparable_buckets`` (the LIVE artifact, given every usable season) and
+    ``sweep_price_prior_blend_weight_candidates`` (given only a target season's STRICTLY PRIOR
+    seasons, per eval season -- see that function's own leakage handling) call with a different
+    ``season_labels`` slice.
+    """
+    entries: list[PriceComparablePoolEntry] = []
+    for season_label in season_labels:
+        season_id = season_id_by_label[season_label]
+        season_id_str = str(season_id)
+        for fpl_code, all_stats in stats_by_fpl_code.items():
+            current_season_stats = [stat for stat in all_stats if stat.season_id == season_id_str]
+            if not current_season_stats:
+                continue
+            actual = engineering.career_avg_early_season_points_prior_seasons(
+                current_season_stats, early_season_gameweek_cutoff, half_life_seasons=1.0
+            )
+            if actual is None:
+                continue
+            price_position = price_position_by_key.get((fpl_code, season_id))
+            if price_position is None:
+                continue
+            price, position_short_name = price_position
+            entries.append(
+                PriceComparablePoolEntry(
+                    season_label=season_label,
+                    position_short_name=position_short_name,
+                    price=price,
+                    actual_early_season_avg=float(actual),
+                )
+            )
+    return entries
+
+
+def _bucket_pool_entries(
+    entries: Sequence[PriceComparablePoolEntry], n_buckets_per_position: int
+) -> list[PriceComparableBucket]:
+    """Groups entries by position, sorts by price, and splits into up to ``n_buckets_per_position``
+    equal-sized quantile buckets per position, each with a real average early-season output.
+
+    A position with fewer real entries than ``n_buckets_per_position`` collapses to fewer, larger
+    buckets (never divides into more buckets than there is real data to fill -- correctness over a
+    fixed bucket count) via ``min(n_buckets_per_position, n)``. A position with zero entries
+    produces zero buckets (not a synthetic/zero-filled one).
+    """
+    by_position: dict[str, list[PriceComparablePoolEntry]] = defaultdict(list)
+    for entry in entries:
+        by_position[entry.position_short_name].append(entry)
+
+    buckets: list[PriceComparableBucket] = []
+    for position, position_entries in by_position.items():
+        sorted_entries = sorted(position_entries, key=lambda e: e.price)
+        n = len(sorted_entries)
+        effective_buckets = min(n_buckets_per_position, n)
+        if effective_buckets == 0:
+            continue
+        chunk_size = n / effective_buckets
+        for bucket_index in range(effective_buckets):
+            start = round(bucket_index * chunk_size)
+            end = round((bucket_index + 1) * chunk_size) if bucket_index < effective_buckets - 1 else n
+            chunk = sorted_entries[start:end]
+            if not chunk:
+                continue
+            buckets.append(
+                PriceComparableBucket(
+                    position_short_name=position,
+                    price_low=chunk[0].price,
+                    price_high=chunk[-1].price,
+                    avg_early_season_points=sum(e.actual_early_season_avg for e in chunk) / len(chunk),
+                    n_observations=len(chunk),
+                )
+            )
+    return buckets
+
+
+def lookup_price_comparable_bucket(
+    buckets: Sequence[PriceComparableBucket], position_short_name: str, price: int
+) -> PriceComparableBucket | None:
+    """The bucket for ``position_short_name`` whose ``[price_low, price_high]`` range contains
+    ``price``, or the nearest edge bucket if ``price`` falls outside every observed bucket's real
+    range (extrapolation to the closest known bucket rather than ``None`` -- a price above/below
+    every historical comparable is still closer to the nearest bucket's real average than to
+    nothing). ``None`` only if this position has no buckets at all.
+
+    Public (not module-private) so ``app.optimization.projection``'s live prediction path can
+    reuse the exact same lookup logic the sweep below uses to score candidates, rather than a
+    second, potentially-diverging reimplementation.
+    """
+    position_buckets = [b for b in buckets if b.position_short_name == position_short_name]
+    if not position_buckets:
+        return None
+    for bucket in position_buckets:
+        if bucket.price_low <= price <= bucket.price_high:
+            return bucket
+    position_buckets_sorted = sorted(position_buckets, key=lambda b: b.price_low)
+    if price < position_buckets_sorted[0].price_low:
+        return position_buckets_sorted[0]
+    return position_buckets_sorted[-1]
+
+
+def compute_price_comparable_buckets(
+    session: Session,
+    n_buckets_per_position: int = PRICE_COMPARABLE_BUCKETS_PER_POSITION,
+    early_season_gameweek_cutoff: int = engineering.DEFAULT_EARLY_SEASON_GAMEWEEK_CUTOFF,
+) -> tuple[list[PriceComparableBucket], list[str]]:
+    """The LIVE price-comparable lookup table -- persisted to
+    ``cold_start_validation_runs.price_comparable_buckets_json`` and consulted by
+    ``app.optimization.projection._cold_start_projection`` for a genuinely new player.
+
+    Deliberately NOT leakage-scoped to a single held-out season the way
+    ``sweep_price_prior_blend_weight_candidates`` below is: this is the artifact used to predict a
+    FUTURE, not-yet-played season, so it legitimately pools every real historical season available
+    -- the exact same "train on everything available, predict forward" principle the trained
+    champion model itself already follows (``MODEL_TRAINING`` is not leakage-scoped against the
+    live/future season either, only against its own walk-forward validation folds).
+    """
+    usable = usable_season_labels_with_gameweek_stats(session)
+    if not usable:
+        return [], usable
+    season_rows = session.execute(select(Season.id, Season.label).where(Season.label.in_(usable))).all()
+    season_id_by_label = {label: season_id for season_id, label in season_rows}
+    stats_by_fpl_code = _load_all_stats_by_fpl_code(session)
+    price_position_by_key = _load_earliest_early_gameweek_price_and_position(
+        session, list(season_id_by_label.values()), early_season_gameweek_cutoff
+    )
+    entries = _price_comparable_pool_entries(
+        usable, season_id_by_label, stats_by_fpl_code, price_position_by_key, early_season_gameweek_cutoff
+    )
+    return _bucket_pool_entries(entries, n_buckets_per_position), usable
+
+
+def build_true_rookie_observations(
+    session: Session, early_season_gameweek_cutoff: int = engineering.DEFAULT_EARLY_SEASON_GAMEWEEK_CUTOFF
+) -> tuple[list[TrueRookieObservation], list[str]]:
+    """Every real, leakage-safe (player, target season) observation for the TRUE-ROOKIE
+    population -- players with literally zero strictly-prior-season ``player_gameweek_stats``
+    rows -- across every usable historical season. The mirror-image filter of
+    ``build_player_season_observations`` (which requires non-empty ``prior_stats``): this function
+    requires EMPTY ``prior_stats``.
+
+    A season contributes as an evaluation target only from the second usable season onward, same
+    boundary case as ``build_player_season_observations``. Skipped (no observation) if
+    ``prior_stats`` is non-empty (not a true rookie -- a different, already-covered population),
+    if the target season's own early-window average is ``None`` (no real GW1-6 data that season),
+    or if no real price/position is resolvable for this player's earliest early-season row (see
+    ``_load_earliest_early_gameweek_price_and_position``).
+    """
+    usable = usable_season_labels_with_gameweek_stats(session)
+    if len(usable) < 2:
+        return [], usable
+
+    season_rows = session.execute(select(Season.id, Season.label).where(Season.label.in_(usable))).all()
+    season_id_by_label = {label: season_id for season_id, label in season_rows}
+    eval_labels = usable[1:]
+    eval_season_ids = [season_id_by_label[label] for label in eval_labels]
+
+    gw1_deadline_by_season_id = _earliest_gameweek_deadline_by_season(
+        session, list(season_id_by_label.values())
+    )
+    stats_by_fpl_code = _load_all_stats_by_fpl_code(session)
+    price_position_by_key = _load_earliest_early_gameweek_price_and_position(
+        session, eval_season_ids, early_season_gameweek_cutoff
+    )
+    ep_next_by_key = _load_ep_next_by_fpl_code_and_season(session)
+
+    observations: list[TrueRookieObservation] = []
+    for season_label in eval_labels:
+        season_id = season_id_by_label[season_label]
+        season_id_str = str(season_id)
+        gw1_deadline = gw1_deadline_by_season_id[season_id]
+
+        for fpl_code, all_stats in stats_by_fpl_code.items():
+            current_season_stats = [stat for stat in all_stats if stat.season_id == season_id_str]
+            if not current_season_stats:
+                continue
+            actual = engineering.career_avg_early_season_points_prior_seasons(
+                current_season_stats, early_season_gameweek_cutoff, half_life_seasons=1.0
+            )
+            if actual is None:
+                continue
+
+            prior_stats = engineering.filter_to_strictly_prior(all_stats, gw1_deadline)
+            if prior_stats:
+                continue  # has SOME prior-season history -- a different, already-covered population
+
+            price_position = price_position_by_key.get((fpl_code, season_id))
+            if price_position is None:
+                continue
+            price, position_short_name = price_position
+
+            observations.append(
+                TrueRookieObservation(
+                    fpl_code=fpl_code,
+                    season_label=season_label,
+                    actual_early_season_avg=float(actual),
+                    price_at_prediction_time=price,
+                    position_short_name=position_short_name,
+                    ep_next_same_season_proxy=ep_next_by_key.get((fpl_code, season_label)),
+                )
+            )
+    return observations, usable
+
+
+def sweep_price_prior_blend_weight_candidates(
+    session: Session,
+    true_rookie_observations: Sequence[TrueRookieObservation],
+    usable_seasons: Sequence[str],
+    candidates: Sequence[float] = PRICE_PRIOR_BLEND_WEIGHT_SWEEP_CANDIDATES,
+    n_buckets_per_position: int = PRICE_COMPARABLE_BUCKETS_PER_POSITION,
+    early_season_gameweek_cutoff: int = engineering.DEFAULT_EARLY_SEASON_GAMEWEEK_CUTOFF,
+) -> list[PricePriorSweepResult]:
+    """Real MAE/Spearman for the price-comparable-bucket estimate blended with an ep_next proxy,
+    per candidate price-prior weight (``price_prior_weight=0.0`` is today's production behavior:
+    ``career_avg is None`` -> ``baseline`` untouched; ``1.0`` is the price-comparable estimate
+    alone).
+
+    Leakage handling for the comparable-bucket table itself: unlike ``compute_price_comparable_buckets``
+    (the live artifact, which legitimately pools every usable season), evaluating target season S
+    here uses buckets built ONLY from seasons strictly before S in ``usable_seasons`` -- one bucket
+    table per eval season, rebuilt fresh each time, exactly mirroring
+    ``build_player_season_observations``'s own per-season leakage discipline.
+
+    IMPORTANT, WORSE-than-``sweep_blend_ratio_candidates`` caveat on the ep_next side of this
+    blend: that function's own proxy (a prior season's END-OF-SEASON ep_next) is unavailable here
+    by construction -- a true rookie has no prior season at all. The only real, resolvable proxy is
+    ``obs.ep_next_same_season_proxy``, the TARGET season's own end-of-season ep_next snapshot --
+    meaning the ``price_prior_weight=0.0`` control in this sweep is being compared against a value
+    that already reflects most of a season's hindsight for that same player, not a genuine
+    pre-season estimate. This makes ``weight=0.0``'s own MAE here OPTIMISTIC/unrealistic, which
+    could make a price-based prior look relatively WORSE than it truly would against FPL's actual,
+    genuinely pre-season live ep_next. A result showing the price prior beating even this
+    optimistic proxy is strong, conservative evidence in its favor; a result showing ep_next alone
+    "winning" should be treated with real skepticism given this bias, not taken at face value.
+    """
+    season_rows = session.execute(
+        select(Season.id, Season.label).where(Season.label.in_(usable_seasons))
+    ).all()
+    season_id_by_label = {label: season_id for season_id, label in season_rows}
+    stats_by_fpl_code = _load_all_stats_by_fpl_code(session)
+    price_position_by_key = _load_earliest_early_gameweek_price_and_position(
+        session, list(season_id_by_label.values()), early_season_gameweek_cutoff
+    )
+
+    buckets_by_eval_season: dict[str, list[PriceComparableBucket]] = {}
+    for index, season_label in enumerate(usable_seasons):
+        prior_labels = usable_seasons[:index]
+        if not prior_labels:
+            continue
+        entries = _price_comparable_pool_entries(
+            prior_labels,
+            season_id_by_label,
+            stats_by_fpl_code,
+            price_position_by_key,
+            early_season_gameweek_cutoff,
+        )
+        buckets_by_eval_season[season_label] = _bucket_pool_entries(entries, n_buckets_per_position)
+
+    pairs: list[tuple[float, float, float]] = []  # (comparable_avg, ep_next_proxy, actual)
+    for obs in true_rookie_observations:
+        if obs.ep_next_same_season_proxy is None:
+            continue
+        buckets = buckets_by_eval_season.get(obs.season_label, [])
+        bucket = lookup_price_comparable_bucket(
+            buckets, obs.position_short_name, obs.price_at_prediction_time
+        )
+        if bucket is None:
+            continue
+        pairs.append(
+            (bucket.avg_early_season_points, obs.ep_next_same_season_proxy, obs.actual_early_season_avg)
+        )
+
+    results = []
+    for price_prior_weight in candidates:
+        ep_next_weight = 1 - price_prior_weight
+        y_true = [actual for _, _, actual in pairs]
+        y_pred = [
+            price_prior_weight * comparable_avg + ep_next_weight * ep_next
+            for comparable_avg, ep_next, _ in pairs
+        ]
+        results.append(
+            PricePriorSweepResult(
+                price_prior_weight=price_prior_weight,
+                ep_next_weight=ep_next_weight,
+                mae=metric_fns.mean_absolute_error(y_true, y_pred) if pairs else None,
+                spearman=metric_fns.spearman_rank_correlation(y_true, y_pred) if pairs else None,
+                n_observations=len(pairs),
+            )
+        )
+    return results
 
 
 def build_player_season_observations(
