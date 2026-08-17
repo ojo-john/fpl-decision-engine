@@ -95,6 +95,7 @@ the job types that have an HTTP trigger.
 | `GAMEWEEK_REVIEW` | `gameweek_review.py` | ✅ | `POST /jobs/review-gameweek` | |
 | `BACKTEST` | `backtest.py` | ✅ | `POST /jobs/backtest` | |
 | `COLD_START_PROJECTION_VALIDATION` | `cold_start_projection_validation.py` | ✅ | `POST /jobs/cold-start-validation` | CLI (`scripts/run_job.py --job-type cold_start_projection_validation`) |
+| `POSITION_SEGMENTATION_VALIDATION` | `position_segmentation_validation.py` | ✅ | — | CLI (`scripts/run_job.py`) only, no HTTP trigger yet |
 | `FULL_PIPELINE` | `full_pipeline.py` | ✅ | — | `make full-pipeline` |
 
 All optimization/simulation/recommendation jobs are **synchronous request/response** — `execute_job` blocks until done and the HTTP endpoint returns the full result in one call. No job-id polling exists anywhere in the API.
@@ -785,6 +786,47 @@ new code needed, just running the existing pipeline.
   (e.g. real notes this session for Woltemade/Osula) — with a learned
   signal from the same rolling-minutes history already computed for the
   main model.
+- **Promotion gates** (`app/modeling/promotion.py`, Milestone 7 Layer 5): a
+  newly-trained challenger only becomes champion after clearing gates
+  evaluated against real `model_challenger_evaluations` rows
+  (`app.modeling.shadow_evaluation.compute_shadow_challenger_evaluation`,
+  called from `GAMEWEEK_REVIEW` once a gameweek finishes). Three gates are
+  real: `minimum_sample_size` (>= 6 gameweek evaluations before any verdict),
+  `beats_champion_by_margin` (challenger's mean MAE beats champion's by >=5%),
+  and `per_position_segmentation` — an architecture-level diagnostic (not a
+  per-challenger recomputation): does the CURRENT single-global-model design
+  have a real, meaningful per-position blind spot a position-specific
+  approach would fix? Backed by a new job, `POSITION_SEGMENTATION_VALIDATION`
+  (`app/modeling/position_segmentation.py` +
+  `app/jobs/handlers/position_segmentation_validation.py`), which fits a
+  GLOBAL `HistGradientBoostingRegressor` and 4 POSITION-SPECIFIC ones
+  (GKP/DEF/MID/FWD) per real walk-forward fold and compares real per-position
+  MAE — reusing `app.modeling.walk_forward`'s exact fold-building, never
+  touching `model_versions`/`is_champion` (the position-specific models are
+  fit fresh, in memory, purely to compute this diagnostic; never serialized,
+  never promotion-eligible themselves). Persists to its own
+  `position_segmentation_validation_runs` table (migration `0038`); absence
+  of a run never blocks a promotion (informational, like
+  `historical_backtest_replay`, the one gate still genuinely unimplemented).
+  Real result against this session's 6 real historical seasons (2020-21
+  through 2025-26, `feature_version=1`, n=136,189 total observations): DEF
+  (-1.1%), MID (-2.2%), and FWD (-1.2%) all show the global model already at
+  least as good as a position-specific split (`mae_gap_pct` negative — no
+  meaningful blind spot). GKP showed a large apparent gap (+35%,
+  `global_mae=0.049` vs `position_specific_mae=0.032`) that is **not**
+  trustworthy evidence: a real, freshly-discovered data-quality issue (see
+  "Known real gaps" below — goalkeepers are inconsistently labeled `"GK"`
+  vs. `"GKP"` in `player_features.position_short_name` across every single
+  historical season) means this evaluation only ever saw the small `"GKP"`-
+  labeled minority (1,968 of ~19,941 real goalkeeper rows), 99% of which
+  score exactly 0 (backup keepers who never played) — the tiny absolute MAE
+  and large relative gap are most likely an artifact of that near-total
+  zero-inflation on a tiny, unrepresentative slice, not a real per-position
+  modeling opportunity. **No production constant or the live champion was
+  changed as a result of this evaluation** — it's real, honest evidence that
+  the existing single-global-model architecture doesn't have a demonstrated
+  case for splitting by position (once the GKP mislabeling is fixed, this
+  should be re-run before treating GKP's number as meaningful either way).
 - **`app/learning`** (Milestone 7, "recursive learning"): after a
   recommendation's outcome is known, `outcome_ingestion.py` records actuals,
   `counterfactuals.py` compares the followed recommendation against
@@ -1285,8 +1327,28 @@ documents it directly.
   time: `note_effectiveness_evaluations` (merged into `main` first) kept revision `0033`;
   `cold_start_validation_runs` was renumbered to `0034` with `down_revision = "0033"`, restoring a
   single linear chain. `alembic upgrade head` re-run against both the real dev database and
-  `fpl_decision_engine_test` after the renumber.
-
+  `fpl_decision_engine_test` after the renumber. Three more concurrent agents' migrations that same
+  night were reconciled the same way: `goal_involvement`/`defensive_contribution` -> `0035`,
+  `gameweek_schedule_gap_days` -> `0036`, `start_probability_models` -> `0037`,
+  `position_segmentation_validation_runs` -> `0038`.
+- **Real, freshly-discovered data-quality issue (found 2026-08-17, not yet fixed): goalkeeper
+  position labels are inconsistent in `player_features.position_short_name`.** Every one of the 6
+  real historical seasons (2020-21 through 2025-26) has BOTH `"GK"` (the large majority — e.g.
+  17,973 real rows for `feature_version=1`) and `"GKP"` (a small minority — 1,968 rows) present
+  simultaneously for what should be the same position. `app.modeling.candidates.KNOWN_POSITIONS =
+  ("GKP", "DEF", "MID", "FWD")` only recognizes `"GKP"` — every `"GK"`-labeled row (the actual
+  majority of real goalkeeper data) silently gets encoded as "unknown position" (all
+  `position_*` one-hot columns zero) by `_one_hot_position`, not bucketed to goalkeeper at all.
+  This affects the EXISTING, currently-live champion model's own training data, not just the new
+  `POSITION_SEGMENTATION_VALIDATION` job that surfaced it — the champion has likely never seen a
+  correctly-labeled majority of real goalkeeper rows. Two smaller, related stray labels also exist
+  (`"AM"` — 320 rows, 2024-25 only; `"MNG"` — 440 rows, 2024-25 only, almost certainly FPL's real
+  2024-25 "Manager" position type) that `KNOWN_POSITIONS` also doesn't recognize. Root cause not
+  yet investigated (likely a normalization mismatch between `app.ingestion.historical_normalization`
+  and `app.ingestion.live_stats_normalization`, or a genuine upstream data-source inconsistency) --
+  needs its own dedicated fix (harmonize the label at ingestion time, most likely) and a full
+  `FEATURE_GENERATION` + `MODEL_TRAINING` re-run afterward before the live champion's own
+  goalkeeper handling can be trusted.
 `FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and
 the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`
 targets are now real, individual targets (previously combined into one

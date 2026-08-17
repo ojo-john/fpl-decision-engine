@@ -38,6 +38,7 @@ class JobType(str, Enum):
     GAMEWEEK_REVIEW = "gameweek_review"
     BACKTEST = "backtest"
     COLD_START_PROJECTION_VALIDATION = "cold_start_projection_validation"
+    POSITION_SEGMENTATION_VALIDATION = "position_segmentation_validation"
     FULL_PIPELINE = "full_pipeline"
     SYSTEM_HEALTH = "system_health"
 

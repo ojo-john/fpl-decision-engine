@@ -42,6 +42,7 @@ from packages.database.models.player_price_history import PlayerPriceHistory
 from packages.database.models.player_price_signal_observation import PlayerPriceSignalObservation
 from packages.database.models.player_role_note import PlayerRoleNote
 from packages.database.models.position import Position
+from packages.database.models.position_segmentation_validation_run import PositionSegmentationValidationRun
 from packages.database.models.price_signal_calibration import PriceSignalCalibration
 from packages.database.models.raw_api_snapshot import RawApiSnapshot
 from packages.database.models.recommendation_audit import RecommendationAudit
@@ -94,6 +95,7 @@ __all__ = [
     "PlayerPriceSignalObservation",
     "PlayerRoleNote",
     "Position",
+    "PositionSegmentationValidationRun",
     "PriceSignalCalibration",
     "RawApiSnapshot",
     "RecommendationAudit",
