@@ -410,13 +410,138 @@ def test_cold_start_player_neutral_fixture_difficulty_leaves_the_blend_unchanged
 
 
 def test_cold_start_player_falls_back_to_ep_next_alone_with_no_career_history(monkeypatch):
-    """A brand-new-to-FPL player: no earlier-season row exists to blend with at all."""
+    """A brand-new-to-FPL player whose feature row ALSO has no resolvable price/position (both
+    None -- see _make_feature_row's own defaults, which never set price_at_time): the
+    price-informed true-rookie fallback (see the dedicated section below) short-circuits to
+    project_player before ever touching a session, so `session=None` is still safe here."""
     player = _make_player(status="a", ep_next="4.0")
     champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
     monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
     monkeypatch.setattr(
         "app.optimization.projection.compute_features_for_player_gameweek",
         lambda *a, **k: _make_feature_row(player, career_avg_points_prior_seasons=None),
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, champion)
+
+    assert result == project_player(player)
+    assert result.source == "ep_next"
+
+
+# --- 7b. True-rookie price-informed fallback (career_avg is None AND a real price/position IS
+# resolvable) -- previously this population got project_player's ep_next estimate completely
+# untouched (see the test directly above); this section covers the real fix.
+# _load_current_price_comparable_buckets is monkeypatched directly (same no-DB style as every
+# other branch in this file) since it's the one place this new code path touches a session.
+
+
+def test_cold_start_true_rookie_blends_with_price_comparable_bucket(monkeypatch):
+    player = _make_player(status="a", ep_next="4.0")
+    champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.optimization.projection.compute_features_for_player_gameweek",
+        lambda *a, **k: _make_feature_row(
+            player,
+            career_avg_points_prior_seasons=None,
+            price_at_time=Decimal("70"),
+            position_short_name="FWD",
+        ),
+    )
+    from app.modeling.cold_start_validation import PriceComparableBucket
+
+    bucket = PriceComparableBucket(
+        position_short_name="FWD", price_low=60, price_high=80, avg_early_season_points=8.0, n_observations=50
+    )
+    monkeypatch.setattr(
+        "app.optimization.projection._load_current_price_comparable_buckets", lambda *a, **k: [bucket]
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, champion)
+
+    assert result.is_eligible is True
+    assert result.source == "cold_start_price_informed_true_rookie_blend"
+    # COLD_START_PRICE_PRIOR_BLEND_WEIGHT (0.7 -- see projection.py's own real-evidence comment):
+    # 0.7 * 8.0 (bucket) + 0.3 * 4.0 (ep_next baseline).
+    assert result.projected_points == pytest.approx(0.7 * 8.0 + 0.3 * 4.0)
+
+
+def test_cold_start_true_rookie_applies_fixture_difficulty_on_top_of_the_price_blend(monkeypatch):
+    player = _make_player(status="a", ep_next="4.0")
+    champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.optimization.projection.compute_features_for_player_gameweek",
+        lambda *a, **k: _make_feature_row(
+            player,
+            career_avg_points_prior_seasons=None,
+            price_at_time=Decimal("70"),
+            position_short_name="FWD",
+            next_fixture_difficulty=1,
+        ),
+    )
+    from app.modeling.cold_start_validation import PriceComparableBucket
+
+    bucket = PriceComparableBucket(
+        position_short_name="FWD", price_low=60, price_high=80, avg_early_season_points=8.0, n_observations=50
+    )
+    monkeypatch.setattr(
+        "app.optimization.projection._load_current_price_comparable_buckets", lambda *a, **k: [bucket]
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, champion)
+
+    base_blend = 0.7 * 8.0 + 0.3 * 4.0
+    assert result.projected_points == pytest.approx(base_blend * 1.15)  # difficulty=1 -> +15%, same as
+    # every other cold-start branch's own COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT application.
+
+
+def test_cold_start_true_rookie_falls_back_to_ep_next_when_no_buckets_computed_yet(monkeypatch):
+    """A genuinely fresh environment where COLD_START_PROJECTION_VALIDATION has never run --
+    _load_current_price_comparable_buckets returns [] (never raises), matching every other
+    graceful-degradation branch in this module."""
+    player = _make_player(status="a", ep_next="4.0")
+    champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.optimization.projection.compute_features_for_player_gameweek",
+        lambda *a, **k: _make_feature_row(
+            player,
+            career_avg_points_prior_seasons=None,
+            price_at_time=Decimal("70"),
+            position_short_name="FWD",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.optimization.projection._load_current_price_comparable_buckets", lambda *a, **k: []
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, champion)
+
+    assert result == project_player(player)
+    assert result.source == "ep_next"
+
+
+def test_cold_start_true_rookie_falls_back_to_ep_next_when_no_bucket_matches_this_position(monkeypatch):
+    player = _make_player(status="a", ep_next="4.0")
+    champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.optimization.projection.compute_features_for_player_gameweek",
+        lambda *a, **k: _make_feature_row(
+            player,
+            career_avg_points_prior_seasons=None,
+            price_at_time=Decimal("70"),
+            position_short_name="FWD",
+        ),
+    )
+    from app.modeling.cold_start_validation import PriceComparableBucket
+
+    gk_only_bucket = PriceComparableBucket(
+        position_short_name="GKP", price_low=40, price_high=50, avg_early_season_points=3.0, n_observations=20
+    )
+    monkeypatch.setattr(
+        "app.optimization.projection._load_current_price_comparable_buckets", lambda *a, **k: [gk_only_bucket]
     )
 
     result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, champion)

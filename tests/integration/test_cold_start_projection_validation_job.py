@@ -21,8 +21,15 @@ import secrets
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import select
+
 from app.jobs.service import execute_job
-from app.modeling.cold_start_validation import build_player_season_observations
+from app.modeling.cold_start_validation import (
+    build_player_season_observations,
+    build_true_rookie_observations,
+    compute_price_comparable_buckets,
+    sweep_price_prior_blend_weight_candidates,
+)
 from packages.database.models.cold_start_validation_run import ColdStartValidationRun
 from packages.database.models.fixture import Fixture
 from packages.database.models.gameweek import Gameweek
@@ -116,6 +123,38 @@ def _add_stats(
                 was_home=True if fixture is not None else None,
                 total_points=points_per_gw,
                 minutes=90,
+                data_source="test_fixture",
+            )
+        )
+    db_session.commit()
+
+
+def _add_stats_with_price(
+    db_session,
+    player,
+    season,
+    gameweeks,
+    points_per_gw: int,
+    price: int,
+    position_short_name: str,
+    fixture=None,
+) -> None:
+    """Same as ``_add_stats`` but also sets ``value_at_time``/``position_short_name_at_time`` --
+    the two columns ``build_true_rookie_observations``/``compute_price_comparable_buckets`` need
+    and ``_add_stats`` deliberately leaves null (every OTHER test in this file doesn't care about
+    price/position)."""
+    for gw in gameweeks:
+        db_session.add(
+            PlayerGameweekStats(
+                player_id=player.id,
+                season_id=season.id,
+                gameweek_id=gw.id,
+                fixture_id=fixture.id if fixture is not None else None,
+                was_home=True if fixture is not None else None,
+                total_points=points_per_gw,
+                minutes=90,
+                value_at_time=price,
+                position_short_name_at_time=position_short_name,
                 data_source="test_fixture",
             )
         )
@@ -277,6 +316,175 @@ def test_build_player_season_observations_attaches_real_early_gameweek_fixture_d
     assert early[0].difficulty == 2  # home_difficulty, since was_home=True
 
 
+# --- Price-informed true-rookie fallback: build_true_rookie_observations -----------------------------
+# Boundary/failure cases first, per this repo's own test-priority convention.
+
+
+def test_build_true_rookie_observations_skips_player_with_real_prior_season_history(db_session):
+    """A player WITH prior-season history belongs to build_player_season_observations's population,
+    not this one -- the mirror-image of that function's own "requires non-empty prior_stats" gate."""
+    prior_season = _make_season(db_session)
+    target_season = _make_season(db_session)
+    prior_gws = _make_gameweeks(db_session, prior_season, 2032)
+    target_gws = _make_gameweeks(db_session, target_season, 2033)
+
+    fpl_code = secrets.randbelow(10**8)
+    prior_player = _make_player(db_session, prior_season, fpl_code, fpl_element_id=1)
+    target_player = _make_player(db_session, target_season, fpl_code, fpl_element_id=1)
+    _add_stats(db_session, prior_player, prior_season, prior_gws, points_per_gw=3)
+    _add_stats_with_price(
+        db_session,
+        target_player,
+        target_season,
+        target_gws,
+        points_per_gw=4,
+        price=50,
+        position_short_name="MID",
+    )
+
+    observations, _usable = build_true_rookie_observations(db_session)
+
+    assert all(o.fpl_code != fpl_code for o in observations)
+
+
+def test_build_true_rookie_observations_skips_when_no_resolvable_price(db_session):
+    prior_season = _make_season(db_session)
+    target_season = _make_season(db_session)
+    prior_gws = _make_gameweeks(db_session, prior_season, 2034)
+    target_gws = _make_gameweeks(db_session, target_season, 2035)
+
+    other_fpl_code = secrets.randbelow(10**8)
+    other_prior_player = _make_player(db_session, prior_season, other_fpl_code, fpl_element_id=1)
+    _add_stats(db_session, other_prior_player, prior_season, prior_gws, points_per_gw=5)
+
+    rookie_fpl_code = secrets.randbelow(10**8)
+    rookie = _make_player(db_session, target_season, rookie_fpl_code, fpl_element_id=2)
+    _add_stats(db_session, rookie, target_season, target_gws, points_per_gw=6)  # no value_at_time set
+
+    observations, _usable = build_true_rookie_observations(db_session)
+
+    assert all(o.fpl_code != rookie_fpl_code for o in observations)
+
+
+def test_build_true_rookie_observations_includes_a_player_with_zero_prior_season_history(db_session):
+    prior_season = _make_season(db_session)
+    target_season = _make_season(db_session)
+    prior_gws = _make_gameweeks(db_session, prior_season, 2030)
+    target_gws = _make_gameweeks(db_session, target_season, 2031)
+
+    # An unrelated, established player in the prior season -- needed so the prior season counts as
+    # "usable" (has real player_gameweek_stats rows), but is NOT this test's true rookie.
+    other_fpl_code = secrets.randbelow(10**8)
+    other_prior_player = _make_player(db_session, prior_season, other_fpl_code, fpl_element_id=1)
+    _add_stats(db_session, other_prior_player, prior_season, prior_gws, points_per_gw=5)
+
+    rookie_fpl_code = secrets.randbelow(10**8)
+    rookie = _make_player(db_session, target_season, rookie_fpl_code, fpl_element_id=2)
+    _add_stats_with_price(
+        db_session, rookie, target_season, target_gws, points_per_gw=6, price=70, position_short_name="FWD"
+    )
+
+    observations, usable = build_true_rookie_observations(db_session)
+
+    assert prior_season.label in usable and target_season.label in usable
+    obs = next(o for o in observations if o.fpl_code == rookie_fpl_code)
+    assert obs.season_label == target_season.label
+    assert obs.actual_early_season_avg == 6.0
+    assert obs.price_at_prediction_time == 70
+    assert obs.position_short_name == "FWD"
+
+
+# --- Price-informed true-rookie fallback: compute_price_comparable_buckets ---------------------------
+
+
+def test_compute_price_comparable_buckets_position_scopes_real_averages(db_session):
+    season = _make_season(db_session)
+    gws = _make_gameweeks(db_session, season, 2040)
+
+    cheap_code = secrets.randbelow(10**8)
+    cheap = _make_player(db_session, season, cheap_code, fpl_element_id=1)
+    _add_stats_with_price(
+        db_session, cheap, season, gws, points_per_gw=1, price=40, position_short_name="DEF"
+    )
+
+    pricey_code = secrets.randbelow(10**8)
+    pricey = _make_player(db_session, season, pricey_code, fpl_element_id=2)
+    _add_stats_with_price(
+        db_session, pricey, season, gws, points_per_gw=5, price=80, position_short_name="DEF"
+    )
+
+    buckets, usable = compute_price_comparable_buckets(db_session, n_buckets_per_position=2)
+
+    assert season.label in usable
+    def_buckets = [b for b in buckets if b.position_short_name == "DEF"]
+    # Membership, not exact count/equality -- this repo's own tests/integration protocol runs
+    # against a real, never-truncated, shared Postgres, so other tests may add further DEF entries.
+    assert any(b.price_low <= 40 <= b.price_high for b in def_buckets)
+    assert any(b.price_low <= 80 <= b.price_high for b in def_buckets)
+
+
+# --- Price-informed true-rookie fallback: sweep_price_prior_blend_weight_candidates -------------------
+# The critical leakage case (would fail if per-eval-season leakage prevention were broken) first.
+
+
+def test_sweep_price_prior_blend_weight_candidates_never_leaks_target_seasons_own_pool_data(db_session):
+    prior_season = _make_season(db_session)
+    target_season = _make_season(db_session)
+    prior_gws = _make_gameweeks(db_session, prior_season, 2050)
+    target_gws = _make_gameweeks(db_session, target_season, 2051)
+
+    # Prior season's own pool: a real DEF player at price 45, real early-season output 1.0.
+    prior_pool_code = secrets.randbelow(10**8)
+    prior_pool_player = _make_player(db_session, prior_season, prior_pool_code, fpl_element_id=1)
+    _add_stats_with_price(
+        db_session,
+        prior_pool_player,
+        prior_season,
+        prior_gws,
+        points_per_gw=1,
+        price=45,
+        position_short_name="DEF",
+    )
+
+    # The TARGET season's own pool: an unrelated DEF player at the SAME price bracket (45), but with
+    # an extreme real output (20/gw). If this leaked into the bucket used to evaluate the target
+    # season's own true rookie, the bucket average would be dragged sharply towards 20.
+    target_pool_code = secrets.randbelow(10**8)
+    target_pool_player = _make_player(db_session, target_season, target_pool_code, fpl_element_id=2)
+    _add_stats_with_price(
+        db_session,
+        target_pool_player,
+        target_season,
+        target_gws,
+        points_per_gw=20,
+        price=45,
+        position_short_name="DEF",
+    )
+
+    # The true rookie being evaluated: same season, same position/price bracket, real output close
+    # to the (non-leaked) PRIOR season's own average (1.0), far from the target season's own (20.0).
+    rookie_code = secrets.randbelow(10**8)
+    rookie = _make_player(db_session, target_season, rookie_code, fpl_element_id=3)
+    _add_stats_with_price(
+        db_session, rookie, target_season, target_gws, points_per_gw=1, price=45, position_short_name="DEF"
+    )
+    rookie.ep_next = 1.0  # needed for sweep_price_prior_blend_weight_candidates's own ep_next-proxy gate
+    db_session.commit()
+
+    observations, usable = build_true_rookie_observations(db_session)
+    rookie_obs = next(o for o in observations if o.fpl_code == rookie_code)
+
+    results = sweep_price_prior_blend_weight_candidates(db_session, [rookie_obs], usable, candidates=[1.0])
+
+    # weight=1.0 -> the prediction is purely the bucket average. Leakage-safe, that average is built
+    # from ONLY the prior season's pool (avg=1.0) -- close to the rookie's own real actual (1.0), a
+    # small error. A leak (pulling in the target season's own 20/gw player) would drag the bucket
+    # average up sharply, producing a large, easily-detectable error instead.
+    assert results[0].n_observations >= 1
+    assert results[0].mae is not None
+    assert results[0].mae < 5.0
+
+
 # --- Full job, end-to-end via execute_job -------------------------------------------------------------
 
 
@@ -361,6 +569,39 @@ def test_cold_start_validation_honors_custom_half_life_candidates(db_session):
     assert job.status == JobStatus.SUCCEEDED, job.error_message
     assert [r["half_life_seasons"] for r in job.output_json["half_life_sweep"]] == [1.0, 5.0]
     assert job.output_json["best_half_life_seasons"] in (1.0, 5.0)
+
+
+def test_cold_start_validation_produces_price_prior_results_and_buckets_end_to_end(db_session):
+    prior_season, target_season = _seed_evaluable_seasons(db_session)
+    target_gws = (
+        db_session.execute(
+            select(Gameweek).where(Gameweek.season_id == target_season.id).order_by(Gameweek.fpl_event_id)
+        )
+        .scalars()
+        .all()
+    )
+
+    rookie_code = secrets.randbelow(10**8)
+    rookie = _make_player(db_session, target_season, rookie_code, fpl_element_id=99)
+    _add_stats_with_price(
+        db_session, rookie, target_season, target_gws, points_per_gw=4, price=55, position_short_name="MID"
+    )
+
+    job = _run_cold_start_validation_job(db_session)
+
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    output = job.output_json
+    assert output["n_true_rookie_observations"] >= 1
+    assert len(output["price_prior_sweep"]) == 5  # PRICE_PRIOR_BLEND_WEIGHT_SWEEP_CANDIDATES's own length
+    assert output["n_price_comparable_buckets"] > 0
+    assert output["price_prior_caveat"] is not None
+
+    row = db_session.get(ColdStartValidationRun, uuid.UUID(output["cold_start_validation_run_id"]))
+    assert row is not None
+    assert row.n_true_rookie_observations >= 1
+    assert row.price_comparable_buckets_json  # not None/empty
+    assert row.price_prior_caveat is not None
+    assert row.default_price_prior_weight is not None
 
 
 def test_cold_start_validation_rerun_creates_a_second_insert_only_row(db_session):
