@@ -171,7 +171,71 @@ class PlayerProjectionResponse(BaseModel):
 
 
 class AvailabilityRiskNoteCreate(BaseModel):
-    """Body for ``POST /players/{player_id}/availability-risk-notes``."""
+    """Body for ``POST /players/{player_id}/availability-risk-notes``.
+
+    Severity-selection rubric, grounded in the real availability-risk notes created this
+    season (read live via ``GET /players/notes/active``, not invented categories). Every note
+    created so far falls into one of four bands, by how CONFIRMED and how LONG the reduced/
+    absent involvement is expected to be. ``severity`` is a discount multiplier in ``(0, 1]``;
+    LOWER means MORE severe (see ``app.optimization.projection.get_active_availability_risk_note``'s
+    own "most severe wins" tie-break when several notes are active for the same player).
+
+    - **0.0-0.10 -- confirmed out for an extended, specific period (weeks), club- or
+      multi-source-confirmed injury/suspension with a defined-ish recovery timeline.** Leave
+      literal ``0.0`` to the hard-exclude statuses ``i``/``s``/``u`` this table never needs to
+      duplicate (see ``app.optimization.projection._HARD_EXCLUDE_STATUSES``) -- this band is
+      for "realistically not featuring at normal involvement for multiple gameweeks", not "will
+      not play at all this window".
+      - Kroupi.Jr, 0.05: confirmed fifth-metatarsal-fracture surgery, multiple independent
+        outlets agreeing on a 3-4 month layoff, for a genuinely popular (~185k owners) asset.
+      - Minteh, 0.05: forced off with a leg injury in a pre-season friendly; club-communicated
+        2-3 month expectation, on an already-depleted position group.
+      - Madjo, 0.10: confirmed out for a named run of specific fixtures (opener plus 4 more,
+        ~6-week timeline) after a debut injury -- slightly higher than the two above because the
+        return point is more concretely bounded (a named fixture list, not "2-3 months").
+
+    - **0.60-0.75 -- significant, sourced fatigue/match-fitness concern, not yet officially
+      listed injured/doubtful by FPL, genuinely uncertain whether it costs the player a start.**
+      The largest real category so far: players who went deep into a summer international
+      tournament and return to club training only days before a season opener. Within this
+      band, rank by tournament depth/minutes actually played and how late the return-to-
+      training date is relative to the opener.
+      - Senesi, 0.60: played the actual FINAL (~120 minutes in that match alone) -- the latest
+        realistic return-to-club window of anyone noted so far.
+      - Rice / Saka, 0.65 each: lost in the semifinal, confirmed not returning to club training
+        until 11 days before the opener; Saka additionally reported playing through pain for
+        much of the tournament.
+      - Guehi, 0.65: same semifinal-loss tournament length as Rice/Saka, plus 120 minutes of a
+        quarterfinal while managing a knock.
+
+    - **0.80-0.95 -- a milder or more uncertain version of the 0.60-0.75 band, OR a genuine
+      rotation/competition-for-minutes risk that is not injury-driven at all.** Real concern,
+      but with a mitigating factor (an earlier partial return, a shorter tournament run, or
+      simply "this player has to win a starting spot, not recover from anything") that argues
+      for a smaller discount than the band above.
+      - Rogers, 0.75: same semifinal-length tournament as Rice/Saka/Guehi, but also just
+        completed a mid-tournament transfer to a new club -- kept at the low end of this band,
+        not lower, because he'd already done one individual training session ahead of
+        Rice/Saka's fully-absent status.
+      - Lacroix, 0.85: real tournament minutes (150, including a 30th-minute sub appearance in
+        the semifinal) but as a squad-depth/injury-cover option, not a full-tournament nailed
+        starter -- milder than the heaviest-minutes cases.
+      - Woltemade, 0.85: not a tournament-fatigue case at all -- a genuine three-way rotation
+        competition for the same striker slot under a new manager, plus a real, quantified
+        second-half-of-last-season decline (minutes ~79/game to ~41/game). Discount reflects
+        real competition for a starting shirt, not an injury/unavailability concern -- still the
+        same numeric band as the milder fatigue cases because the underlying uncertainty ("will
+        this player start") is comparably real, just for a different reason.
+
+    A genuinely new situation that doesn't fit one of these four bands (e.g. a confirmed,
+    club-announced multi-MONTH injury for a nailed starter with no realistic return this
+    season) should not be force-fit into the closest existing band -- go lower (nearer 0.0)
+    than any of the above, same principle as the 0.05-0.10 band: the more confirmed and the
+    longer the expected absence, the closer to 0. Cite the real note(s) above most similar to
+    the new situation in the new note's own ``reason`` text -- this rubric is only useful if a
+    future note-writer (human, Scout Watch's automated proposals, or a future session) can
+    point at precedent, not just pick a number in isolation.
+    """
 
     reason: str
     # Projection multiplier in (0, 1] -- e.g. 0.65 = discount to 65% of what the projection would
@@ -198,7 +262,60 @@ class AvailabilityRiskNoteOut(BaseModel):
 
 
 class RoleNoteCreate(BaseModel):
-    """Body for ``POST /players/{player_id}/role-notes``."""
+    """Body for ``POST /players/{player_id}/role-notes``.
+
+    Severity-selection rubric, grounded in the real role-boost notes created this season (read
+    live via ``GET /players/notes/active``, not invented categories). Every note created so far
+    falls into one of four bands, by how CONFIRMED and how VALUABLE the specific role fact is.
+    ``severity`` is a boost multiplier, normally ``> 1.0`` (see ``app.optimization.projection.
+    get_active_role_boost_note``'s own "strongest confirmed claim wins" tie-break -- the INVERSE
+    tie-break direction from availability-risk notes, since a role fact is usually unambiguous
+    once properly sourced).
+
+    - **1.05-1.10 -- confirmed for ONE real but narrower sub-role, while the MORE valuable
+      sub-roles for the same player remain genuinely undecided.** Don't inflate severity to
+      reflect a role the player might ALSO pick up later but hasn't been confirmed for yet.
+      - Szoboszlai, 1.08: real, confirmed, well-sourced primary free-kick taker -- but penalty
+        and corner duty are explicitly reported as undecided following a teammate's departure
+        ("could be on everything", not yet confirmed). Kept modest specifically because the more
+        valuable duties (penalties/corners) are still open.
+
+    - **1.10-1.20 -- confirmed, cross-sourced primary set-piece duty (penalties and/or
+      corners/free-kicks), continuing or newly assigned, with multiple independent trackers
+      agreeing.** The clearest, most straightforwardly-verifiable category -- "who takes this
+      team's penalties/corners" is close to a fact once 2-3 independent trackers agree.
+      - Gross, 1.15: confirmed main penalty AND corner/free-kick taker, cross-verified by 3
+        independent set-piece trackers.
+      - Igor Thiago, 1.15: confirmed RETAINING first-choice penalty duty (not a new assignment)
+        after a 22-goal season, again cross-verified by multiple independent trackers.
+
+    - **1.30-1.40 -- a verified, QUANTITATIVE pattern in this app's OWN historical data that the
+      automated projection formula demonstrably underweights.** Distinct from the two bands
+      above (which are about a role FACT reported externally) -- this band is for when the
+      evidence is a real, checked number already sitting in this app's own database, not outside
+      reporting.
+      - Joao Pedro, 1.35: early-season points-per-game improving every single season on record
+        (0.17 -> 3.00 -> 3.17 -> 6.17), where the recency-weighted multi-season blend (half-life
+        2.0 seasons) still lands well below the most recent, most representative season alone --
+        a genuinely different justification from a "who takes penalties" role note, hence the
+        higher band: it's correcting a demonstrated formula blind spot, not just encoding an
+        external fact.
+
+    - **1.45-1.65 -- a confirmed MAJOR status/role upgrade: promotion from a backup/fringe role
+      to genuinely expected first-choice at a position of real attacking importance.** Reserved
+      for the single biggest category of role change (not a set-piece duty, a straight
+      playing-time/status upgrade) -- use sparingly, since this is the strongest boost in the
+      table and should only apply when the OLD historical data is genuinely stale/misleading for
+      what the player's role is NOW.
+      - Osula, 1.6: historical ``career_avg_points_prior_seasons`` (~1.06) reflects an old
+        fringe-backup role that real, current reporting says no longer applies -- reported as the
+        CURRENT leading option for a starting striker slot under a new manager. The highest
+        severity of any note so far, specifically because the gap between what the historical
+        average implies and what current reporting says is the largest of any note created.
+
+    As with availability-risk notes, cite the closest real precedent above in the new note's own
+    ``reason`` text when creating a new one.
+    """
 
     role: str
     reason: str
