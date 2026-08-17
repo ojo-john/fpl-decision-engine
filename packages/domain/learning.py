@@ -287,3 +287,20 @@ class BacktestRunStatus(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+
+
+class PositionSegmentationValidationRunStatus(str, Enum):
+    """Lifecycle status of a POSITION_SEGMENTATION_VALIDATION job run.
+
+    Mirrors ``BacktestRunStatus`` exactly, including its own "only
+    ``SUCCEEDED`` is ever actually persisted" convention -- see
+    ``app.jobs.handlers.position_segmentation_validation`` and
+    ``app.modeling.position_segmentation`` for the real evaluation this
+    status tracks: a real, per-position MAE comparison between the existing
+    single global model architecture and a position-specific alternative,
+    computed via walk-forward backtesting over real historical seasons.
+    """
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"

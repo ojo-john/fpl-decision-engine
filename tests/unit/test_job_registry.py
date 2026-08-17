@@ -14,6 +14,7 @@ from app.jobs.handlers.league_sync import LeagueSyncJobRunner
 from app.jobs.handlers.lineup_optimization import LineupOptimizationJobRunner
 from app.jobs.handlers.manager_sync import ManagerSyncJobRunner
 from app.jobs.handlers.model_training import ModelTrainingJobRunner
+from app.jobs.handlers.position_segmentation_validation import PositionSegmentationValidationJobRunner
 from app.jobs.handlers.recommendation_generation import RecommendationGenerationJobRunner
 from app.jobs.handlers.rules_sync import RulesSyncJobRunner
 from app.jobs.handlers.squad_optimization import SquadOptimizationJobRunner
@@ -39,6 +40,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.RECOMMENDATION_GENERATION,
     JobType.GAMEWEEK_REVIEW,
     JobType.BACKTEST,
+    JobType.POSITION_SEGMENTATION_VALIDATION,
     JobType.FULL_PIPELINE,
 }
 
@@ -109,6 +111,10 @@ def test_backtest_resolves_to_its_runner():
 
 def test_full_pipeline_resolves_to_its_runner():
     assert get_handler(JobType.FULL_PIPELINE) is FullPipelineJobRunner
+
+
+def test_position_segmentation_validation_resolves_to_its_runner():
+    assert get_handler(JobType.POSITION_SEGMENTATION_VALIDATION) is PositionSegmentationValidationJobRunner
 
 
 @pytest.mark.parametrize(

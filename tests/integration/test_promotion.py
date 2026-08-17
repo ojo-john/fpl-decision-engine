@@ -53,9 +53,14 @@ from packages.database.models.model_promotion import ModelPromotion
 from packages.database.models.model_version import ModelVersion
 from packages.database.models.player import Player
 from packages.database.models.player_features import PlayerFeatures
+from packages.database.models.position_segmentation_validation_run import PositionSegmentationValidationRun
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
-from packages.domain.learning import ModelLifecycleState, PromotionVerdict
+from packages.domain.learning import (
+    ModelLifecycleState,
+    PositionSegmentationValidationRunStatus,
+    PromotionVerdict,
+)
 from packages.domain.modeling import ModelFamily
 
 
@@ -145,6 +150,28 @@ def _seed_evaluation(
         challenger_mae=Decimal(challenger_mae),
         champion_mae=Decimal(champion_mae),
         n_observations=n_observations,
+    )
+    db_session.add(row)
+    db_session.commit()
+    db_session.refresh(row)
+    return row
+
+
+def _seed_position_segmentation_run(
+    db_session, *, feature_version: int, per_position_json: dict
+) -> PositionSegmentationValidationRun:
+    row = PositionSegmentationValidationRun(
+        feature_version=feature_version,
+        run_status=PositionSegmentationValidationRunStatus.SUCCEEDED,
+        usable_seasons_json=["2023-24"],
+        fold_count=1,
+        degenerate_single_season=True,
+        per_position_json=per_position_json,
+        overall_global_mae=Decimal("2.0000"),
+        overall_position_specific_mae=Decimal("2.0000"),
+        n_observations=24,
+        started_at=_now(),
+        completed_at=_now(),
     )
     db_session.add(row)
     db_session.commit()
@@ -527,3 +554,197 @@ def test_compute_shadow_challenger_evaluation_returns_none_when_no_shadow_challe
     result = compute_shadow_challenger_evaluation(db_session, season_id, gameweek.id)
 
     assert result is None
+
+
+# --- evaluate_promotion's real per_position_segmentation gate (against a real
+# PositionSegmentationValidationRun row -- see app.modeling.position_segmentation) -----------------
+
+
+def test_evaluate_promotion_picks_up_a_real_per_position_gap_but_does_not_block_a_clearing_promotion(
+    db_session, patched_fpl_client_optimization
+):
+    """A real, meaningful per-position gap is reported in gate_checks but does NOT, by itself,
+    force RETAINED_INCONCLUSIVE/REJECTED -- it applies equally to the existing champion (same
+    single-global-model architecture), so it's informational (see app.modeling.promotion's own
+    module docstring), not a hard precondition the way minimum_sample_size is."""
+    season_id = _seed_players(db_session)
+    champion = _seed_model_version(
+        db_session, lifecycle_state=ModelLifecycleState.CHAMPION, is_champion=True, feature_version=1
+    )
+    challenger = _seed_model_version(
+        db_session,
+        lifecycle_state=ModelLifecycleState.SHADOW_CHALLENGER,
+        is_champion=False,
+        feature_version=1,
+    )
+    for fpl_event_id in range(1, 7):
+        gameweek = _gameweek(db_session, season_id, fpl_event_id)
+        _seed_evaluation(
+            db_session,
+            challenger_id=challenger.id,
+            champion_id=champion.id,
+            season_id=season_id,
+            gameweek_id=gameweek.id,
+            challenger_mae="1.0000",
+            champion_mae="2.0000",
+        )
+    _seed_position_segmentation_run(
+        db_session,
+        feature_version=1,
+        per_position_json={
+            "GKP": {"global_mae": 2.0, "position_specific_mae": 2.0, "mae_gap_pct": 0.0, "n_observations": 6},
+            "DEF": {"global_mae": 2.0, "position_specific_mae": 2.0, "mae_gap_pct": 0.0, "n_observations": 6},
+            "MID": {"global_mae": 2.0, "position_specific_mae": 2.0, "mae_gap_pct": 0.0, "n_observations": 6},
+            # A real, meaningful (>5%) gap for FWD specifically.
+            "FWD": {
+                "global_mae": 5.0,
+                "position_specific_mae": 4.0,
+                "mae_gap_pct": 0.20,
+                "n_observations": 6,
+            },
+        },
+    )
+
+    gate_result = evaluate_promotion(db_session, challenger.id, champion.id)
+
+    assert gate_result.gate_checks["per_position_segmentation"] is False
+    assert gate_result.verdict == PromotionVerdict.PROMOTED
+
+
+def test_evaluate_promotion_per_position_gate_passes_when_no_position_has_a_meaningful_gap(
+    db_session, patched_fpl_client_optimization
+):
+    season_id = _seed_players(db_session)
+    champion = _seed_model_version(
+        db_session, lifecycle_state=ModelLifecycleState.CHAMPION, is_champion=True, feature_version=1
+    )
+    challenger = _seed_model_version(
+        db_session,
+        lifecycle_state=ModelLifecycleState.SHADOW_CHALLENGER,
+        is_champion=False,
+        feature_version=1,
+    )
+    for fpl_event_id in range(1, 7):
+        gameweek = _gameweek(db_session, season_id, fpl_event_id)
+        _seed_evaluation(
+            db_session,
+            challenger_id=challenger.id,
+            champion_id=champion.id,
+            season_id=season_id,
+            gameweek_id=gameweek.id,
+            challenger_mae="1.0000",
+            champion_mae="2.0000",
+        )
+    _seed_position_segmentation_run(
+        db_session,
+        feature_version=1,
+        per_position_json={
+            "GKP": {"global_mae": 2.0, "position_specific_mae": 2.0, "mae_gap_pct": 0.0, "n_observations": 6},
+            "DEF": {"global_mae": 2.0, "position_specific_mae": 2.0, "mae_gap_pct": 0.0, "n_observations": 6},
+            "MID": {"global_mae": 2.0, "position_specific_mae": 2.0, "mae_gap_pct": 0.0, "n_observations": 6},
+            "FWD": {"global_mae": 2.0, "position_specific_mae": 2.0, "mae_gap_pct": 0.0, "n_observations": 6},
+        },
+    )
+
+    gate_result = evaluate_promotion(db_session, challenger.id, champion.id)
+
+    assert gate_result.gate_checks["per_position_segmentation"] is True
+
+
+def test_evaluate_promotion_per_position_gate_ignores_a_run_for_a_different_feature_version(
+    db_session, patched_fpl_client_optimization
+):
+    """A POSITION_SEGMENTATION_VALIDATION run computed against an OLDER feature_version must not
+    influence a promotion decision for a challenger trained on a newer one -- the finding may no
+    longer be relevant once features have changed (see _latest_position_segmentation_gaps's own
+    docstring)."""
+    season_id = _seed_players(db_session)
+    champion = _seed_model_version(
+        db_session, lifecycle_state=ModelLifecycleState.CHAMPION, is_champion=True, feature_version=2
+    )
+    challenger = _seed_model_version(
+        db_session,
+        lifecycle_state=ModelLifecycleState.SHADOW_CHALLENGER,
+        is_champion=False,
+        feature_version=2,
+    )
+    for fpl_event_id in range(1, 7):
+        gameweek = _gameweek(db_session, season_id, fpl_event_id)
+        _seed_evaluation(
+            db_session,
+            challenger_id=challenger.id,
+            champion_id=champion.id,
+            season_id=season_id,
+            gameweek_id=gameweek.id,
+            challenger_mae="1.0000",
+            champion_mae="2.0000",
+        )
+    # A real, meaningful gap -- but recorded against feature_version=1, not this challenger's 2.
+    _seed_position_segmentation_run(
+        db_session,
+        feature_version=1,
+        per_position_json={
+            "FWD": {
+                "global_mae": 5.0,
+                "position_specific_mae": 4.0,
+                "mae_gap_pct": 0.20,
+                "n_observations": 6,
+            },
+        },
+    )
+
+    gate_result = evaluate_promotion(db_session, challenger.id, champion.id)
+
+    # No run exists for feature_version=2 -- gate defaults to passing, per module docstring.
+    assert gate_result.gate_checks["per_position_segmentation"] is True
+
+
+def test_evaluate_promotion_per_position_gate_uses_the_most_recent_run_for_that_feature_version(
+    db_session, patched_fpl_client_optimization
+):
+    season_id = _seed_players(db_session)
+    champion = _seed_model_version(
+        db_session, lifecycle_state=ModelLifecycleState.CHAMPION, is_champion=True, feature_version=1
+    )
+    challenger = _seed_model_version(
+        db_session,
+        lifecycle_state=ModelLifecycleState.SHADOW_CHALLENGER,
+        is_champion=False,
+        feature_version=1,
+    )
+    for fpl_event_id in range(1, 7):
+        gameweek = _gameweek(db_session, season_id, fpl_event_id)
+        _seed_evaluation(
+            db_session,
+            challenger_id=challenger.id,
+            champion_id=champion.id,
+            season_id=season_id,
+            gameweek_id=gameweek.id,
+            challenger_mae="1.0000",
+            champion_mae="2.0000",
+        )
+    # An OLDER run found a real gap...
+    _seed_position_segmentation_run(
+        db_session,
+        feature_version=1,
+        per_position_json={
+            "FWD": {
+                "global_mae": 5.0,
+                "position_specific_mae": 4.0,
+                "mae_gap_pct": 0.20,
+                "n_observations": 6,
+            },
+        },
+    )
+    # ...but a NEWER run (same feature_version) found the gap closed. The most recent run wins.
+    _seed_position_segmentation_run(
+        db_session,
+        feature_version=1,
+        per_position_json={
+            "FWD": {"global_mae": 2.0, "position_specific_mae": 2.0, "mae_gap_pct": 0.0, "n_observations": 6},
+        },
+    )
+
+    gate_result = evaluate_promotion(db_session, challenger.id, champion.id)
+
+    assert gate_result.gate_checks["per_position_segmentation"] is True
