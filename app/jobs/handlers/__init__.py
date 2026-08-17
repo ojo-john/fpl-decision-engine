@@ -3,6 +3,7 @@
 from app.jobs.handlers import (
     backtest,  # noqa: F401  (import registers the handler)
     chip_simulation,  # noqa: F401  (import registers the handler)
+    cold_start_projection_validation,  # noqa: F401  (import registers the handler)
     data_ingestion,  # noqa: F401  (import registers the handler)
     feature_generation,  # noqa: F401  (import registers the handler)
     full_pipeline,  # noqa: F401  (import registers the handler)
@@ -23,6 +24,7 @@ from app.jobs.handlers import (
 __all__ = [
     "backtest",
     "chip_simulation",
+    "cold_start_projection_validation",
     "data_ingestion",
     "feature_generation",
     "full_pipeline",

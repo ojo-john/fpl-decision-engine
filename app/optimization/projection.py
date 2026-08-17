@@ -57,6 +57,36 @@ _HARD_EXCLUDE_STATUSES = {"i", "s", "u"}
 # fit enough at 75% to be worth full consideration.
 _AVAILABILITY_SCALE_THRESHOLD = 75
 
+# _cold_start_projection's own two tunable constants -- both empirically validated against real
+# historical seasons by app.jobs.handlers.cold_start_projection_validation (see
+# app.modeling.cold_start_validation for the leakage-safe evaluation harness); real sweep results
+# are persisted per-run in cold_start_validation_runs, and ARCHITECTURE.md's cold-start-validation
+# section records the most recent run's actual numbers.
+#
+# Weight on the career_avg component in the ep_next/career_avg blend (ep_next gets
+# 1 - COLD_START_BLEND_CAREER_AVG_WEIGHT). Swept against a documented, imperfect proxy for
+# historical ep_next (see sweep_blend_ratio_candidates's own docstring for the caveat) -- treated as
+# directional evidence only, not conclusive, given that caveat.
+#
+# Empirically checked (2026-08-17) against the real dev database's full historical dataset
+# (n=2348 real (player, season) pairs, {0.3, 0.4, 0.5, 0.6, 0.7} swept): real MAE was LOWEST at
+# 0.5 itself (1.1043), against 1.1170/1.1057/1.1225 for 0.4/0.6/0.7 and 1.1427 for 0.3 -- despite
+# the proxy caveat above, the sweep did not surface a case to move away from 0.5, so it was left
+# unchanged. See ARCHITECTURE.md's cold-start-validation section for the full real numbers.
+COLD_START_BLEND_CAREER_AVG_WEIGHT = 0.5
+
+# Fixture-difficulty adjustment coefficient: +/- this fraction per point of next_fixture_difficulty
+# away from neutral (3) -- e.g. 0.075 means +/-15% across the full 1-5 range. Swept at real
+# per-gameweek granularity using real historical fixture difficulty ratings and real actual points
+# (no ep_next dependency, so no proxy caveat applies to this one).
+#
+# Empirically validated (2026-08-17) against the real dev database (n=13954 real per-gameweek
+# observations, {0.0, 0.025, 0.05, 0.075, 0.1, 0.15} swept): real MAE bottomed out at 0.05/0.075
+# (1.65455/1.65454, effectively tied) versus 1.65603 for the 0.0 (no-adjustment) control -- 0.075
+# is already at the empirical minimum, so it was left unchanged. See ARCHITECTURE.md's
+# cold-start-validation section for the full real numbers.
+COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT = 0.075
+
 
 @dataclass(frozen=True)
 class PlayerProjection:
@@ -230,11 +260,14 @@ def _cold_start_projection(
     if career_avg is None:
         return baseline
 
-    blended = (baseline.projected_points + float(career_avg)) / 2
+    blended = (
+        COLD_START_BLEND_CAREER_AVG_WEIGHT * float(career_avg)
+        + (1 - COLD_START_BLEND_CAREER_AVG_WEIGHT) * baseline.projected_points
+    )
 
     difficulty = feature_row.next_fixture_difficulty
     if difficulty is not None:
-        blended *= 1 + (3 - difficulty) * 0.075
+        blended *= 1 + (3 - difficulty) * COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT
 
     return PlayerProjection(player.id, blended, "cold_start_blend_ep_next_and_career_avg", is_eligible=True)
 

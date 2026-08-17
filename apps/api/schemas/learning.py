@@ -1,5 +1,5 @@
-"""Pydantic request/response schemas for the /jobs/review-gameweek, /jobs/backtest, and /learning
-endpoints.
+"""Pydantic request/response schemas for the /jobs/review-gameweek, /jobs/backtest,
+/jobs/cold-start-validation, and /learning endpoints.
 """
 
 import uuid
@@ -90,5 +90,43 @@ class BacktestRunOut(BaseModel):
     aggregate_spearman: Decimal | None
     aggregate_top_20_capture_rate: Decimal | None
     n_observations: int
+    started_at: datetime
+    completed_at: datetime
+
+
+class ColdStartValidationRequest(BaseModel):
+    # All optional -- see app.jobs.handlers.cold_start_projection_validation's own docstring for why
+    # this job, unlike BACKTEST, has a fully sensible default (its own module-level candidate sets).
+    half_life_candidates: list[float] | None = None
+    difficulty_coefficient_candidates: list[float] | None = None
+    blend_ratio_candidates: list[float] | None = None
+    requested_by: str | None = None
+
+
+class ColdStartValidationRunOut(BaseModel):
+    cold_start_validation_run_id: uuid.UUID
+    run_status: str
+    early_season_gameweek_cutoff: int
+    component_evaluated: str
+    usable_seasons: list[str]
+    seasons_evaluated: list[str]
+    n_observations: int
+    half_life_sweep: list[dict[str, Any]]
+    default_half_life_seasons: Decimal
+    default_half_life_mae: Decimal | None
+    best_half_life_seasons: Decimal
+    best_half_life_label: str
+    best_half_life_mae: Decimal
+    difficulty_coefficient_sweep: list[dict[str, Any]]
+    default_difficulty_coefficient: Decimal
+    default_difficulty_coefficient_mae: Decimal | None
+    best_difficulty_coefficient: Decimal | None
+    best_difficulty_coefficient_mae: Decimal | None
+    blend_ratio_sweep: list[dict[str, Any]]
+    default_blend_career_avg_weight: Decimal
+    default_blend_mae: Decimal | None
+    best_blend_career_avg_weight: Decimal | None
+    best_blend_mae: Decimal | None
+    blend_ratio_caveat: str
     started_at: datetime
     completed_at: datetime

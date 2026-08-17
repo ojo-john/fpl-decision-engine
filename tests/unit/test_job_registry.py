@@ -4,6 +4,7 @@ import pytest
 
 from app.jobs.handlers.backtest import BacktestJobRunner
 from app.jobs.handlers.chip_simulation import ChipSimulationJobRunner
+from app.jobs.handlers.cold_start_projection_validation import ColdStartProjectionValidationJobRunner
 from app.jobs.handlers.data_ingestion import DataIngestionJobRunner
 from app.jobs.handlers.feature_generation import FeatureGenerationJobRunner
 from app.jobs.handlers.full_pipeline import FullPipelineJobRunner
@@ -39,6 +40,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.RECOMMENDATION_GENERATION,
     JobType.GAMEWEEK_REVIEW,
     JobType.BACKTEST,
+    JobType.COLD_START_PROJECTION_VALIDATION,
     JobType.FULL_PIPELINE,
 }
 
@@ -109,6 +111,10 @@ def test_backtest_resolves_to_its_runner():
 
 def test_full_pipeline_resolves_to_its_runner():
     assert get_handler(JobType.FULL_PIPELINE) is FullPipelineJobRunner
+
+
+def test_cold_start_projection_validation_resolves_to_its_runner():
+    assert get_handler(JobType.COLD_START_PROJECTION_VALIDATION) is ColdStartProjectionValidationJobRunner
 
 
 @pytest.mark.parametrize(
