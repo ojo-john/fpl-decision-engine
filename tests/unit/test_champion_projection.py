@@ -403,6 +403,32 @@ def test_cold_start_season_neutral_fixture_difficulty_leaves_the_blend_unchanged
     assert result.projected_points == pytest.approx((4.0 + 6.36) / 2)
 
 
+def test_cold_start_season_ignores_next_fixture_elo_differential(monkeypatch):
+    """Real-data validation (scripts/validate_elo_fixture_adjustment.py, n=3035 real 2025-26
+    GW1-6 observations) found every tested Elo-adjustment scale WORSE than the existing
+    FPL-difficulty adjustment -- next_fixture_elo_differential is stored (it reaches the trained
+    champion's own feature matrix) but must NOT affect this hand-written formula's own output.
+    A strongly favorable elo_differential is set here specifically to prove it has zero effect --
+    the result must match the plain FPL-difficulty-only calculation exactly."""
+    player = _make_player(status="a", ep_next="4.0")
+    champion = _make_champion(ModelFamily.RANDOM_FOREST, sklearn_model=_StubTreeModel([], 999.0))
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_season", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.optimization.projection.compute_features_for_player_gameweek",
+        lambda *a, **k: _make_feature_row(
+            player,
+            career_avg_points_prior_seasons=Decimal("6.36"),
+            next_fixture_difficulty=1,
+            next_fixture_elo_differential=Decimal("400"),
+        ),
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, champion)
+
+    base_blend = (4.0 + 6.36) / 2
+    assert result.projected_points == pytest.approx(base_blend * 1.15)
+
+
 def test_cold_start_season_falls_back_to_ep_next_alone_with_no_career_history(monkeypatch):
     """A brand-new-to-FPL player: no earlier-season row exists to blend with at all."""
     player = _make_player(status="a", ep_next="4.0")

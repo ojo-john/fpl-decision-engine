@@ -35,6 +35,7 @@ from packages.database.models.player_features import PlayerFeatures
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.position import Position
 from packages.database.models.season import Season
+from packages.database.models.team import Team
 
 __all__ = [
     "FEATURE_VERSION",
@@ -60,6 +61,23 @@ FORM_HALF_LIFE_GAMEWEEKS = 3.0
 FEATURE_DATA_SOURCE = "feature_engineering_v1"
 
 
+def _resolve_elo_differential(
+    session: Session, team_id: uuid.UUID | None, opponent_team_id: uuid.UUID | None
+) -> Decimal | None:
+    """This team's ClubElo rating minus the opponent's, or ``None`` if either team is unknown or
+    has no rating yet (``TEAM_STRENGTH_SYNC`` hasn't run, or one side couldn't be name-matched --
+    see ``app.ingestion.team_strength``). Two point lookups, not preloaded -- only used by the
+    single-player entry point; ``generate_features_for_season``'s bulk path preloads all of a
+    season's ratings once instead (see its own ``elo_by_team_id`` dict)."""
+    if team_id is None or opponent_team_id is None:
+        return None
+    team = session.get(Team, team_id)
+    opponent = session.get(Team, opponent_team_id)
+    if team is None or opponent is None or team.elo_rating is None or opponent.elo_rating is None:
+        return None
+    return team.elo_rating - opponent.elo_rating
+
+
 def _build_player_features_values(
     *,
     player_id: uuid.UUID,
@@ -73,6 +91,7 @@ def _build_player_features_values(
     target_gw_points: list[int],
     next_fixture_difficulty: int | None,
     next_fixture_was_home: bool | None,
+    next_fixture_elo_differential: Decimal | None,
     rest_days_value: int | None,
     price_at_time: int | None,
     ownership_at_time: int | None,
@@ -115,6 +134,7 @@ def _build_player_features_values(
         "away_avg_points": away_avg_points,
         "next_fixture_difficulty": next_fixture_difficulty,
         "next_fixture_was_home": next_fixture_was_home,
+        "next_fixture_elo_differential": next_fixture_elo_differential,
         "rest_days": rest_days_value,
         "price_at_time": Decimal(price_at_time) if price_at_time is not None else None,
         "ownership_at_time": ownership_at_time,
@@ -264,10 +284,15 @@ def compute_features_for_player_gameweek(
         next_fixture_difficulty = next_fixture.home_difficulty if is_home else next_fixture.away_difficulty
         next_fixture_was_home: bool | None = is_home
         target_fixture_kickoff_time = next_fixture.kickoff_time
+        opponent_team_id = next_fixture.away_team_id if is_home else next_fixture.home_team_id
+        next_fixture_elo_differential = _resolve_elo_differential(
+            session, player.team_id, opponent_team_id
+        )
     else:
         next_fixture_difficulty = None
         next_fixture_was_home = None
         target_fixture_kickoff_time = None
+        next_fixture_elo_differential = None
 
     rest_days_value = (
         engineering.rest_days(current_prior, target_fixture_kickoff_time)
@@ -289,6 +314,7 @@ def compute_features_for_player_gameweek(
         target_gw_points=target_gw_points,
         next_fixture_difficulty=next_fixture_difficulty,
         next_fixture_was_home=next_fixture_was_home,
+        next_fixture_elo_differential=next_fixture_elo_differential,
         rest_days_value=rest_days_value,
         price_at_time=price_at_time,
         ownership_at_time=ownership_at_time,
@@ -426,6 +452,15 @@ def generate_features_for_season(
         for position in session.execute(select(Position).where(Position.season_id == season_id)).scalars()
     }
 
+    # Same "preload once, look up in memory" precedent as position_short_name_by_id above --
+    # teams is also a tiny per-season table. Only teams with a real synced elo_rating appear
+    # (see app.jobs.handlers.team_strength_sync); missing from this dict == unknown, not zero.
+    elo_by_team_id: dict[uuid.UUID, Decimal] = {
+        team.id: team.elo_rating
+        for team in session.execute(select(Team).where(Team.season_id == season_id)).scalars()
+        if team.elo_rating is not None
+    }
+
     computed_at = datetime.now(UTC)
     all_values: list[dict[str, Any]] = []
 
@@ -492,10 +527,17 @@ def generate_features_for_season(
                 )
                 next_fixture_was_home: bool | None = is_home
                 target_fixture_kickoff_time = next_fixture.kickoff_time
+                opponent_team_id = next_fixture.away_team_id if is_home else next_fixture.home_team_id
+                team_elo = elo_by_team_id.get(player.team_id) if player.team_id else None
+                opponent_elo = elo_by_team_id.get(opponent_team_id) if opponent_team_id else None
+                next_fixture_elo_differential = (
+                    team_elo - opponent_elo if team_elo is not None and opponent_elo is not None else None
+                )
             else:
                 next_fixture_difficulty = None
                 next_fixture_was_home = None
                 target_fixture_kickoff_time = None
+                next_fixture_elo_differential = None
 
             rest_days_value = (
                 engineering.rest_days(current_prior, target_fixture_kickoff_time)
@@ -515,6 +557,7 @@ def generate_features_for_season(
                 target_gw_points=points_by_gw.get(gameweek.id, []),
                 next_fixture_difficulty=next_fixture_difficulty,
                 next_fixture_was_home=next_fixture_was_home,
+                next_fixture_elo_differential=next_fixture_elo_differential,
                 rest_days_value=rest_days_value,
                 price_at_time=price_at_time,
                 ownership_at_time=ownership_at_time,

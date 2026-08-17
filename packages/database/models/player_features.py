@@ -106,6 +106,17 @@ class PlayerFeatures(Base):
     next_fixture_difficulty: Mapped[int | None] = mapped_column(Integer)
     next_fixture_was_home: Mapped[bool | None] = mapped_column(SABoolean)
 
+    # This player's team's ClubElo.com rating minus their next opponent's, at the time this row
+    # was computed (see app.ingestion.team_strength) -- a raw, signed differential. NOT consumed
+    # by app.optimization.projection._cold_start_projection's own fixture adjustment -- real
+    # validation (scripts/validate_elo_fixture_adjustment.py) found it doesn't improve on that
+    # formula's existing FPL-difficulty adjustment. Still reaches the TRAINED champion model's
+    # feature matrix automatically (app.modeling.candidates), which can learn its own weight for
+    # it. NULL whenever either team's Elo rating is unknown (TEAM_STRENGTH_SYNC hasn't run, or a
+    # team couldn't be matched to a ClubElo club name) -- same "unknown, not zero" convention as
+    # every other nullable column here.
+    next_fixture_elo_differential: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+
     rest_days: Mapped[int | None] = mapped_column(Integer)
     price_at_time: Mapped[Decimal | None] = mapped_column(Numeric(6, 1))
     # Raw ownership COUNT, matching player_gameweek_stats.selected_by_count_at_time

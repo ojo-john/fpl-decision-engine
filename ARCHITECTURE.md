@@ -81,6 +81,7 @@ the job types that have an HTTP trigger.
 | `HISTORICAL_DATA_INGESTION` | `historical_data_ingestion.py` | ✅ | — | CLI / `historical-ingest.yml` (manual) only |
 | `MANAGER_SYNC` | `manager_sync.py` | ✅ | `POST /managers/sync` | |
 | `LEAGUE_SYNC` | `league_sync.py` | ✅ | `POST /leagues/sync` | |
+| `TEAM_STRENGTH_SYNC` | `team_strength_sync.py` | ✅ | — | CLI (`scripts/run_job.py`) only, no scheduled trigger yet |
 | `FEATURE_GENERATION` | `feature_generation.py` | ✅ | — | `make features`, `feature-generation.yml`, `train.yml` |
 | `MODEL_TRAINING` | `model_training.py` | ✅ | — | `make train`, `train.yml`; also triggered **in-process** by `GAMEWEEK_REVIEW` on a sustained MAE breach |
 | `PROJECTION_GENERATION` | — | ❌ | — | genuinely unbuilt; `project_player`/`project_player_with_champion` in `app/optimization/projection.py` are called directly by other jobs instead |
@@ -193,6 +194,37 @@ itself never reads that persisted table; it always computes fresh via
 improvement is live immediately, without needing `FEATURE_GENERATION` to
 be re-run. A re-run is only needed to backfill the new column on
 already-computed historical `player_features` rows.
+
+**ClubElo-based fixture strength — real infrastructure, real negative result for the cold-start
+formula specifically.** `TEAM_STRENGTH_SYNC` (`app/jobs/handlers/team_strength_sync.py`) pulls
+real, continuously-updated Elo ratings from ClubElo.com (`http://api.clubelo.com`, confirmed
+live, free, no API key) via `packages/clubelo_client` (mirrors `packages.fpl_client`'s own
+timeout/retry/backoff resilience conventions), maps FPL's team names onto ClubElo's own naming
+via an explicit, hand-verified table (`app/ingestion/team_strength.py` — several real divergences:
+"Man Utd"→"Man United", "Spurs"→"Tottenham", "Nott'm Forest"→"Forest", "Coventry City"→"Coventry",
+"Hull City"→"Hull", "Ipswich Town"→"Ipswich"), and upserts `teams.elo_rating`/
+`teams.elo_last_synced_at` (migration 0040). `player_features.next_fixture_elo_differential`
+(this player's team's Elo minus their next opponent's, computed identically to
+`next_fixture_difficulty` in `app/features/service.py`) is additive-only, so `FEATURE_VERSION` is
+not bumped.
+
+The motivating hypothesis was that this continuously-updated real signal would beat FPL's own
+coarse, static 1-5 `next_fixture_difficulty` inside `_cold_start_projection`'s fixture-adjustment
+multiplier. Real validation (`scripts/validate_elo_fixture_adjustment.py`, read-only against the
+real dev database, real ClubElo historical snapshots, n=3035 real player-gameweek observations
+from the 2025-26 season's own GW1-6) found the OPPOSITE: every tested Elo-based adjustment scale
+(0.0 through 1.0) produced a WORSE MAE than the existing FPL-difficulty adjustment (best:
+1.5592 at FPL-difficulty; Elo scale 0.0 i.e. no adjustment: 1.5665; every higher scale
+monotonically worse, up to 1.5926 at scale 1.0). `_cold_start_projection` therefore still uses
+only `next_fixture_difficulty`, completely unchanged — a deliberate, evidence-based decision NOT
+to ship the Elo-based alternative there, not an oversight. `next_fixture_elo_differential` is
+still persisted and still reaches `MODEL_TRAINING`'s real feature matrix automatically (see
+`app.modeling.candidates`'s generic column iteration) — a trained gradient-boosted model can
+learn its own weight for the signal, unlike this one hand-written formula's single fixed
+coefficient, so the negative result is scoped to this specific formula, not a verdict on Elo's
+value as a signal overall. This evaluation covered one real season (narrower than the 6-season
+evidence behind the cold-start blend's other constants) out of respect for ClubElo's own "be
+reasonable" rate-limit ask — documented honestly rather than overstated.
 
 Both `SQUAD_OPTIMIZATION` and `/optimize/preview` rank candidates by
 points summed across the next `SQUAD_BUILD_HORIZON_LENGTH` (6) unfinished

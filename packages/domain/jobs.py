@@ -21,6 +21,7 @@ class JobType(str, Enum):
     HISTORICAL_DATA_INGESTION = "historical_data_ingestion"
     MANAGER_SYNC = "manager_sync"
     LEAGUE_SYNC = "league_sync"
+    TEAM_STRENGTH_SYNC = "team_strength_sync"
     FEATURE_GENERATION = "feature_generation"
     MODEL_TRAINING = "model_training"
     PROJECTION_GENERATION = "projection_generation"
