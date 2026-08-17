@@ -1,6 +1,13 @@
 {
   "fpl_league_id": 814682,
-  "known_manager_entry_ids": [918600, 257552, 3861982],
+  "known_manager_entry_ids": [
+    257552,
+    918600,
+    3859375,
+    3861982,
+    4085230,
+    4947129
+  ],
   "standings_ever_populated": false,
-  "last_checked_at": "2026-08-11T00:00:00Z"
+  "last_checked_at": "2026-08-17T09:59:53.915710+00:00"
 }
