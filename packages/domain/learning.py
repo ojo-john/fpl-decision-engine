@@ -48,6 +48,14 @@ with a single, atomic "build fully in memory, insert once" persistence step
 at the end, so only ``SUCCEEDED`` is ever actually written to
 ``backtest_runs.run_status`` -- ``RUNNING``/``FAILED`` exist here purely for
 3-state shape symmetry with every other ``*RunStatus`` enum, never persisted.
+
+A later, separate addition -- historical validation of the hand-written
+``app.optimization.projection._cold_start_projection`` formula, which BACKTEST
+itself never covers (it only ever evaluates a trained ``model_versions`` row)
+-- adds ``ColdStartValidationRunStatus`` below, for the same reason and with
+the same "only SUCCEEDED is ever persisted" shape; see
+``app.jobs.handlers.cold_start_projection_validation`` and
+``app.modeling.cold_start_validation``.
 """
 
 from enum import Enum
@@ -282,6 +290,22 @@ class BacktestRunStatus(str, Enum):
     See ``app.jobs.handlers.backtest`` and this enum's own module-docstring
     paragraph for why, unlike ``GameweekReviewRunStatus``, only ``SUCCEEDED``
     is ever actually persisted to ``backtest_runs.run_status``.
+    """
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class ColdStartValidationRunStatus(str, Enum):
+    """Lifecycle status of a COLD_START_PROJECTION_VALIDATION job run.
+
+    See ``app.jobs.handlers.cold_start_projection_validation`` -- mirrors
+    ``BacktestRunStatus``'s own precedent exactly (same "pure computation over
+    already-persisted, read-only data, build fully in memory, insert once"
+    shape), so only ``SUCCEEDED`` is ever actually persisted to
+    ``cold_start_validation_runs.run_status``; ``RUNNING``/``FAILED`` exist
+    purely for 3-state shape symmetry with every other ``*RunStatus`` enum.
     """
 
     RUNNING = "running"

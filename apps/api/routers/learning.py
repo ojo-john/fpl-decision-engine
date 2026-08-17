@@ -22,12 +22,15 @@ from apps.api.dependencies import get_db
 from apps.api.schemas.learning import (
     BacktestRequest,
     BacktestRunOut,
+    ColdStartValidationRequest,
+    ColdStartValidationRunOut,
     FailureAttributionOut,
     GameweekReviewRequest,
     LearningReportOut,
     LearningSignalOut,
 )
 from packages.database.models.backtest_run import BacktestRun
+from packages.database.models.cold_start_validation_run import ColdStartValidationRun
 from packages.database.models.failure_attribution import FailureAttribution
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.learning_report import LearningReport
@@ -166,6 +169,37 @@ def review_gameweek(
     return _assembled_report(db, report)
 
 
+def _assembled_cold_start_validation_run(row: ColdStartValidationRun) -> ColdStartValidationRunOut:
+    return ColdStartValidationRunOut(
+        cold_start_validation_run_id=row.id,
+        run_status=row.run_status.value,
+        early_season_gameweek_cutoff=row.early_season_gameweek_cutoff,
+        component_evaluated=row.component_evaluated,
+        usable_seasons=row.usable_seasons_json,
+        seasons_evaluated=row.seasons_evaluated_json,
+        n_observations=row.n_observations,
+        half_life_sweep=row.half_life_sweep_json,
+        default_half_life_seasons=row.default_half_life_seasons,
+        default_half_life_mae=row.default_half_life_mae,
+        best_half_life_seasons=row.best_half_life_seasons,
+        best_half_life_label=row.best_half_life_label,
+        best_half_life_mae=row.best_half_life_mae,
+        difficulty_coefficient_sweep=row.difficulty_coefficient_sweep_json,
+        default_difficulty_coefficient=row.default_difficulty_coefficient,
+        default_difficulty_coefficient_mae=row.default_difficulty_coefficient_mae,
+        best_difficulty_coefficient=row.best_difficulty_coefficient,
+        best_difficulty_coefficient_mae=row.best_difficulty_coefficient_mae,
+        blend_ratio_sweep=row.blend_ratio_sweep_json,
+        default_blend_career_avg_weight=row.default_blend_career_avg_weight,
+        default_blend_mae=row.default_blend_mae,
+        best_blend_career_avg_weight=row.best_blend_career_avg_weight,
+        best_blend_mae=row.best_blend_mae,
+        blend_ratio_caveat=row.blend_ratio_caveat,
+        started_at=row.started_at,
+        completed_at=row.completed_at,
+    )
+
+
 @router_jobs.post("/backtest", response_model=BacktestRunOut)
 def run_backtest(body: BacktestRequest, db: Session = Depends(get_db)) -> BacktestRunOut | JSONResponse:
     job = execute_job(
@@ -183,6 +217,35 @@ def run_backtest(body: BacktestRequest, db: Session = Depends(get_db)) -> Backte
     row = db.get(BacktestRun, backtest_run_id)
     assert row is not None  # a SUCCEEDED job always leaves its backtest_runs row behind
     return _assembled_backtest_run(db, row)
+
+
+@router_jobs.post("/cold-start-validation", response_model=ColdStartValidationRunOut)
+def run_cold_start_validation(
+    body: ColdStartValidationRequest, db: Session = Depends(get_db)
+) -> ColdStartValidationRunOut | JSONResponse:
+    parameters: dict[str, Any] = {}
+    if body.half_life_candidates is not None:
+        parameters["half_life_candidates"] = body.half_life_candidates
+    if body.difficulty_coefficient_candidates is not None:
+        parameters["difficulty_coefficient_candidates"] = body.difficulty_coefficient_candidates
+    if body.blend_ratio_candidates is not None:
+        parameters["blend_ratio_candidates"] = body.blend_ratio_candidates
+
+    job = execute_job(
+        db,
+        job_type=JobType.COLD_START_PROJECTION_VALIDATION,
+        parameters=parameters or None,
+        requested_by=body.requested_by,
+        trigger_type=TriggerType.API,
+    )
+    if job.status != JobStatus.SUCCEEDED:
+        return _error_response(job)
+
+    assert job.output_json is not None  # a SUCCEEDED job always has output_json
+    run_id = uuid.UUID(job.output_json["cold_start_validation_run_id"])
+    row = db.get(ColdStartValidationRun, run_id)
+    assert row is not None  # a SUCCEEDED job always leaves its cold_start_validation_runs row behind
+    return _assembled_cold_start_validation_run(row)
 
 
 @router_learning.get("/latest", response_model=LearningReportOut)
@@ -239,6 +302,33 @@ def list_backtest_runs(
     stmt = stmt.order_by(BacktestRun.started_at.desc()).limit(_MAX_RESULTS)
     rows = db.execute(stmt).scalars().all()
     return [_assembled_backtest_run(db, row) for row in rows]
+
+
+@router_learning.get(
+    "/cold-start-validations/{cold_start_validation_run_id}", response_model=ColdStartValidationRunOut
+)
+def get_cold_start_validation_run(
+    cold_start_validation_run_id: uuid.UUID, db: Session = Depends(get_db)
+) -> ColdStartValidationRunOut | JSONResponse:
+    row = db.get(ColdStartValidationRun, cold_start_validation_run_id)
+    if row is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error_code": "COLD_START_VALIDATION_RUN_NOT_FOUND",
+                "detail": f"cold_start_validation_runs row {cold_start_validation_run_id} not found.",
+            },
+        )
+    return _assembled_cold_start_validation_run(row)
+
+
+@router_learning.get("/cold-start-validations", response_model=list[ColdStartValidationRunOut])
+def list_cold_start_validation_runs(db: Session = Depends(get_db)) -> list[ColdStartValidationRunOut]:
+    stmt = (
+        select(ColdStartValidationRun).order_by(ColdStartValidationRun.started_at.desc()).limit(_MAX_RESULTS)
+    )
+    rows = db.execute(stmt).scalars().all()
+    return [_assembled_cold_start_validation_run(row) for row in rows]
 
 
 @router_learning.get("/signals", response_model=list[LearningSignalOut])

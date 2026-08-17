@@ -10,6 +10,7 @@ from packages.database.models.backtest_run import BacktestRun
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.chip_recommendation import ChipRecommendation
 from packages.database.models.chip_window_candidate import ChipWindowCandidate
+from packages.database.models.cold_start_validation_run import ColdStartValidationRun
 from packages.database.models.counterfactual_result import CounterfactualResult
 from packages.database.models.data_quality_issue import DataQualityIssue
 from packages.database.models.failure_attribution import FailureAttribution
@@ -60,6 +61,7 @@ __all__ = [
     "ChipOptimizationRun",
     "ChipRecommendation",
     "ChipWindowCandidate",
+    "ColdStartValidationRun",
     "CounterfactualResult",
     "DataQualityIssue",
     "FailureAttribution",

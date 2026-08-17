@@ -1,0 +1,243 @@
+"""COLD_START_PROJECTION_VALIDATION job: historical validation of
+``app.optimization.projection._cold_start_projection``'s hand-written blend formula -- the
+cold-start fallback every pre-season squad-building decision this app exists to support goes
+through, and which neither ``BACKTEST`` nor ``MODEL_TRAINING``'s own walk-forward validation ever
+covers (both only ever evaluate a trained ``model_versions`` row; this formula is not one --
+confirmed via ``grep -rn "cold_start" app/modeling/walk_forward.py app/jobs/handlers/backtest.py
+app/jobs/handlers/model_training.py``, which returns zero matches).
+
+Mechanically thin: builds the one shared, leakage-safe observation set
+(``app.modeling.cold_start_validation.build_player_season_observations``) once, then runs all three
+of that module's sweeps against it (half-life, fixture-difficulty coefficient, ep_next/career_avg
+blend ratio) and persists one ``cold_start_validation_runs`` row. See that module's own docstring
+for the full evaluation design, leakage discipline, and the ep_next proxy caveat.
+
+Persistence: "build fully in memory, insert once" (mirrors ``BACKTEST``'s own precedent exactly --
+pure computation over already-persisted, read-only historical data, no other side-effecting steps to
+sequence).
+
+``ctx.parameters`` is entirely optional -- unlike ``BACKTEST`` (which requires a
+``model_version_id``; "which model" has no sensible default), this job's own default candidate sets
+(``app.modeling.cold_start_validation``'s own module-level constants) ARE the sensible default: an
+optional ``half_life_candidates``/``difficulty_coefficient_candidates``/``blend_ratio_candidates``
+list of floats overrides the corresponding sweep for ad-hoc re-checks without a code change.
+"""
+
+import uuid
+from dataclasses import asdict
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from app.features import engineering
+from app.jobs.registry import register_handler
+from app.jobs.runner import JobContext, JobResult, JobRunner
+from app.modeling.cold_start_validation import (
+    BLEND_RATIO_SWEEP_CANDIDATES,
+    DIFFICULTY_COEFFICIENT_SWEEP_CANDIDATES,
+    EARLY_SEASON_HALF_LIFE_SWEEP_CANDIDATES,
+    BlendRatioSweepResult,
+    HalfLifeSweepResult,
+    build_player_season_observations,
+    sweep_blend_ratio_candidates,
+    sweep_difficulty_coefficient_candidates,
+    sweep_half_life_candidates,
+)
+from app.optimization.projection import (
+    COLD_START_BLEND_CAREER_AVG_WEIGHT,
+    COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT,
+)
+from packages.database.models.cold_start_validation_run import ColdStartValidationRun
+from packages.database.session import SessionLocal
+from packages.domain.jobs import JobStatus, JobType
+from packages.domain.learning import ColdStartValidationRunStatus
+
+# Surfaced verbatim on every persisted row's own blend_ratio_caveat column (not just in code
+# comments) so any reader of a real run's results -- via the API, not just this repo's source --
+# sees the same caveat sweep_blend_ratio_candidates's own docstring documents: no per-gameweek
+# historical ep_next snapshot exists; the proxy used here is a stale, season-end value.
+_BLEND_RATIO_CAVEAT = (
+    "ep_next has no true historical pre-season snapshot -- the proxy used here is the most recent "
+    "strictly-prior season's own END-OF-SEASON ep_next value, not a summer-transfer/team-news-aware "
+    "pre-season estimate. Treat this sweep as directional, not conclusive, evidence."
+)
+
+# Sort key sentinel for min(..., key=...) below: a candidate with an undefined MAE (see each sweep
+# dataclass's own "None means genuinely undefined, not 0" contract) must never be picked as
+# "best" -- +inf guarantees that, and keeps each key lambda a plain float (no None) for mypy.
+_UNDEFINED_MAE_SORT_VALUE = float("inf")
+
+
+def _to_decimal(value: float | None) -> Decimal | None:
+    """Mirrors ``app.jobs.handlers.backtest``'s own identical ``_to_decimal`` convention."""
+    return Decimal(str(round(value, 4))) if value is not None else None
+
+
+@register_handler(JobType.COLD_START_PROJECTION_VALIDATION)
+class ColdStartProjectionValidationJobRunner(JobRunner):
+    """Runs all three cold-start-formula sweeps against one shared, leakage-safe observation set
+    built from every currently-usable historical season. See module docstring for scope.
+    """
+
+    def run(self, ctx: JobContext) -> JobResult:
+        session = SessionLocal()
+        try:
+            parameters = ctx.parameters or {}
+            half_life_candidates = (
+                [float(c) for c in parameters["half_life_candidates"]]
+                if "half_life_candidates" in parameters
+                else list(EARLY_SEASON_HALF_LIFE_SWEEP_CANDIDATES)
+            )
+            difficulty_candidates = (
+                [float(c) for c in parameters["difficulty_coefficient_candidates"]]
+                if "difficulty_coefficient_candidates" in parameters
+                else list(DIFFICULTY_COEFFICIENT_SWEEP_CANDIDATES)
+            )
+            blend_candidates = (
+                [float(c) for c in parameters["blend_ratio_candidates"]]
+                if "blend_ratio_candidates" in parameters
+                else list(BLEND_RATIO_SWEEP_CANDIDATES)
+            )
+
+            observations, usable_seasons = build_player_season_observations(session)
+            if len(usable_seasons) < 2:
+                return JobResult(
+                    status=JobStatus.FAILED,
+                    output=None,
+                    error_code="NOT_ENOUGH_USABLE_SEASONS",
+                    error_message=(
+                        f"cannot validate -- {len(usable_seasons)} season(s) with player_gameweek_stats "
+                        "rows; at least 2 are required (one to predict from, one to predict)."
+                    ),
+                )
+            if not observations:
+                return JobResult(
+                    status=JobStatus.FAILED,
+                    output=None,
+                    error_code="NO_EVALUABLE_OBSERVATIONS",
+                    error_message=(
+                        "no (player, season) pair had both strictly-prior early-season history and "
+                        "real current-season GW1-6 data to evaluate against."
+                    ),
+                )
+
+            started_at = datetime.now(UTC)
+            half_life_results = sweep_half_life_candidates(observations, half_life_candidates)
+            difficulty_results = sweep_difficulty_coefficient_candidates(observations, difficulty_candidates)
+            blend_results = sweep_blend_ratio_candidates(observations, blend_candidates)
+            completed_at = datetime.now(UTC)
+
+            # half_life_results is guaranteed >=1 defined-MAE entry whenever observations is
+            # non-empty (already checked above) -- build_player_season_observations only ever
+            # returns observations whose prior_stats produce a real prediction for ANY half-life.
+            best_half_life = min(
+                half_life_results, key=lambda r: r.mae if r.mae is not None else _UNDEFINED_MAE_SORT_VALUE
+            )
+            default_half_life = self._match_half_life(
+                half_life_results, engineering.DEFAULT_EARLY_SEASON_HALF_LIFE_SEASONS
+            )
+
+            # Unlike half-life, the difficulty and blend-ratio dimensions can legitimately end up
+            # with zero scoreable pairs (no early-gameweek fixture resolved / no ep_next proxy
+            # anywhere) even when observations itself is non-empty -- skip that dimension's "best"
+            # rather than crash comparing None values.
+            scored_difficulty = [r for r in difficulty_results if r.mae is not None]
+            best_difficulty = (
+                min(
+                    scored_difficulty, key=lambda r: r.mae if r.mae is not None else _UNDEFINED_MAE_SORT_VALUE
+                )
+                if scored_difficulty
+                else None
+            )
+            default_difficulty = next(
+                (
+                    r
+                    for r in difficulty_results
+                    if r.coefficient == COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT
+                ),
+                None,
+            )
+
+            scored_blend = [r for r in blend_results if r.mae is not None]
+            best_blend = (
+                min(scored_blend, key=lambda r: r.mae if r.mae is not None else _UNDEFINED_MAE_SORT_VALUE)
+                if scored_blend
+                else None
+            )
+            default_blend = self._match_blend(blend_results, COLD_START_BLEND_CAREER_AVG_WEIGHT)
+
+            row = ColdStartValidationRun(
+                job_id=uuid.UUID(ctx.job_id),
+                run_status=ColdStartValidationRunStatus.SUCCEEDED,
+                early_season_gameweek_cutoff=engineering.DEFAULT_EARLY_SEASON_GAMEWEEK_CUTOFF,
+                component_evaluated="career_avg_early_season_points_prior_seasons_only",
+                usable_seasons_json=usable_seasons,
+                seasons_evaluated_json=usable_seasons[1:],
+                n_observations=len(observations),
+                half_life_sweep_json=[asdict(r) for r in half_life_results],
+                default_half_life_seasons=_to_decimal(engineering.DEFAULT_EARLY_SEASON_HALF_LIFE_SEASONS),
+                default_half_life_mae=_to_decimal(default_half_life.mae) if default_half_life else None,
+                best_half_life_seasons=_to_decimal(best_half_life.half_life_seasons),
+                best_half_life_label=best_half_life.label,
+                best_half_life_mae=_to_decimal(best_half_life.mae),
+                difficulty_coefficient_sweep_json=[asdict(r) for r in difficulty_results],
+                default_difficulty_coefficient=_to_decimal(COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT),
+                default_difficulty_coefficient_mae=_to_decimal(default_difficulty.mae)
+                if default_difficulty
+                else None,
+                best_difficulty_coefficient=_to_decimal(best_difficulty.coefficient)
+                if best_difficulty
+                else None,
+                best_difficulty_coefficient_mae=_to_decimal(best_difficulty.mae) if best_difficulty else None,
+                blend_ratio_sweep_json=[asdict(r) for r in blend_results],
+                default_blend_career_avg_weight=_to_decimal(COLD_START_BLEND_CAREER_AVG_WEIGHT),
+                default_blend_mae=_to_decimal(default_blend.mae) if default_blend else None,
+                best_blend_career_avg_weight=_to_decimal(best_blend.career_avg_weight)
+                if best_blend
+                else None,
+                best_blend_mae=_to_decimal(best_blend.mae) if best_blend else None,
+                blend_ratio_caveat=_BLEND_RATIO_CAVEAT,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+
+            return JobResult(
+                status=JobStatus.SUCCEEDED,
+                output={
+                    "cold_start_validation_run_id": str(row.id),
+                    "usable_seasons": usable_seasons,
+                    "n_observations": len(observations),
+                    "half_life_sweep": [asdict(r) for r in half_life_results],
+                    "best_half_life_seasons": best_half_life.half_life_seasons,
+                    "best_half_life_mae": best_half_life.mae,
+                    "difficulty_coefficient_sweep": [asdict(r) for r in difficulty_results],
+                    "best_difficulty_coefficient": best_difficulty.coefficient if best_difficulty else None,
+                    "best_difficulty_coefficient_mae": best_difficulty.mae if best_difficulty else None,
+                    "blend_ratio_sweep": [asdict(r) for r in blend_results],
+                    "best_blend_career_avg_weight": best_blend.career_avg_weight if best_blend else None,
+                    "best_blend_mae": best_blend.mae if best_blend else None,
+                    "blend_ratio_caveat": _BLEND_RATIO_CAVEAT,
+                },
+                error_code=None,
+                error_message=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - job row must always reach a terminal status
+            session.rollback()
+            return JobResult(
+                status=JobStatus.FAILED,
+                output=None,
+                error_code="COLD_START_PROJECTION_VALIDATION_FAILED",
+                error_message=str(exc),
+            )
+        finally:
+            session.close()
+
+    @staticmethod
+    def _match_half_life(results: list[HalfLifeSweepResult], value: float) -> HalfLifeSweepResult | None:
+        return next((r for r in results if r.half_life_seasons == value), None)
+
+    @staticmethod
+    def _match_blend(results: list[BlendRatioSweepResult], value: float) -> BlendRatioSweepResult | None:
+        return next((r for r in results if r.career_avg_weight == value), None)

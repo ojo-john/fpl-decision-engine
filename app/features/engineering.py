@@ -92,6 +92,21 @@ DEFAULT_EARLY_SEASON_GAMEWEEK_CUTOFF = 6
 # seasons dominant while still letting older ones meaningfully contribute, rather than
 # ignoring them outright (a flat, unweighted average was the prior behavior, which gave a
 # season 6 years ago exactly as much say as last season -- the gap this constant closes).
+#
+# Empirically validated (2026-08-17) by app.jobs.handlers.cold_start_projection_validation
+# against every real historical (player, season) pair evaluable across the 6 usable seasons
+# (n=2348): real MAE across {0.5, 0.75, 1.0, 1.5, 2.0, 3.0} ranged only 1.2421-1.2594, with
+# 2.0's own MAE (1.2434) within 0.001 of the sweep's minimum (1.5's 1.2421) -- a genuinely flat
+# curve, not a case for changing this constant, so it was LEFT UNCHANGED despite the sweep
+# having been run (a real "already near-optimal" outcome, not an unchecked default). This does
+# NOT contradict the real Joao Pedro finding that motivated running the sweep in the first
+# place (half-life 2.0 visibly under-weighting one specific fast-improving player's own
+# trajectory, 0.17/3.00/3.17/6.17 early-season PPG across 4 seasons blending to 3.89 instead of
+# something closer to the two most recent seasons) -- that is a real, per-player effect this
+# single global half-life cannot fully capture for every player at once; it just doesn't move
+# the AGGREGATE metric much, since it helps some players and hurts others in roughly equal
+# measure. See cold_start_validation_runs / ARCHITECTURE.md's cold-start-validation section for
+# the full real numbers.
 DEFAULT_EARLY_SEASON_HALF_LIFE_SEASONS = 2.0
 
 

@@ -93,6 +93,7 @@ the job types that have an HTTP trigger.
 | `RECOMMENDATION_GENERATION` | `recommendation_generation.py` | ✅ | `POST /recommendations/generate` | |
 | `GAMEWEEK_REVIEW` | `gameweek_review.py` | ✅ | `POST /jobs/review-gameweek` | |
 | `BACKTEST` | `backtest.py` | ✅ | `POST /jobs/backtest` | |
+| `COLD_START_PROJECTION_VALIDATION` | `cold_start_projection_validation.py` | ✅ | `POST /jobs/cold-start-validation` | CLI (`scripts/run_job.py --job-type cold_start_projection_validation`) |
 | `FULL_PIPELINE` | `full_pipeline.py` | ✅ | — | `make full-pipeline` |
 
 All optimization/simulation/recommendation jobs are **synchronous request/response** — `execute_job` blocks until done and the HTTP endpoint returns the full result in one call. No job-id polling exists anywhere in the API.
@@ -216,7 +217,104 @@ i.e. a neutral fixture (3) leaves it unchanged, the easiest (1) is +15%,
 the hardest (5) is -15%. This exists because neither `ep_next` nor
 either career average varies by gameweek, so without it every gameweek
 in a horizon summed to identical values regardless of the actual
-fixture list.
+fixture list. Both `0.5` (the blend ratio) and `0.075` (the difficulty
+coefficient) are now named module-level constants in `projection.py`
+(`COLD_START_BLEND_CAREER_AVG_WEIGHT`/`COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT`),
+not inline magic numbers — see "Cold-start-projection historical
+validation" below for why.
+
+### Cold-start-projection historical validation
+
+`_cold_start_projection`'s hand-written blend formula was never checked
+against real historical outcomes before Milestone 8: `BACKTEST` and
+`MODEL_TRAINING`'s own walk-forward validation both only ever evaluate a
+trained `model_versions` row (`grep -rn "cold_start"
+app/modeling/walk_forward.py app/jobs/handlers/backtest.py
+app/jobs/handlers/model_training.py` returns zero matches), and this
+formula isn't one. Found live, mid-session, while reviewing a real squad
+decision: `DEFAULT_EARLY_SEASON_HALF_LIFE_SEASONS`'s cross-season
+recency-weighting visibly under-weighted a real player (Joao Pedro)'s
+clear, monotonic season-over-season improvement (early-season PPG
+0.17 → 3.00 → 3.17 → 6.17 across 4 seasons blending to 3.89, not
+something closer to the two most recent seasons).
+
+`COLD_START_PROJECTION_VALIDATION` (`app/jobs/handlers/cold_start_projection_validation.py`,
+no HTTP trigger conflict with `BACKTEST` since it takes no
+`model_version_id` — no trained model is involved, only a hand-written
+formula) closes this gap: `app/modeling/cold_start_validation.py`'s
+`build_player_season_observations` builds one shared, leakage-safe
+observation set — for every usable historical season from the SECOND
+one onward, for every player with real early-season (`fpl_event_id <=
+6`) data that season AND at least one strictly-prior season on record
+(cross-season resolved via `fpl_code`, prior data cut off via the real
+production `filter_to_strictly_prior` against that season's own
+earliest gameweek deadline — never a reimplementation of that leakage
+guard) — then reuses it for three real, independent sweeps, each calling
+the real, unmodified `career_avg_early_season_points_prior_seasons`
+rather than reimplementing it:
+
+- **Half-life** (`sweep_half_life_candidates`): isolated to the
+  `career_avg_early_season_points_prior_seasons` component alone (`ep_next`
+  is NOT involved at all — half-life only ever affects this one
+  component of the blend).
+- **Fixture-difficulty coefficient** (`sweep_difficulty_coefficient_candidates`):
+  real per-gameweek granularity, using real historical fixture
+  difficulty ratings (`fixtures.csv`'s own `team_h_difficulty`/
+  `team_a_difficulty`, already normalized into `fixtures.home_difficulty`/
+  `away_difficulty`) and real actual per-gameweek points — also no
+  `ep_next` dependency.
+- **ep_next/career_avg blend ratio** (`sweep_blend_ratio_candidates`):
+  the one dimension that genuinely needs an `ep_next` signal, and the
+  one genuine gap this validation could not close cleanly — verified,
+  not assumed: `merged_gw.csv` (the per-gameweek historical source) has
+  no `ep_next` column at all; `ep_next` exists only on the season-scoped
+  `players` row (from `players_raw.csv`), a single snapshot near that
+  season's own END, not a pre-season, summer-transfer-aware estimate
+  like what the LIVE formula actually blends with. Used anyway, as the
+  most recent strictly-prior season's own end-of-season `ep_next`, for
+  real executable numbers — but every persisted run's own
+  `blend_ratio_caveat` column carries this same warning, and this
+  dimension's results were treated as directional, not conclusive,
+  evidence for exactly that reason.
+
+Persists one `cold_start_validation_runs` row per run (migration 0034;
+`ColdStartValidationRunStatus`, same "only SUCCEEDED is ever actually
+persisted" shape as `BacktestRunStatus`) with all three sweeps' full
+results plus the "best" and "current-default's-own" MAE for each
+dimension. HTTP: `POST /jobs/cold-start-validation` (all parameters
+optional — unlike `BACKTEST`, this job's own module-level candidate sets
+ARE a sensible default), `GET /learning/cold-start-validations`,
+`GET /learning/cold-start-validations/{id}`.
+
+**Real results** (run 2026-08-17 against the real dev database's full
+historical backfill, 6 usable seasons 2020-21..2025-26, n=2348 real
+(player, season) pairs for the half-life/blend-ratio sweeps, n=13954 real
+per-gameweek pairs for the difficulty sweep): all three production
+constants were LEFT UNCHANGED — each was already at or within noise of
+its own sweep's empirical minimum:
+
+| Dimension | Candidates swept | Real MAE range | Current default | Default's MAE | Best candidate's MAE |
+|---|---|---|---|---|---|
+| `DEFAULT_EARLY_SEASON_HALF_LIFE_SEASONS` | 0.5, 0.75, 1.0, 1.5, 2.0, 3.0 | 1.2421–1.2594 | 2.0 | 1.2434 | 1.2421 (half-life 1.5) |
+| `COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT` | 0.0, 0.025, 0.05, 0.075, 0.1, 0.15 | 1.65454–1.65603 | 0.075 | 1.65454 | 1.65454 (0.05, effectively tied) |
+| `COLD_START_BLEND_CAREER_AVG_WEIGHT` | 0.3, 0.4, 0.5, 0.6, 0.7 | 1.1043–1.1427 | 0.5 | 1.1043 | 1.1043 (0.5 itself) |
+
+The half-life curve is genuinely flat (all 6 candidates within ~0.017
+MAE of each other) — this does NOT contradict the real Joao Pedro
+finding that motivated the sweep: a single global half-life helping one
+fast-improving player and hurting another in roughly equal measure
+washes out in an aggregate metric even though it's a real, visible
+miscalibration for any one specific player. See
+`app/features/engineering.py`'s `DEFAULT_EARLY_SEASON_HALF_LIFE_SEASONS`
+comment and `app/optimization/projection.py`'s two constants' own
+comments for this same evidence inline at the code.
+
+`app/optimization/projection.py:PROJECTION_FORMULA_VERSION` was NOT
+bumped by this work — no constant's VALUE changed, only their names (bare
+magic numbers → `COLD_START_BLEND_CAREER_AVG_WEIGHT`/
+`COLD_START_DIFFICULTY_ADJUSTMENT_COEFFICIENT`) and the fact that they
+are now empirically checked rather than unchecked; `_cold_start_projection`'s
+actual output is unchanged for every input.
 
 `career_avg_early_season_points_prior_seasons` is also a column on the
 PERSISTED `player_features` table (migration 0030) for
@@ -1090,6 +1188,13 @@ documents it directly.
   consumer/table for it to write to (`project_player`/`project_player_with_champion` are
   already called directly by every job that needs a projection, computed live, never cached).
 - No official-API season-aggregate history (`element-summary/{id}/history_past`) ingestion — moot in practice since `HISTORICAL_DATA_INGESTION` already provides strictly richer (gameweek-level, not just season-total) historical data from a different source.
+- **Resolved migration collision (2026-08-17):** revision id `0033` was independently claimed by
+  two concurrent, unrelated pieces of work built in separate worktrees — `note_effectiveness_evaluations`
+  and `cold_start_validation_runs` — both declaring `down_revision = "0032"`. Reconciled at merge
+  time: `note_effectiveness_evaluations` (merged into `main` first) kept revision `0033`;
+  `cold_start_validation_runs` was renumbered to `0034` with `down_revision = "0033"`, restoring a
+  single linear chain. `alembic upgrade head` re-run against both the real dev database and
+  `fpl_decision_engine_test` after the renumber.
 
 `FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and
 the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`
