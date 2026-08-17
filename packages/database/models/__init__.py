@@ -30,6 +30,7 @@ from packages.database.models.model_challenger_evaluation import ModelChallenger
 from packages.database.models.model_metric import ModelMetric
 from packages.database.models.model_promotion import ModelPromotion
 from packages.database.models.model_version import ModelVersion
+from packages.database.models.note_effectiveness_evaluation import NoteEffectivenessEvaluation
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
@@ -79,6 +80,7 @@ __all__ = [
     "ModelMetric",
     "ModelPromotion",
     "ModelVersion",
+    "NoteEffectivenessEvaluation",
     "OptimizationRun",
     "OptimizationRunPlayer",
     "Player",

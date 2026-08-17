@@ -449,6 +449,88 @@ boundary cases) and `tests/integration/test_api_active_notes.py` (empty/
 missing-season/missing-gameweek/expired/not-yet-started boundary cases,
 then both note categories together).
 
+**Note-severity rubric + outcome tracking** (Milestone 7 extension, added
+post-review): every real availability-risk/role-boost note created this
+season was a one-off, subjective judgment call with no consistent framework
+and no way to check afterward whether it was well-calibrated — unlike the
+cold-start blend's own half-life/fixture-difficulty/blend-ratio constants
+(backtestable against 6 real historical seasons), a specific injury or role
+change has no repeated sample to backtest against. Two additive pieces close
+this gap without pretending a single note can be validated in isolation:
+
+- **The rubric** lives as a docstring directly on
+  `apps.api.schemas.players.AvailabilityRiskNoteCreate`/`RoleNoteCreate` (not
+  a separate markdown doc — matches this file's own "docstrings carry real
+  documentation" precedent used throughout this codebase, and keeps the
+  guidance next to the exact schema every note-creation path — manual, Scout
+  Watch's automated proposals, a future session — actually goes through).
+  Grounds four severity bands per note type in the real notes already
+  created (Kroupi.Jr/Minteh/Madjo at 0.05-0.10 for confirmed multi-week
+  absences; Senesi/Rice/Saka/Guehi at 0.60-0.65 for significant World-Cup
+  fatigue risk; Rogers/Lacroix/Woltemade at 0.75-0.85 for milder fatigue or
+  genuine rotation competition; Szoboszlai at 1.08 for a confirmed narrower
+  sub-role; Groß/Igor Thiago at 1.15 for confirmed primary set-piece duty;
+  Joao Pedro at 1.35 for a verified quantitative blend-underweighting
+  pattern; Osula at 1.6 for a confirmed major backup-to-starter role
+  upgrade), cited as worked examples so future severity choices have real
+  precedent to point at instead of picking a number in isolation.
+- **The feedback loop** extends `GAMEWEEK_REVIEW` (Layer 2/3's own existing
+  pattern, not a separate system) via `app.learning.note_effectiveness`:
+  for every reviewed gameweek, `evaluate_note_effectiveness_for_outcome`
+  finds every `optimization_run_players` row in the recommended squad whose
+  `projection_source` carries `AVAILABILITY_RISK_NOTED_SUFFIX`/
+  `ROLE_BOOSTED_SUFFIX` (an immutable fact about what applied at generation
+  time), re-resolves that note's own severity via
+  `get_active_availability_risk_note`/`get_active_role_boost_note` (safe
+  since notes are never edited in place, only created/deleted), and
+  reconstructs the without-note projection by DIVIDING OUT that note's own
+  multiplier from the already-persisted with-note projection — exact and
+  forensically correct (uses the same number the recommendation was actually
+  generated from), not a fresh, independently-recomputed projection that
+  could drift from what was actually decided on. Compares both projections'
+  absolute error against the real `player_gameweek_stats` outcome, recording
+  `moved_closer_to_actual` (`True`/`False`/`None` on an exact tie). A player
+  with BOTH an active risk note and an active role note stacked at once
+  produces TWO rows (one per note type, each isolating just its own
+  multiplier's contribution) via a unique constraint on
+  `(recommendation_outcome_id, player_id, note_type)`.
+  - **`note_effectiveness_evaluations`** (migration `0033`): insert-only
+    child of one `recommendation_outcomes` row (`ON DELETE CASCADE`, mirrors
+    `counterfactual_results`/`failure_attributions`' own run-child
+    convention — delete-then-reinsert on a rerun, never updated in place).
+    `availability_risk_note_id`/`role_boost_note_id` are `ON DELETE SET
+    NULL` (not `CASCADE`) — both note tables ARE deletable via their own
+    `DELETE` endpoints, and this row's own severity/points/error columns
+    already captured everything needed to stay meaningful as a historical
+    record after the source note itself is later removed.
+  - Wired into `GameweekReviewJobRunner` as `_track_note_effectiveness`, the
+    SAME failure-isolation shape as `_maybe_recalibrate_price_signal`
+    (never raises — a tracking failure folds into
+    `summary_json.note_effectiveness_error` and is logged, but can never
+    flip `learning_reports.run_status` to `FAILED`, since this is additive
+    information layered on top of GAMEWEEK_REVIEW's own already-succeeded
+    primary work). Surfaced in `report_markdown`'s new "Note effectiveness"
+    section (`app.learning.report._note_effectiveness_table`), in
+    `summary_json` (`note_effectiveness_count`/
+    `note_effectiveness_negative_count`/`note_effectiveness_error`), and as
+    a `notable_findings_json` entry (`compose_notable_findings`'s new
+    `note_evaluations` parameter) ONLY when `moved_closer_to_actual is
+    False` — a note that worked as intended, or landed on an exact tie,
+    isn't material enough to surface, mirroring this module's own existing
+    "notify only on material findings" principle.
+  - No automated recalibration is built on top of this (deliberately
+    scoped out — `price_signal_calibrations`' own real recalibration
+    mechanism is the closest precedent for what a MATURE version of this
+    could eventually become, once enough real (severity band, outcome)
+    pairs accumulate across real gameweeks to say something statistically
+    meaningful — nowhere close to that pre-season). This can only be
+    verified against synthetic/seeded data right now
+    (`tests/integration/test_note_effectiveness.py`,
+    `tests/integration/test_gameweek_review_job.py`'s own "Note-
+    effectiveness outcome tracking wiring" section) since the season hasn't
+    started and no real gameweek has been reviewed with an active note in
+    play yet.
+
 ## Two separate ingestion pipelines — don't conflate them
 
 This is the single most likely thing to get missed (it was, this session,
@@ -520,7 +602,10 @@ new code needed, just running the existing pipeline.
   alternatives that weren't taken, `attribution.py` classifies *why* a miss
   happened (`FailureReasonCode`/`FailureCategory`), `signals.py` computes
   rolling-window signals (`LearningSignalType`, e.g.
-  `ROLLING_PROJECTION_MAE`). `GAMEWEEK_REVIEW` ties this all together and,
+  `ROLLING_PROJECTION_MAE`), `note_effectiveness.py` tracks whether an
+  active availability-risk/role-boost note moved a projection closer to or
+  further from the real outcome (see "Note-severity rubric + outcome
+  tracking" above). `GAMEWEEK_REVIEW` ties this all together and,
   on a **sustained** `ROLLING_PROJECTION_MAE` breach, triggers `MODEL_TRAINING`
   in-process (not via a separate scheduled workflow) plus a promotion-gate
   check — see `gameweek_review.py`'s own docstring for the exact
@@ -553,7 +638,7 @@ new code needed, just running the existing pipeline.
 
 ## Data model — key relationships
 
-45 ORM models under `packages/database/models/`. The load-bearing shape:
+48 ORM models under `packages/database/models/`. The load-bearing shape:
 
 - **`seasons`** is the root scope for almost everything (`players`, `teams`,
   `positions`, `gameweeks`, `fixtures`, `rules_config`, `player_gameweek_stats`,
@@ -685,6 +770,12 @@ new code needed, just running the existing pipeline.
   a separate table/mechanism from `player_availability_risk_notes` (a
   discount) rather than a reuse of it — see "Role notes" under "The
   optimization gate" above for the full "why two mechanisms" rationale.
+- **`note_effectiveness_evaluations`** (migration `0033`) — insert-only
+  child of `recommendation_outcomes` (`ON DELETE CASCADE`), one row per
+  (outcome, player, note type) recording whether an active availability-
+  risk/role-boost note moved a recommended-squad projection closer to or
+  further from the real outcome; see "Note-severity rubric + outcome
+  tracking" under "The optimization gate" above for the full rationale.
 
 ## API (`apps/api`)
 
@@ -764,8 +855,8 @@ pytest-only monkeypatched client, neither CI-appropriate as-is (see
 
 ## Testing conventions
 
-- `tests/unit/` (44 files): no DB, no network.
-- `tests/integration/` (46 files): real Postgres, monkeypatched FPL client(s)
+- `tests/unit/` (51 files): no DB, no network.
+- `tests/integration/` (55 files): real Postgres, monkeypatched FPL client(s)
   (`tests/integration/conftest.py` has ~6 different `patched_fpl_client_*`
   fixtures for different scenarios — optimization pool, league/H2H, manager
   endpoints). **Never truncated between runs** — this is a deliberate,

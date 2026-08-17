@@ -54,6 +54,7 @@ from sqlalchemy import delete, func, select, update
 
 from app.jobs.service import execute_job
 from app.learning.attribution import FailureAttributionData, persist_failure_attributions
+from app.optimization.projection import AVAILABILITY_RISK_NOTED_SUFFIX
 from app.players.price_signal_calibration import MIN_CALIBRATION_SAMPLE_SIZE
 from packages.database.models.chip_optimization_run import ChipOptimizationRun  # noqa: F401 (registers model)
 from packages.database.models.failure_attribution import FailureAttribution
@@ -64,9 +65,11 @@ from packages.database.models.learning_signal import LearningSignal
 from packages.database.models.model_metric import ModelMetric
 from packages.database.models.model_promotion import ModelPromotion
 from packages.database.models.model_version import ModelVersion
+from packages.database.models.note_effectiveness_evaluation import NoteEffectivenessEvaluation
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
+from packages.database.models.player_availability_risk_note import PlayerAvailabilityRiskNote
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.player_price_history import PlayerPriceHistory
 from packages.database.models.player_price_signal_observation import PlayerPriceSignalObservation
@@ -525,6 +528,13 @@ def test_gameweek_review_happy_path_produces_succeeded_report_with_real_findings
     assert report.summary_json["failure_attribution_count"] == 1
     assert report.summary_json["notable_finding_count"] == 4
     assert report.retraining_triggered is True
+
+    # --- note-effectiveness tracking: no notes were seeded anywhere in this scenario, so this
+    # must be a clean no-op (0 rows, no error, no noise in the report) -- see the dedicated
+    # "Note-effectiveness outcome tracking" section below for the real-note happy path. ---
+    assert report.summary_json["note_effectiveness_count"] == 0
+    assert report.summary_json["note_effectiveness_error"] is None
+    assert "no active availability-risk/role-boost notes" in report.report_markdown.lower()
 
 
 # --- Refusal paths --------------------------------------------------------------------------------
@@ -1015,3 +1025,130 @@ def test_gameweek_review_price_signal_recalibration_failure_is_recorded_but_neve
     report = db_session.get(LearningReport, learning_report_id)
     assert report.run_status == GameweekReviewRunStatus.SUCCEEDED
     assert job.output_json["price_signal_recalibration_triggered"] is False
+
+
+# --- Note-effectiveness outcome tracking wiring ----------------------------------------------------
+#
+# Focused, deterministic unit-of-work coverage for evaluate_note_effectiveness_for_outcome itself
+# (every boundary condition: no notes, expired notes, inclusive gameweek-window edges, stacked
+# notes, reruns) lives in tests/integration/test_note_effectiveness.py -- these tests exist only to
+# prove the SEQUENCING/COMPOSITION into a real GAMEWEEK_REVIEW run works end to end, mirroring this
+# module's own split between "does the building block work" (covered elsewhere) and "is it wired up
+# correctly here" (this file's actual job, per its own module docstring).
+
+
+def test_gameweek_review_tracks_note_effectiveness_for_a_player_with_an_active_risk_note(
+    db_session, patched_fpl_client_optimization
+):
+    """A player (not the captain, so this is independent of the MAE-breach scenario) with an
+    active availability-risk note applied to their recommended-squad projection: seeded to
+    actually deliver their FULL un-discounted total this gameweek, so the note demonstrably moved
+    the projection FURTHER from the real outcome -- the one case that must show up as a notable
+    finding, not just a quiet row in the DB.
+    """
+    season_id = _seed_players(db_session)
+    season = db_session.get(Season, season_id)
+    rules_config_id = _seed_rules_config_id(db_session, season_id)
+    model_version_id = _create_champion_model_version(db_session, season.label, _BASELINE_MAE)
+    audit = _seed_reviewed_gameweek(db_session, season_id, rules_config_id, model_version_id)
+    gameweek = _gameweek(db_session, season_id, _REVIEWED_FPL_EVENT_ID)
+
+    noted_player_id = _player_id(db_session, season_id, _CAPTAIN_ELEMENT_ID + 1)
+    db_session.add(
+        OptimizationRunPlayer(
+            optimization_run_id=audit.optimization_run_id,
+            player_id=noted_player_id,
+            is_starting=True,
+            is_captain=False,
+            is_vice_captain=False,
+            projected_points=Decimal("6.50"),  # 10.0 base * 0.65 severity
+            projection_source=f"test{AVAILABILITY_RISK_NOTED_SUFFIX}",
+            now_cost_snapshot=45,
+        )
+    )
+    db_session.add(
+        PlayerAvailabilityRiskNote(
+            player_id=noted_player_id,
+            season_id=season_id,
+            reason="test risk note",
+            severity=Decimal("0.65"),
+            valid_from_fpl_event_id=1,
+            valid_until_fpl_event_id=None,
+            created_by="test",
+        )
+    )
+    db_session.commit()
+    _seed_actual_points(db_session, noted_player_id, season_id, gameweek.id, 10)
+
+    job = execute_job(
+        db_session,
+        job_type=JobType.GAMEWEEK_REVIEW,
+        parameters={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID, "season_id": str(season_id)},
+        trigger_type=TriggerType.LOCAL,
+    )
+
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    assert job.output_json["note_effectiveness_count"] == 1
+
+    report_id = uuid.UUID(job.output_json["learning_report_id"])
+    report = db_session.get(LearningReport, report_id)
+    assert report.summary_json["note_effectiveness_count"] == 1
+    assert report.summary_json["note_effectiveness_negative_count"] == 1
+    assert "Note effectiveness" in report.report_markdown
+    assert "availability_risk" in report.report_markdown
+
+    findings_by_type = [f["type"] for f in report.notable_findings_json]
+    assert "note_effectiveness_negative" in findings_by_type
+    negative_finding = next(
+        f for f in report.notable_findings_json if f["type"] == "note_effectiveness_negative"
+    )
+    assert negative_finding["note_type"] == "availability_risk"
+
+    persisted = (
+        db_session.execute(
+            select(NoteEffectivenessEvaluation).where(
+                NoteEffectivenessEvaluation.recommendation_outcome_id == report.recommendation_outcome_id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(persisted) == 1
+    assert persisted[0].player_id == noted_player_id
+    assert persisted[0].moved_closer_to_actual is False
+    assert persisted[0].projected_points_without_note == Decimal("10.00")
+
+
+def test_gameweek_review_note_effectiveness_failure_is_recorded_but_never_fails_the_review(
+    db_session, patched_fpl_client_optimization, monkeypatch
+):
+    """A note-effectiveness-tracking failure (forced via monkeypatch, mirroring
+    test_gameweek_review_price_signal_recalibration_failure_is_recorded_but_never_fails_the_review's
+    own approach) must never fail GAMEWEEK_REVIEW's own already-succeeded primary work -- this is
+    additive, informational tracking layered on top, exactly like price-signal recalibration.
+    """
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated note-effectiveness failure")
+
+    monkeypatch.setattr("app.jobs.handlers.gameweek_review.evaluate_note_effectiveness_for_outcome", _boom)
+
+    season_id = _seed_players(db_session)
+    season = db_session.get(Season, season_id)
+    rules_config_id = _seed_rules_config_id(db_session, season_id)
+    model_version_id = _create_champion_model_version(db_session, season.label, _BASELINE_MAE)
+    _seed_reviewed_gameweek(db_session, season_id, rules_config_id, model_version_id)
+
+    job = execute_job(
+        db_session,
+        job_type=JobType.GAMEWEEK_REVIEW,
+        parameters={"target_fpl_event_id": _REVIEWED_FPL_EVENT_ID, "season_id": str(season_id)},
+        trigger_type=TriggerType.LOCAL,
+    )
+
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    learning_report_id = uuid.UUID(job.output_json["learning_report_id"])
+    report = db_session.get(LearningReport, learning_report_id)
+    assert report.run_status == GameweekReviewRunStatus.SUCCEEDED
+    assert report.summary_json["note_effectiveness_count"] == 0
+    assert report.summary_json["note_effectiveness_error"] == "simulated note-effectiveness failure"

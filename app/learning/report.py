@@ -29,6 +29,20 @@ keeps working unchanged) that appends one more mechanically-derived
 happened this run, and ``render_gameweek_review_report_markdown`` gets a new
 "Retraining trigger" section. See ``app.jobs.handlers.gameweek_review``'s own
 module docstring for exactly when this fires.
+
+Milestone 7 extension (note-severity outcome tracking) adds
+``NoteEffectivenessSummary`` below the same way: ``compose_notable_findings``
+gets an optional fourth ``note_evaluations`` parameter (default ``None``,
+same additive/backward-compatible shape) that appends one
+``"note_effectiveness_negative"`` finding per evaluation whose
+``moved_closer_to_actual`` came back ``False`` -- i.e. only when a note
+actually moved the projection AWAY from what really happened, mirroring this
+module's own "notify only on material findings" principle
+(``moved_closer_to_actual=True``/``None`` are not material, they're the note
+working as intended or a genuine tie). ``render_gameweek_review_report_markdown``
+gets a new "Note effectiveness" section. See
+``app.learning.note_effectiveness``'s own module docstring for the full
+derivation this summarizes.
 """
 
 from dataclasses import dataclass
@@ -71,6 +85,23 @@ class CounterfactualResultSummary:
     alternative_points: float
     delta: float
     is_value_adding: bool
+
+
+@dataclass(frozen=True)
+class NoteEffectivenessSummary:
+    """Plain-data mirror of one ``NoteEffectivenessEvaluation`` row -- see that model's own
+    docstring and ``app.learning.note_effectiveness``'s own module docstring for the derivation.
+    """
+
+    player_id: str
+    note_type: str
+    note_severity: float
+    projected_points_with_note: float
+    projected_points_without_note: float
+    actual_points: float
+    error_with_note: float
+    error_without_note: float
+    moved_closer_to_actual: bool | None
 
 
 @dataclass(frozen=True)
@@ -125,13 +156,16 @@ def compose_notable_findings(
     failure_attributions: list[FailureAttributionSummary],
     learning_signals: list[LearningSignalSummary],
     retraining: RetrainingTriggerSummary | None = None,
+    note_evaluations: list[NoteEffectivenessSummary] | None = None,
 ) -> list[dict[str, Any]]:
     """A bounded, mechanically-derived list of what's worth surfacing from this run.
 
     Never free-text-generated -- every entry is a direct, structured read of
     already-computed data. See module docstring for the exact inclusion
     rules -- a ``retraining_triggered`` entry is appended only when
-    ``retraining`` is given AND ``retraining.triggered`` is ``True``.
+    ``retraining`` is given AND ``retraining.triggered`` is ``True``; a
+    ``note_effectiveness_negative`` entry is appended only for each
+    ``note_evaluations`` entry whose ``moved_closer_to_actual`` is ``False``.
     """
     findings: list[dict[str, Any]] = []
     for attribution in failure_attributions:
@@ -167,6 +201,19 @@ def compose_notable_findings(
                 "shadow_challenger_model_version_id": retraining.shadow_challenger_model_version_id,
                 "promotion_verdict": retraining.promotion_verdict,
                 "error": retraining.error,
+            }
+        )
+    for evaluation in note_evaluations or []:
+        if evaluation.moved_closer_to_actual is not False:
+            continue
+        findings.append(
+            {
+                "type": "note_effectiveness_negative",
+                "player_id": evaluation.player_id,
+                "note_type": evaluation.note_type,
+                "note_severity": evaluation.note_severity,
+                "error_with_note": evaluation.error_with_note,
+                "error_without_note": evaluation.error_without_note,
             }
         )
     return findings
@@ -282,12 +329,39 @@ def _notable_findings_section(findings: list[dict[str, Any]]) -> str:
                 f"- **Signal breached**: {finding['signal_type']} = {finding['value']} "
                 f"(sample_count={finding['sample_count']})"
             )
-        else:  # "retraining_triggered"
+        elif finding["type"] == "retraining_triggered":
             lines.append(
                 f"- **Retraining triggered**: model_training_job_id={finding['model_training_job_id']}, "
                 f"status={finding['model_training_status']}, "
                 f"promotion_verdict={finding['promotion_verdict']}, error={finding['error']}"
             )
+        else:  # "note_effectiveness_negative"
+            lines.append(
+                f"- **Note effectiveness (negative)**: player_id={finding['player_id']}, "
+                f"note_type={finding['note_type']}, severity={finding['note_severity']} -- the "
+                f"un-noted projection would have been more accurate "
+                f"(error_with_note={finding['error_with_note']}, "
+                f"error_without_note={finding['error_without_note']})"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _note_effectiveness_table(evaluations: list[NoteEffectivenessSummary]) -> str:
+    if not evaluations:
+        return (
+            "_No active availability-risk/role-boost notes were applied to this gameweek's "
+            "recommended squad._\n"
+        )
+    lines = [
+        "| Player | Note type | Severity | With note | Without note | Actual | Moved closer? |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for evaluation in evaluations:
+        lines.append(
+            f"| {evaluation.player_id} | {evaluation.note_type} | {evaluation.note_severity} | "
+            f"{evaluation.projected_points_with_note} | {evaluation.projected_points_without_note} | "
+            f"{evaluation.actual_points} | {evaluation.moved_closer_to_actual} |"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -320,6 +394,7 @@ def render_gameweek_review_report_markdown(
     learning_signals: list[LearningSignalSummary],
     notable_findings: list[dict[str, Any]],
     retraining: RetrainingTriggerSummary | None = None,
+    note_evaluations: list[NoteEffectivenessSummary] | None = None,
 ) -> str:
     """Render the full Markdown report for one GAMEWEEK_REVIEW run."""
     sections = [
@@ -343,6 +418,9 @@ def render_gameweek_review_report_markdown(
         "## Failure attributions",
         "",
         _failure_attributions_table(failure_attributions),
+        "## Note effectiveness",
+        "",
+        _note_effectiveness_table(note_evaluations or []),
         "## Learning signals",
         "",
         _learning_signals_table(learning_signals),

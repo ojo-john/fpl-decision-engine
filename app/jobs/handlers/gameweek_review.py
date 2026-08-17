@@ -94,6 +94,17 @@ recorded). ``ROLLING_CHIP_RECOMMENDATION_VALUE``'s own ``threshold_breached``
 is NEVER consulted here -- that signal is permanently informational-only per
 its own module docstring.
 
+Milestone 7 extension (Recursive Learning Loop: note-severity outcome tracking) adds one more
+small, ADDITIVE step, same failure-isolation shape as the price-signal recalibration step above:
+``self._track_note_effectiveness`` calls ``app.learning.note_effectiveness
+.evaluate_note_effectiveness_for_outcome`` to find every ``player_availability_risk_notes``/
+``player_role_notes`` row that was actually applied to this gameweek's recommended-squad
+projection, and records whether applying it moved the projection closer to or further from the
+real outcome -- see that module's own docstring for the full derivation and why this can only
+ever be informational tracking (no automated recalibration), not a hard gate. NEVER raises;
+folds any failure into a plain error string surfaced only in ``summary_json`` (mirrors
+``PriceSignalRecalibrationSummary.error``), never this run's own ``learning_reports.run_status``.
+
 Failure-isolation boundary: this entire retraining-trigger step is wrapped so
 that ANY failure inside it (the nested ``MODEL_TRAINING`` job itself failing,
 or the promotion-gate check raising) is caught and folded into
@@ -122,11 +133,13 @@ from app.jobs.registry import register_handler
 from app.jobs.runner import JobContext, JobResult, JobRunner
 from app.jobs.service import execute_job
 from app.learning.attribution import attribute_failures_for_outcome
+from app.learning.note_effectiveness import evaluate_note_effectiveness_for_outcome
 from app.learning.outcome_ingestion import ingest_outcome_for_audit
 from app.learning.report import (
     CounterfactualResultSummary,
     FailureAttributionSummary,
     LearningSignalSummary,
+    NoteEffectivenessSummary,
     OutcomeSummary,
     RecommendationSummary,
     RetrainingTriggerSummary,
@@ -155,6 +168,7 @@ from packages.database.models.gameweek import Gameweek
 from packages.database.models.h2h_simulation_run import H2HSimulationRun
 from packages.database.models.learning_report import LearningReport
 from packages.database.models.model_version import ModelVersion
+from packages.database.models.note_effectiveness_evaluation import NoteEffectivenessEvaluation
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.player_price_history import PlayerPriceHistory
 from packages.database.models.player_price_signal_observation import PlayerPriceSignalObservation
@@ -366,6 +380,13 @@ class GameweekReviewJobRunner(JobRunner):
                 # --- Layer 3: failure attribution (already persisted internally, not double-persisted) ---
                 attributions = attribute_failures_for_outcome(session, outcome.id)
 
+                # --- Note-severity outcome tracking: additive, never raises -- see module
+                # docstring and _track_note_effectiveness's own docstring for the failure-
+                # isolation contract (mirrors _maybe_recalibrate_price_signal below).
+                note_effectiveness_rows, note_effectiveness_error = self._track_note_effectiveness(
+                    session, outcome.id
+                )
+
                 # --- Layer 3: rolling learning signals, as-of this reviewed gameweek ---
                 signal_data = [
                     compute_rolling_projection_mae(session, season_id, gameweek.id),
@@ -423,6 +444,20 @@ class GameweekReviewJobRunner(JobRunner):
                     )
                     for result in counterfactual_results
                 ]
+                note_effectiveness_summaries = [
+                    NoteEffectivenessSummary(
+                        player_id=str(row.player_id),
+                        note_type=row.note_type,
+                        note_severity=float(row.note_severity),
+                        projected_points_with_note=float(row.projected_points_with_note),
+                        projected_points_without_note=float(row.projected_points_without_note),
+                        actual_points=float(row.actual_points),
+                        error_with_note=float(row.error_with_note),
+                        error_without_note=float(row.error_without_note),
+                        moved_closer_to_actual=row.moved_closer_to_actual,
+                    )
+                    for row in note_effectiveness_rows
+                ]
 
                 # --- Layer 6: retraining-trigger wiring -- reacts ONLY to ROLLING_PROJECTION_MAE's
                 # own threshold_breached (never ROLLING_CHIP_RECOMMENDATION_VALUE's, which is
@@ -443,7 +478,7 @@ class GameweekReviewJobRunner(JobRunner):
                 price_signal_summary = self._maybe_recalibrate_price_signal(session, season_id)
 
                 notable_findings = compose_notable_findings(
-                    failure_summaries, signal_summaries, retraining_summary
+                    failure_summaries, signal_summaries, retraining_summary, note_effectiveness_summaries
                 )
                 recommendation_summary = _build_recommendation_summary(session, audit)
                 outcome_summary = OutcomeSummary(
@@ -473,6 +508,7 @@ class GameweekReviewJobRunner(JobRunner):
                     learning_signals=signal_summaries,
                     notable_findings=notable_findings,
                     retraining=retraining_summary,
+                    note_evaluations=note_effectiveness_summaries,
                 )
 
                 learning_signals_computed = {
@@ -512,6 +548,13 @@ class GameweekReviewJobRunner(JobRunner):
                     "price_signal_recalibration_sample_size": price_signal_summary.sample_size,
                     "price_signal_new_ratio_threshold": price_signal_summary.ratio_threshold,
                     "price_signal_new_absolute_floor": price_signal_summary.absolute_floor,
+                    "note_effectiveness_count": len(note_effectiveness_summaries),
+                    "note_effectiveness_negative_count": sum(
+                        1
+                        for evaluation in note_effectiveness_summaries
+                        if evaluation.moved_closer_to_actual is False
+                    ),
+                    "note_effectiveness_error": note_effectiveness_error,
                 }
 
                 report_row.recommendation_outcome_id = outcome.id
@@ -546,6 +589,7 @@ class GameweekReviewJobRunner(JobRunner):
                         "price_signal_recalibration_sample_size": price_signal_summary.sample_size,
                         "price_signal_new_ratio_threshold": price_signal_summary.ratio_threshold,
                         "price_signal_new_absolute_floor": price_signal_summary.absolute_floor,
+                        "note_effectiveness_count": len(note_effectiveness_summaries),
                     },
                     error_code=None,
                     error_message=None,
@@ -813,3 +857,25 @@ class GameweekReviewJobRunner(JobRunner):
                 extra={"season_id": str(season_id), "error": str(exc)},
             )
             return PriceSignalRecalibrationSummary(triggered=False, error=str(exc))
+
+    def _track_note_effectiveness(
+        self, session: Session, recommendation_outcome_id: uuid.UUID
+    ) -> tuple[list[NoteEffectivenessEvaluation], str | None]:
+        """Evaluate and persist this outcome's own note-effectiveness rows (Milestone 7 extension).
+
+        NEVER raises -- mirrors ``_maybe_recalibrate_price_signal``'s own failure-isolation
+        contract exactly (see this module's own docstring): this is additional, informational
+        tracking layered on top of GAMEWEEK_REVIEW's own primary work, not a step that should
+        ever be able to fail the review itself. Returns ``([], error_message)`` on any failure,
+        ``(rows, None)`` otherwise -- an empty ``rows`` list is NOT itself a failure (it is the
+        ordinary case whenever no active note was applied to this gameweek's recommended squad).
+        """
+        try:
+            return evaluate_note_effectiveness_for_outcome(session, recommendation_outcome_id), None
+        except Exception as exc:  # noqa: BLE001 - never propagates, see this method's own docstring
+            session.rollback()
+            logger.warning(
+                "gameweek_review.note_effectiveness_tracking_failed",
+                extra={"recommendation_outcome_id": str(recommendation_outcome_id), "error": str(exc)},
+            )
+            return [], str(exc)
