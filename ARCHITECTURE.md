@@ -478,7 +478,7 @@ new code needed, just running the existing pipeline.
   rows) — trained via the same walk-forward fold machinery as
   `MODEL_TRAINING` (`app.modeling.walk_forward`), but never touching
   `model_versions`/the champion at all. Persists to its own
-  `start_probability_models` table (migration 0033), a curated feature
+  `start_probability_models` table (migration 0037), a curated feature
   subset (`FEATURE_COLUMNS`: rolling minutes/points history, rest days,
   position — deliberately excludes price/ownership/fixture difficulty, see
   that module's own docstring), and a `HistGradientBoostingClassifier` for

@@ -6,14 +6,13 @@ app/jobs/handlers/start_probability_training.py's own module docstring for the f
 auxiliary model, not a retrain" rationale, and packages/database/models/start_probability_model.py
 for why is_active defaults to False and is never flipped automatically.
 
-NOTE for whoever reconciles this with main: multiple concurrent agent sessions this same night
-independently claimed revision "0033" (each following whatever 0032 looked like in their own
-worktree at dispatch time). This migration only ever creates a brand-new, standalone table with no
-FK from any other new migration -- reordering it anywhere in the final chain (renumbering + fixing
-down_revision) is safe and requires no other change.
+Renumbered at merge time from this worktree's original "0033" (a real revision-id collision with
+several other concurrently-built migrations tonight, all based on 0032). Chains after 0036
+(the last of the other four gap-agents' migrations already reconciled onto main) -- safe, since
+this migration only ever creates a brand-new, standalone table with no FK from anything else.
 
-Revision ID: 0033
-Revises: 0032
+Revision ID: 0037
+Revises: 0036
 Create Date: 2026-08-17
 
 """
@@ -25,8 +24,8 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 # revision identifiers, used by Alembic.
-revision: str = "0033"
-down_revision: str | None = "0032"
+revision: str = "0037"
+down_revision: str | None = "0036"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
