@@ -136,9 +136,18 @@ class PlayerProjectionResponse(BaseModel):
     status: str | None
 
     is_cold_start_season: bool
+    # Distinct from is_cold_start_season above: True whenever THIS player individually has zero
+    # player_gameweek_stats rows of their own this season (a late debut, a return from long-term
+    # injury, ...), even if the season overall has moved on and is_cold_start_season is False --
+    # see app.optimization.projection._is_cold_start_player. is_cold_start_season True always
+    # implies this is also True (zero rows for everyone means zero for this player too); the
+    # reverse is not true, which is exactly why both fields are surfaced separately rather than
+    # collapsed into one.
+    is_cold_start_player: bool
     # Echoes the raw inputs app.optimization.projection._cold_start_projection blends when
-    # is_cold_start_season is True -- None when not applicable (warm season, or no prior-season
-    # history for a brand-new player) rather than a stale/misleading number.
+    # is_cold_start_season or is_cold_start_player is True -- None when not applicable (warm
+    # player in a warm season, or no prior-season history for a brand-new player) rather than a
+    # stale/misleading number.
     ep_next: Decimal | None
     # The plain full-season average, always shown for reference even when the blend actually
     # used the early-season-specific average instead (see career_avg_early_season_points_prior_seasons).

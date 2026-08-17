@@ -1996,6 +1996,8 @@ export interface components {
             status: string | null;
             /** Is Cold Start Season */
             is_cold_start_season: boolean;
+            /** Is Cold Start Player */
+            is_cold_start_player: boolean;
             /** Ep Next */
             ep_next: string | null;
             /** Career Avg Points Prior Seasons */

@@ -17,6 +17,7 @@ from app.optimization.projection import (
     PlayerProjection,
     get_active_availability_risk_note,
     get_active_role_boost_note,
+    is_cold_start_player,
     is_cold_start_season,
     project_player,
     project_player_with_champion,
@@ -350,6 +351,7 @@ def _explain_base_projection(
     career_avg_early_season_points_prior_seasons: float | None,
     next_fixture_difficulty: int | None,
     champion_model_family: str | None,
+    is_cold_start_season: bool,
 ) -> str:
     """Same as ``_explain_projection`` but assumes ``projection.source`` has already had any
     ``AVAILABILITY_RISK_NOTED_SUFFIX`` stripped -- see that function for why."""
@@ -371,9 +373,20 @@ def _explain_base_projection(
             )
         else:
             career_avg_note = f"this player's real prior-season average ({career_avg_points_prior_seasons})"
+        # is_cold_start_season distinguishes WHY this player is on the cold-start path: a genuine
+        # season-wide first gameweek (nobody has data yet) versus this specific player having no
+        # current-season data of their own mid-season (a late debut, a return from a long
+        # absence) -- see app.optimization.projection._is_cold_start_player. Both take the exact
+        # same blend, but "first gameweek of a new season" would be a misleading thing to tell a
+        # manager about a player in gameweek 15.
+        lead_in = (
+            "First gameweek of a new season -- no current-season form yet"
+            if is_cold_start_season
+            else "No current-season data yet for this player (e.g. a new signing or a long absence)"
+        )
         return (
-            f"First gameweek of a new season -- no current-season form yet, so this blends "
-            f"FPL's own estimate ({ep_next}) with {career_avg_note}{difficulty_note}."
+            f"{lead_in}, so this blends FPL's own estimate ({ep_next}) with "
+            f"{career_avg_note}{difficulty_note}."
         )
     if champion_model_family is not None:
         return f"Prediction from the trained champion model ({champion_model_family})."
@@ -396,6 +409,7 @@ def _explain_projection(
     career_avg_early_season_points_prior_seasons: float | None,
     next_fixture_difficulty: int | None,
     champion_model_family: str | None,
+    is_cold_start_season: bool,
     availability_risk_reason: str | None,
     role_boost_reason: str | None,
 ) -> str:
@@ -431,6 +445,7 @@ def _explain_projection(
         career_avg_early_season_points_prior_seasons=career_avg_early_season_points_prior_seasons,
         next_fixture_difficulty=next_fixture_difficulty,
         champion_model_family=champion_model_family,
+        is_cold_start_season=is_cold_start_season,
     )
     if has_risk_note and availability_risk_reason is not None:
         explanation = f"{explanation} Flagged availability risk: {availability_risk_reason}"
@@ -466,12 +481,14 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
 
     target_gameweek_id, _ = resolve_target_gameweek(db, player.season_id)
     champion = None
-    cold_start = False
+    cold_start_season = False
+    cold_start_player = False
     if target_gameweek_id is None:
         projection = project_player(player)
     else:
         champion = load_current_champion(db)
-        cold_start = is_cold_start_season(db, player.season_id)
+        cold_start_season = is_cold_start_season(db, player.season_id)
+        cold_start_player = is_cold_start_player(db, player.id)
         projection = project_player_with_champion(db, player, target_gameweek_id, champion)
 
     # Best-effort display-only lookup of the two cold-start blend inputs (and the schedule-fact
@@ -529,6 +546,7 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
         ),
         next_fixture_difficulty=next_fixture_difficulty,
         champion_model_family=champion_model_family,
+        is_cold_start_season=cold_start_season,
         availability_risk_reason=active_risk_note.reason if active_risk_note is not None else None,
         role_boost_reason=active_role_note.reason if active_role_note is not None else None,
     )
@@ -541,7 +559,8 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
         projection_formula_version=PROJECTION_FORMULA_VERSION,
         chance_of_playing_next_round=player.chance_of_playing_next_round,
         status=player.status,
-        is_cold_start_season=cold_start,
+        is_cold_start_season=cold_start_season,
+        is_cold_start_player=cold_start_player,
         ep_next=player.ep_next,
         career_avg_points_prior_seasons=career_avg_points_prior_seasons,
         career_avg_early_season_points_prior_seasons=career_avg_early_season_points_prior_seasons,

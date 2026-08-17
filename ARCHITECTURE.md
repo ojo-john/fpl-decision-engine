@@ -144,6 +144,39 @@ training row ever had. Confirmed live: champion model projected Haaland
 at 0.43 pts for a cold-start GW1 vs. FPL's own `ep_next` of 4.0 for the
 same player.
 
+**The cold-start check is per-player, not per-season** (post-review fix —
+originally `_is_cold_start_season` alone decided this for every player
+uniformly: zero `player_gameweek_stats` rows anywhere in the season. That
+meant the moment even ONE player anywhere had one gameweek of real data
+ingested, EVERY player switched from the cold-start blend to the champion
+model's raw prediction — including players who themselves still had zero or
+almost no current-season history of their own, e.g. a summer signing who
+debuts a few gameweeks late, or a player returning from a long-term injury
+mid-season — exactly the same all-rolling-features-`NaN` input shape the
+original cold-start fix above was written to route around, still reachable
+mid-season for any individually-absent player). `app/optimization/projection
+.py`'s `_is_cold_start_player(session, player_id)` closes this: it's the
+same "zero `player_gameweek_stats` rows" predicate, just scoped to one
+player's own rows instead of the whole season's. `project_player_with_champion`
+calls only `_is_cold_start_player` (not `_is_cold_start_season`) to decide —
+a season-wide zero-rows state is a strict special case (implies every player
+is individually cold-start too), so the per-player check alone is both
+correct and sufficient there. `_is_cold_start_season`/`is_cold_start_season`
+remain as their own functions, still consulted by `POST /optimize/preview`'s
+`is_cold_start_gameweek` informational flag (a legitimately distinct,
+season-wide "has this season produced any data at all yet" question) and by
+the `/players/{player_id}/projection` breakdown below (`is_cold_start_season`
+alongside the new `is_cold_start_player`). The threshold is a hard cutover
+at exactly one row (no smoothed transition), deliberately mirroring the
+original season-wide check's own all-or-nothing threshold: one real row is
+enough to turn every rolling-window feature from `NaN` into a real value
+(see `app.features.engineering`), and NaN-vs-real is the documented root
+cause of the champion's under-prediction — sample-size/noise below that
+point is a different problem this fix isn't scoped to solve.
+`PROJECTION_FORMULA_VERSION` bumped to 3 for this — a real behavior change
+to the formula's output, not a refactor (same reasoning `v2`'s own bump
+documented for the original cold-start fix).
+
 For a cold-start season, `app/optimization/projection.py`'s
 `_cold_start_projection` replaces the raw champion prediction with a
 blend: `(project_player(player).projected_points + career_avg) / 2` — a
@@ -241,7 +274,7 @@ objective has no way to see or flag). Two things close that gap:
 
 **`GET /players/{player_id}/projection`'s "why this projection" breakdown**
 (added post-review): the response includes `is_cold_start_season`,
-`ep_next`, `career_avg_points_prior_seasons`,
+`is_cold_start_player`, `ep_next`, `career_avg_points_prior_seasons`,
 `career_avg_early_season_points_prior_seasons`, `next_fixture_difficulty`,
 `champion_model_family`/`champion_model_version_id`,
 `availability_risk_reason`/`availability_risk_severity` (see "Availability
@@ -257,17 +290,27 @@ champion-model prediction, checked via `.startswith(f"ml_champion_
 season, a champion may exist and be the reason `_cold_start_projection`
 engaged at all, but the fields shown are the blend's own inputs, not the
 (unused, untrustworthy-for-this-input-shape) champion prediction, so
-`champion_model_family` correctly stays `None` in that case. The
-explanation text correctly names
-`career_avg_early_season_points_prior_seasons` (not the stale full-season
-number) whenever `_cold_start_projection` actually used it — fixed in the
-same session `career_avg_early_season_points_prior_seasons` was added.
-See `apps.api.routers.players._explain_base_projection`/`_explain_projection`
-for the exact source-string-to-sentence mapping (the latter strips
-`app.optimization.projection.AVAILABILITY_RISK_NOTED_SUFFIX` before
-delegating to the former, then appends a risk-note sentence) and
-`app.optimization.projection.is_cold_start_season` (a thin public wrapper
-around the module's own `_is_cold_start_season`, added for this endpoint).
+`champion_model_family` correctly stays `None` in that case. `is_cold_start_season`
+and `is_cold_start_player` are two distinct booleans computed independently
+(via `app.optimization.projection.is_cold_start_season`/`is_cold_start_player`,
+both thin public wrappers around this module's own per-season/per-player
+private checks — see "The cold-start check is per-player, not per-season"
+above): `is_cold_start_season` True always implies `is_cold_start_player`
+True (zero rows for everyone means zero for this one player too), but not
+the reverse — a player can be individually cold-start (a late debut, a long
+injury absence) in a season that has otherwise moved on. `_explain_projection`
+takes `is_cold_start_season` as an explicit parameter so its one-line text
+can distinguish the two ("First gameweek of a new season..." vs. "No
+current-season data yet for this player...") rather than always claiming
+it's the season's own first gameweek, which would be misleading for a
+mid-season individually-cold-start player. The explanation text correctly
+names `career_avg_early_season_points_prior_seasons` (not the stale
+full-season number) whenever `_cold_start_projection` actually used it —
+fixed in the same session `career_avg_early_season_points_prior_seasons`
+was added. See `apps.api.routers.players._explain_base_projection`/
+`_explain_projection` for the exact source-string-to-sentence mapping (the
+latter strips `app.optimization.projection.AVAILABILITY_RISK_NOTED_SUFFIX`
+before delegating to the former, then appends a risk-note sentence).
 
 **Availability risk notes** (migration `0031`) close a gap neither FPL's
 own official data nor this codebase's models can see: a player who isn't
