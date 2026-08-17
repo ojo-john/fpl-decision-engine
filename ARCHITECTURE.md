@@ -490,7 +490,7 @@ new code needed, just running the existing pipeline.
   touching `model_versions`/`is_champion` (the position-specific models are
   fit fresh, in memory, purely to compute this diagnostic; never serialized,
   never promotion-eligible themselves). Persists to its own
-  `position_segmentation_validation_runs` table (migration `0033`); absence
+  `position_segmentation_validation_runs` table (migration `0038`); absence
   of a run never blocks a promotion (informational, like
   `historical_backtest_replay`, the one gate still genuinely unimplemented).
   Real result against this session's 6 real historical seasons (2020-21
@@ -987,14 +987,10 @@ secret is missing.
   needs its own dedicated fix (harmonize the label at ingestion time, most likely) and a full
   `FEATURE_GENERATION` + `MODEL_TRAINING` re-run afterward before the live champion's own
   goalkeeper handling can be trusted.
-- **Open migration collision (as of this doc, not yet resolved): this worktree's own
-  `0033_position_segmentation_validation_runs.py` was branched before several other concurrent
-  agents' work landed on `main`; at least one other `0033` collision was already resolved once
-  before this one (`note_effectiveness_evaluations` kept `0033`, `cold_start_validation_runs`
-  renumbered to `0034`, `goal_involvement`/`defensive_contribution` renumbered to `0035`).** This
-  migration almost certainly needs the same treatment (renumber to whatever the real head is,
-  fix `down_revision` accordingly) before it can be applied for real — see the migration file's own
-  header comment for the mechanical details. No data-migration risk (purely additive, new table).
+- **Resolved migration collision (2026-08-17):** this worktree's own migration originally claimed
+  `0033`, the second round of the same-night collision (5 agents worked in parallel worktrees).
+  Renumbered to `0038`, chaining after `0037` (`start_probability_models`, the last of the other
+  four gap-agents' migrations already reconciled onto `main`).
 
 `FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and
 the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`

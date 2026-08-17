@@ -1,18 +1,11 @@
 """position_segmentation_validation_runs table
 
-NOTE for whoever reconciles this with main: this worktree's own migration chain here is
-self-consistent (0033 following 0032), but this worktree was branched before this session's
-other concurrent agents' work landed on main -- at least 4 other agents were working in parallel
-worktrees this session (a cold-start validation job, a note-effectiveness table, an xG/defensive-
-contribution feature migration, and other position-specific-modeling-adjacent work), and at least
-one prior round of this exact "multiple worktrees independently claim 0033" collision was already
-resolved once tonight (see ARCHITECTURE.md's "Known real gaps"/migration history for the prior
-resolution: 0033 kept for note_effectiveness_evaluations, 0034 for cold_start_validation_runs,
-0035 for goal_involvement/defensive_contribution). This migration almost certainly needs to be
-renumbered to chain after whatever the real head is by the time this lands (0036 as of this
-writing, but re-verify against the actual migrations/versions/ directory on main, don't trust this
-comment blindly) -- update down_revision accordingly. This table is entirely new and additive
-(no existing table's columns change), so the renumber is purely mechanical, no data-migration risk.
+Renumbered at merge time from this worktree's original "0033" (the second round of the same
+revision-id collision tonight -- 5 agents worked in parallel worktrees; 0033-0037 were already
+claimed by note_effectiveness_evaluations, cold_start_validation_runs, goal_involvement/
+defensive_contribution, gameweek_schedule_gap_days, and start_probability_models respectively).
+Chains after 0037. This table is entirely new and additive (no existing table's columns change),
+so the renumber is purely mechanical, no data-migration risk.
 
 Historical validation of whether position-specific models (one GradientBoosting model per
 GKP/DEF/MID/FWD) would out-predict the existing single global model (one model, position as a
@@ -22,8 +15,8 @@ only row per POSITION_SEGMENTATION_VALIDATION job run -- see
 packages/database/models/position_segmentation_validation_run.py for the full column docstrings,
 and app/modeling/position_segmentation.py for the evaluation harness itself.
 
-Revision ID: 0033
-Revises: 0032
+Revision ID: 0038
+Revises: 0037
 Create Date: 2026-08-17
 
 """
@@ -37,8 +30,8 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from packages.domain.learning import PositionSegmentationValidationRunStatus
 
 # revision identifiers, used by Alembic.
-revision: str = "0033"
-down_revision: str | None = "0032"
+revision: str = "0038"
+down_revision: str | None = "0037"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
