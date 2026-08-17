@@ -54,6 +54,7 @@ packages/shared/        pydantic-settings Settings + JSON logging setup
 migrations/             Hand-written Alembic migrations
 scripts/run_job.py      CLI to execute one job synchronously (prints JSON result)
 scripts/export_notes_snapshot.py  CLI to regenerate .github/state/known-notes-snapshot.json from the live API (see scout-watch.yml section)
+scripts/post_deadline_smoke_test.py  CLI to verify real-data preconditions for manager_sync/chip inventory/league_sync/rival profiles/differentials/price calibration (see "Post-deadline real-data verification" section below and docs/operations.md)
 tests/unit/ (44 files)  No DB
 tests/integration/ (46) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
@@ -920,6 +921,34 @@ Requires a `GEMINI_API_KEY` repository secret (a free-tier key created at
 aistudio.google.com — **not** Google Cloud/Vertex AI, a different product
 that always requires billing); the job fails loudly, not silently, if the
 secret is missing.
+
+## Post-deadline real-data verification (`scripts/post_deadline_smoke_test.py`)
+
+Six features have only ever run against `tests/`'s committed fixtures/
+synthetic seasons: `MANAGER_SYNC`'s squad fetch, chip-inventory derivation
+(`app.chips.inventory`), `LEAGUE_SYNC`'s standings/matches sync, rival
+profile derivation (`app.h2h.rival_state`), rival squad differentials
+(`app.h2h.differential`), and price-signal calibration
+(`app.players.price_signal_calibration`) — each gated on a real,
+FPL-platform-imposed precondition (a gameweek deadline passing, a season
+starting, a gameweek finishing, or real price movements accumulating) that
+a synthetic fixture can't reproduce. `scripts/post_deadline_smoke_test.py`
+runs all six against the real dev database and the real FPL API, and
+classifies each as `PASS` (precondition met, real output verified),
+`PENDING` (precondition genuinely not met yet — expected, not a failure),
+or `FAIL` (precondition met and it still broke — the only outcome that
+should fail CI/block a release). Full runbook: `docs/operations.md`'s "Post-
+deadline real-data verification" section.
+
+Live-run while building this script (2026-08-17, pre-season) surfaced a real
+platform behavior not previously documented anywhere in this codebase: FPL's
+`leagues-h2h/{id}/standings/` genuinely returns zero `standings.results` for
+a real, active league (814682, "Pro Clubs '27" — 3 joined managers
+confirmed live under `new_entries`) until the season has started AND at
+least one gameweek has finished — the same shape of precondition
+`league-watch.yml` was independently built to poll for, but not previously
+called out in `app/jobs/handlers/league_sync.py`'s own docstring, which now
+documents it directly.
 
 ## Known real gaps (as of this doc)
 
