@@ -12,10 +12,10 @@ Leakage-prevention guarantee
 Every feature column on a row is computed using only ``player_gameweek_stats``
 rows whose own gameweek's ``deadline_time`` is *strictly earlier* than this
 row's ``cutoff_timestamp`` (== the target gameweek's own ``deadline_time``).
-``next_fixture_difficulty``/``next_fixture_was_home`` are the one deliberate
-exception — fixture difficulty ratings and home/away are fixed well before a
-gameweek deadline (schedule facts, not results), so referencing the target
-gameweek's own fixture for those two columns is not leakage. See
+``next_fixture_difficulty``/``next_fixture_was_home``/``gameweek_schedule_gap_days`` are the
+deliberate exceptions — fixture difficulty ratings, home/away, and gameweek deadline timing are
+all fixed well before a gameweek deadline (schedule facts, not results), so referencing the target
+gameweek's own fixture/schedule position for those columns is not leakage. See
 ``app/features/engineering.py``'s module docstring for the precise rule and
 ``filter_to_strictly_prior``, the single function responsible for enforcing
 it.
@@ -117,6 +117,13 @@ class PlayerFeatures(Base):
     next_fixture_was_home: Mapped[bool | None] = mapped_column(SABoolean)
 
     rest_days: Mapped[int | None] = mapped_column(Integer)
+    # GAMEWEEK-level (not player-specific) schedule gap: days since the PREVIOUS gameweek's own
+    # deadline, in the same season -- deliberately distinct from rest_days (this player's own days
+    # since their last individual fixture). See
+    # app.features.engineering.gameweek_schedule_gap_days's own docstring for the full rationale
+    # and the real, measured post-gap points/minutes drop-off this is built to let the model learn.
+    # NULL for this season's own gameweek 1 (no previous gameweek to compare against).
+    gameweek_schedule_gap_days: Mapped[int | None] = mapped_column(Integer)
     price_at_time: Mapped[Decimal | None] = mapped_column(Numeric(6, 1))
     # Raw ownership COUNT, matching player_gameweek_stats.selected_by_count_at_time
     # (never players.selected_by_percent, a percentage).

@@ -12,6 +12,7 @@ from app.features.engineering import (
     PriorGameweekStat,
     filter_to_strictly_prior,
     form_weighted_avg_points,
+    gameweek_schedule_gap_days,
     home_away_avg_points,
     rest_days,
     rolling_avg_minutes,
@@ -368,6 +369,28 @@ def test_rest_days_none_when_no_prior_kickoff_known():
 
 def test_rest_days_none_with_no_history():
     assert rest_days([], datetime(2024, 3, 8, tzinfo=UTC)) is None
+
+
+# --- gameweek schedule gap (structural, not player-specific) -----------------
+
+
+def test_gameweek_schedule_gap_days_hand_computed_normal_week():
+    target = datetime(2024, 3, 8, 18, 0, tzinfo=UTC)
+    previous = datetime(2024, 3, 1, 18, 0, tzinfo=UTC)
+    assert gameweek_schedule_gap_days(target, previous) == 7
+
+
+def test_gameweek_schedule_gap_days_hand_computed_international_break():
+    target = datetime(2024, 9, 16, 11, 0, tzinfo=UTC)
+    previous = datetime(2024, 9, 2, 11, 0, tzinfo=UTC)
+    assert gameweek_schedule_gap_days(target, previous) == 14
+
+
+def test_gameweek_schedule_gap_days_none_for_first_gameweek_of_a_season():
+    """No previous gameweek to compare against -- a different, already-handled cold-start signal,
+    not this one (see the function's own docstring)."""
+    target = datetime(2024, 8, 11, 18, 0, tzinfo=UTC)
+    assert gameweek_schedule_gap_days(target, None) is None
 
 
 # --- Double Gameweek target summing (the label) ------------------------------

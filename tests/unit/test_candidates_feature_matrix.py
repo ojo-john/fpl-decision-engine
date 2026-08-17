@@ -81,3 +81,24 @@ def test_new_columns_reach_live_inference_single_row_matrix():
 
     assert x["goal_involvement_overperformance_5gw"].iloc[0] == -0.75
     assert x["defensive_contribution_5gw"].iloc[0] == 4.00
+
+
+def test_gameweek_schedule_gap_days_reaches_training_matrix():
+    row = _make_feature_row(gameweek_schedule_gap_days=14)
+
+    x, _y = build_feature_matrix([row])
+
+    assert "gameweek_schedule_gap_days" in x.columns
+    assert x["gameweek_schedule_gap_days"].iloc[0] == 14.0
+
+
+def test_gameweek_schedule_gap_days_null_encodes_as_nan_not_dropped():
+    """A row with no previous gameweek to compare against (this season's own gameweek 1) must
+    still surface the column as NaN, never silently omitted -- same convention as the other
+    nullable feature columns above."""
+    row = _make_feature_row()
+
+    x, _y = build_feature_matrix([row])
+
+    assert "gameweek_schedule_gap_days" in x.columns
+    assert x["gameweek_schedule_gap_days"].isna().iloc[0]

@@ -136,6 +136,10 @@ def test_feature_generation_spot_check_foden_round4(db_session, patched_historic
     assert row.next_fixture_difficulty == 2
     assert row.next_fixture_was_home is True
 
+    # round 3 deadline 2023-08-25T18:30Z, round 4 deadline 2023-09-01T18:30Z -> 7 days apart, a
+    # normal week (the real international-break gap doesn't land until round 5, 14 days later).
+    assert row.gameweek_schedule_gap_days == 7
+
     # round 4 already played (historical, finished=True) -> label populated,
     # equal to Foden's own round-4 total_points (single fixture, no DGW here).
     assert row.target_total_points == 5
@@ -144,6 +148,36 @@ def test_feature_generation_spot_check_foden_round4(db_session, patched_historic
     assert row.price_at_time == Decimal("76.0")  # most recent prior row (round 3) value=76
     assert row.ownership_at_time == 1332873  # round 3's selected count
     assert row.position_short_name == "MID"
+
+
+def test_feature_generation_gameweek_schedule_gap_days_none_for_season_opening_gameweek(
+    db_session, patched_historical_fpl_client
+):
+    """Boundary case: this season's own gameweek 1 has no previous gameweek to compare against,
+    so the column must be None -- distinct from a real 0 (which would wrongly claim "back-to-back
+    gameweeks with zero gap"). The real, non-null 7-day gap case (round 3 -> round 4) is covered
+    by test_feature_generation_spot_check_foden_round4 above; this committed fixture only carries
+    rounds 1-4 (see test_feature_generation_row_counts_and_shape's own `len(gameweeks) == 4`), so
+    round 5's real 14-day international-break gap isn't reachable from this fixture."""
+    season = _seed_historical_season(db_session)
+    job = _run_feature_generation_job(db_session)
+    assert job.status == JobStatus.SUCCEEDED
+
+    foden = db_session.execute(
+        select(Player).where(Player.season_id == season.id, Player.fpl_element_id == 353)
+    ).scalar_one()
+    round1 = db_session.execute(
+        select(Gameweek).where(Gameweek.season_id == season.id, Gameweek.fpl_event_id == 1)
+    ).scalar_one()
+
+    row1 = db_session.execute(
+        select(PlayerFeatures).where(
+            PlayerFeatures.player_id == foden.id,
+            PlayerFeatures.gameweek_id == round1.id,
+            PlayerFeatures.feature_version == 1,
+        )
+    ).scalar_one()
+    assert row1.gameweek_schedule_gap_days is None
 
 
 def test_feature_generation_target_total_points_none_when_gameweek_not_yet_played(
