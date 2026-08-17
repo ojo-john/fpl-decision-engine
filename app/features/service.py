@@ -57,6 +57,18 @@ FEATURE_VERSION = 1
 # better.
 FORM_HALF_LIFE_GAMEWEEKS = 3.0
 
+# Window (in xG-covered gameweeks, not calendar gameweeks — see
+# rolling_goal_involvement_overperformance's own docstring) for the goal-involvement
+# over/underperformance signal. Matches the existing rolling_avg_points_5gw/
+# rolling_avg_minutes_5gw precedent (a single gameweek's xG overperformance is
+# mostly noise; 5 games is enough to see a real trend without going so wide it
+# stops reflecting current form) — not independently tuned yet.
+GOAL_INVOLVEMENT_OVERPERFORMANCE_WINDOW = 5
+
+# Window for the defensive-contribution rolling average — same "5gw" precedent
+# and same not-yet-independently-tuned caveat as GOAL_INVOLVEMENT_OVERPERFORMANCE_WINDOW.
+DEFENSIVE_CONTRIBUTION_WINDOW = 5
+
 FEATURE_DATA_SOURCE = "feature_engineering_v1"
 
 
@@ -113,6 +125,12 @@ def _build_player_features_values(
         ),
         "home_avg_points": home_avg_points,
         "away_avg_points": away_avg_points,
+        "goal_involvement_overperformance_5gw": engineering.rolling_goal_involvement_overperformance(
+            current_prior, GOAL_INVOLVEMENT_OVERPERFORMANCE_WINDOW
+        ),
+        "defensive_contribution_5gw": engineering.rolling_defensive_contribution(
+            current_prior, DEFENSIVE_CONTRIBUTION_WINDOW
+        ),
         "next_fixture_difficulty": next_fixture_difficulty,
         "next_fixture_was_home": next_fixture_was_home,
         "rest_days": rest_days_value,
@@ -146,6 +164,11 @@ def compute_features_for_player_gameweek(
             PlayerGameweekStats.value_at_time,
             PlayerGameweekStats.selected_by_count_at_time,
             PlayerGameweekStats.position_short_name_at_time,
+            PlayerGameweekStats.goals_scored,
+            PlayerGameweekStats.assists,
+            PlayerGameweekStats.expected_goals,
+            PlayerGameweekStats.expected_assists,
+            PlayerGameweekStats.defensive_contribution,
             Gameweek.deadline_time.label("gw_deadline"),
             Gameweek.fpl_event_id,
             Fixture.kickoff_time,
@@ -165,6 +188,11 @@ def compute_features_for_player_gameweek(
             was_home=row.was_home,
             fixture_kickoff_time=row.kickoff_time,
             fpl_event_id=row.fpl_event_id,
+            goals_scored=row.goals_scored,
+            assists=row.assists,
+            expected_goals=row.expected_goals,
+            expected_assists=row.expected_assists,
+            defensive_contribution=row.defensive_contribution,
         )
         for row in current_rows
     ]
@@ -340,6 +368,11 @@ def generate_features_for_season(
             PlayerGameweekStats.value_at_time,
             PlayerGameweekStats.selected_by_count_at_time,
             PlayerGameweekStats.position_short_name_at_time,
+            PlayerGameweekStats.goals_scored,
+            PlayerGameweekStats.assists,
+            PlayerGameweekStats.expected_goals,
+            PlayerGameweekStats.expected_assists,
+            PlayerGameweekStats.defensive_contribution,
             Gameweek.deadline_time.label("gw_deadline"),
             Gameweek.fpl_event_id,
             Fixture.kickoff_time,
@@ -441,6 +474,11 @@ def generate_features_for_season(
                 was_home=row.was_home,
                 fixture_kickoff_time=row.kickoff_time,
                 fpl_event_id=row.fpl_event_id,
+                goals_scored=row.goals_scored,
+                assists=row.assists,
+                expected_goals=row.expected_goals,
+                expected_assists=row.expected_assists,
+                defensive_contribution=row.defensive_contribution,
             )
             for row in player_rows
         ]

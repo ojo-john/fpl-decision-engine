@@ -100,6 +100,16 @@ class PlayerFeatures(Base):
     form_weighted_avg_points: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     home_avg_points: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     away_avg_points: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    # A regression-to-mean signal absent from every other column above (all points/minutes
+    # history): actual (goals+assists) minus expected (xG+xA) over the most recent gameweeks that
+    # carry xG data (schema-drift-null before 2022-23 -- see
+    # app.features.engineering.rolling_goal_involvement_overperformance). Positive means running
+    # hot relative to underlying chances, negative means due a correction.
+    goal_involvement_overperformance_5gw: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    # FPL's own real 2025-26+ CBIT threshold-bonus stat (see
+    # app.features.engineering.rolling_defensive_contribution) -- a genuine points-scoring signal,
+    # not just an external stat; schema-drift-null before 2025-26.
+    defensive_contribution_5gw: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
 
     # Not leakage — fixture difficulty/home-away are schedule facts known
     # well before a deadline, not results. See module docstring.

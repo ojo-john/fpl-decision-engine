@@ -42,13 +42,22 @@ individual-row level instead.
 
 Null handling
 --------------
-``player_gameweek_stats.total_points``/``minutes`` are never-null columns in
-the database (defaulted to ``0``), so ``PriorGameweekStat.total_points``/
-``minutes`` are always plain ``int``. Other, schema-drift-affected columns
-(``expected_goals`` and similar) are irrelevant to every calculation in this
-module; ``PriorGameweekStat.expected_goals`` exists only to demonstrate (see
-the unit tests) that carrying such a field alongside real data never
-perturbs a points/minutes-based calculation.
+``player_gameweek_stats.total_points``/``minutes``/``goals_scored``/``assists``
+are never-null columns in the database (defaulted to ``0``), so the
+corresponding ``PriorGameweekStat`` fields are always plain ``int``.
+``expected_goals``/``expected_assists``/``defensive_contribution`` are real,
+schema-drift-affected columns (verified against the real ingested data: xG/xA
+are ``NULL`` for every 2020-21/2021-22 row and fully populated from 2022-23
+onward; ``defensive_contribution`` is ``NULL`` for every season before
+2025-26 — the FPL season that stat's own scoring rule was introduced in, and
+fully populated for 2025-26). ``rolling_goal_involvement_overperformance``
+and ``rolling_defensive_contribution`` are the only functions here that read
+these fields; every other function remains indifferent to them (see the unit
+tests demonstrating that carrying these fields alongside real data never
+perturbs a points/minutes-based calculation). Both new functions skip a
+gameweek missing the relevant field entirely rather than treating it as a
+false zero — the same "unknown, not zero" convention as everywhere else in
+this module.
 
 A gameweek a player did NOT feature in has no ``player_gameweek_stats`` row
 at all (never a zero-filled row) — so it is simply absent from
@@ -73,6 +82,8 @@ __all__ = [
     "home_away_avg_points",
     "rest_days",
     "sum_points_for_gameweek",
+    "rolling_goal_involvement_overperformance",
+    "rolling_defensive_contribution",
 ]
 
 # Default early-season window for career_avg_early_season_points_prior_seasons:
@@ -126,8 +137,12 @@ class PriorGameweekStat:
     ``career_avg_early_season_points_prior_seasons`` reads this field today;
     every other function below is indifferent to it.
 
-    ``expected_goals`` is never read by any function here — see the module
-    docstring's "Null handling" section.
+    ``expected_goals``/``expected_assists``/``defensive_contribution`` are only
+    read by ``rolling_goal_involvement_overperformance``/
+    ``rolling_defensive_contribution`` — see the module docstring's "Null
+    handling" section. ``goals_scored``/``assists`` are only read by
+    ``rolling_goal_involvement_overperformance``; every other function here
+    remains indifferent to all five fields.
     """
 
     season_id: str
@@ -139,6 +154,10 @@ class PriorGameweekStat:
     fixture_kickoff_time: datetime | None
     fpl_event_id: int
     expected_goals: Decimal | None = None
+    goals_scored: int = 0
+    assists: int = 0
+    expected_assists: Decimal | None = None
+    defensive_contribution: int | None = None
 
 
 @dataclass(frozen=True)
@@ -148,6 +167,30 @@ class _GameweekAggregate:
     deadline: datetime
     total_points: int
     minutes: int
+    goals_scored: int = 0
+    assists: int = 0
+    # None means "at least one contributing row lacked this field" (schema
+    # drift, or -- for a Double Gameweek -- one leg missing it while the
+    # other has it) -- poisoning the whole gameweek's aggregate to unknown
+    # rather than silently summing only the rows that happened to have data,
+    # which would understate a real value. See _sum_optional_decimal/_int.
+    expected_goals: Decimal | None = None
+    expected_assists: Decimal | None = None
+    defensive_contribution: int | None = None
+
+
+def _sum_optional_decimal(a: Decimal | None, b: Decimal | None) -> Decimal | None:
+    """``None`` if either operand is ``None`` -- see ``_GameweekAggregate``'s own comment."""
+    if a is None or b is None:
+        return None
+    return a + b
+
+
+def _sum_optional_int(a: int | None, b: int | None) -> int | None:
+    """``None`` if either operand is ``None`` -- see ``_GameweekAggregate``'s own comment."""
+    if a is None or b is None:
+        return None
+    return a + b
 
 
 def filter_to_strictly_prior(
@@ -183,6 +226,11 @@ def _aggregate_by_gameweek(prior_stats: Sequence[PriorGameweekStat]) -> list[_Ga
                 deadline=stat.gameweek_deadline,
                 total_points=stat.total_points,
                 minutes=stat.minutes,
+                goals_scored=stat.goals_scored,
+                assists=stat.assists,
+                expected_goals=stat.expected_goals,
+                expected_assists=stat.expected_assists,
+                defensive_contribution=stat.defensive_contribution,
             )
         else:
             groups[stat.gameweek_key] = _GameweekAggregate(
@@ -191,6 +239,13 @@ def _aggregate_by_gameweek(prior_stats: Sequence[PriorGameweekStat]) -> list[_Ga
                 deadline=existing.deadline,
                 total_points=existing.total_points + stat.total_points,
                 minutes=existing.minutes + stat.minutes,
+                goals_scored=existing.goals_scored + stat.goals_scored,
+                assists=existing.assists + stat.assists,
+                expected_goals=_sum_optional_decimal(existing.expected_goals, stat.expected_goals),
+                expected_assists=_sum_optional_decimal(existing.expected_assists, stat.expected_assists),
+                defensive_contribution=_sum_optional_int(
+                    existing.defensive_contribution, stat.defensive_contribution
+                ),
             )
     return sorted(groups.values(), key=lambda agg: agg.deadline, reverse=True)
 
@@ -383,3 +438,69 @@ def sum_points_for_gameweek(stats_for_that_gameweek: Sequence[int]) -> int:
     than calling this function).
     """
     return sum(stats_for_that_gameweek)
+
+
+def rolling_goal_involvement_overperformance(
+    prior_stats: Sequence[PriorGameweekStat], window: int
+) -> Decimal | None:
+    """Average ``(goals + assists) - (expected_goals + expected_assists)`` over the most recent
+    ``window`` gameweeks that actually carry expected-goals data.
+
+    A standard regression-to-mean signal absent from every other function in this module (all of
+    which are points/minutes-history only): a player scoring well above their own cumulative xG+xA
+    is running hot and likely to cool off; one well below it is "due" a correction. This is a
+    genuinely different signal from points history alone — it distinguishes "output has really
+    improved" from "getting lucky/unlucky with finishing", which a points-only rolling average
+    cannot.
+
+    Gameweeks missing ``expected_goals``/``expected_assists`` (schema drift — ``NULL`` for every
+    2020-21/2021-22 row, see the module docstring) are excluded from the window entirely, not
+    treated as a false zero — so ``window`` counts gameweeks that actually have xG data, not
+    gameweeks in general (a player with a long history but only recent xG coverage still gets a
+    real, unskewed answer using just the gameweeks that have it). ``None`` if no prior gameweek
+    carries xG data at all.
+    """
+    aggregates = _aggregate_by_gameweek(prior_stats)
+    gameweeks_with_xg = [
+        agg for agg in aggregates if agg.expected_goals is not None and agg.expected_assists is not None
+    ]
+    if not gameweeks_with_xg:
+        return None
+    recent = gameweeks_with_xg[:window]
+    total = Decimal("0")
+    for agg in recent:
+        assert agg.expected_goals is not None
+        assert agg.expected_assists is not None
+        actual = Decimal(agg.goals_scored + agg.assists)
+        expected = agg.expected_goals + agg.expected_assists
+        total += actual - expected
+    return _round2(total / Decimal(len(recent)))
+
+
+def rolling_defensive_contribution(prior_stats: Sequence[PriorGameweekStat], window: int) -> Decimal | None:
+    """Average ``defensive_contribution`` over the most recent ``window`` gameweeks that carry it.
+
+    ``defensive_contribution`` is FPL's own real, current-season scoring stat (the 2025-26+ CBIT
+    threshold bonus: defenders earn 2 points for reaching a per-match clearances+blocks+
+    interceptions threshold, midfielders/forwards for the higher CBIT threshold) — not just an
+    external analytics stat, but part of the actual points formula the model is trying to predict.
+    Neither ``total_points`` history nor any other feature here breaks defensive actions out
+    separately, so without this, a player trending toward the threshold is invisible to every
+    existing feature until it shows up as points after the fact.
+
+    Schema-drift-affected exactly like ``expected_goals`` (see the module docstring): ``NULL`` for
+    every season before 2025-26 (verified against real ingested data — this stat didn't exist
+    before that rule was introduced), fully populated for 2025-26. Gameweeks missing it are
+    excluded from the window entirely, never treated as a false zero. ``None`` if no prior
+    gameweek carries this stat at all.
+    """
+    aggregates = _aggregate_by_gameweek(prior_stats)
+    gameweeks_with_dc = [agg for agg in aggregates if agg.defensive_contribution is not None]
+    if not gameweeks_with_dc:
+        return None
+    recent = gameweeks_with_dc[:window]
+    total = 0
+    for agg in recent:
+        assert agg.defensive_contribution is not None
+        total += agg.defensive_contribution
+    return _round2(Decimal(total) / Decimal(len(recent)))
