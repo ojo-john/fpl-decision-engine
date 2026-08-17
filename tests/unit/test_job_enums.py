@@ -14,6 +14,7 @@ EXPECTED_JOB_TYPE_VALUES = {
     "LEAGUE_SYNC": "league_sync",
     "FEATURE_GENERATION": "feature_generation",
     "MODEL_TRAINING": "model_training",
+    "START_PROBABILITY_MODEL_TRAINING": "start_probability_model_training",
     "PROJECTION_GENERATION": "projection_generation",
     "SQUAD_OPTIMIZATION": "squad_optimization",
     "LINEUP_OPTIMIZATION": "lineup_optimization",

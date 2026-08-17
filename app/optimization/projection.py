@@ -20,8 +20,10 @@ from sqlalchemy.orm import Session
 
 from app.features.service import compute_features_for_player_gameweek
 from app.modeling import baselines
+from app.modeling import start_probability as sp
 from app.modeling.candidates import align_columns, build_feature_row
 from app.optimization.champion_loader import LoadedChampion
+from app.optimization.start_probability_loader import LoadedStartProbabilityModel
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.player import Player
 from packages.database.models.player_availability_risk_note import PlayerAvailabilityRiskNote
@@ -390,11 +392,79 @@ def _apply_role_boost_notes(
     )
 
 
+# Appended to PlayerProjection.source whenever _apply_start_probability_adjustment scales it --
+# mirrors AVAILABILITY_RISK_NOTED_SUFFIX/ROLE_BOOSTED_SUFFIX. Applied BEFORE either note suffix
+# (see project_player_with_champion's own docstring for the full, fixed application order) so a
+# manually-authored note can still further adjust a model-informed projection, exactly like it
+# already can for the champion/cold-start base projection.
+START_PROBABILITY_ADJUSTED_SUFFIX = "_start_probability_adjusted"
+
+
+def _apply_start_probability_adjustment(
+    session: Session,
+    player: Player,
+    target_gameweek_id: uuid.UUID,
+    start_probability_model: LoadedStartProbabilityModel | None,
+    projection: PlayerProjection,
+) -> PlayerProjection:
+    """Scale ``projection`` by this player's predicted P(starts this gameweek), if an active
+    start-probability model was passed in (see ``app.optimization.start_probability_loader`` --
+    ``None`` is the default, safe state, and this function is then a pure no-op, returning
+    ``projection`` completely unchanged).
+
+    Treats the incoming ``projected_points`` as "expected points IF this player starts", and
+    P(start) as a genuine, independent discount for the risk they don't -- the same
+    multiplicative-adjustment shape as ``_apply_availability_risk_notes``, just model-derived
+    instead of a hand-typed severity. An undisputed starter's P(start) should sit close to 1.0
+    (near-zero effect); a genuine rotation-risk player's P(start) discounts proportionally --
+    replacing what a manually-authored risk note currently has to do by hand for exactly this
+    signal (see ``app.jobs.handlers.start_probability_training``'s own module docstring for the
+    real motivating cases this session, e.g. Woltemade/Osula).
+
+    Never raises and never changes ``is_eligible`` -- any failure to compute a live feature row,
+    or a NaN/unusable prediction, degrades to returning ``projection`` unchanged, mirroring
+    ``project_player_with_champion``'s own per-player graceful-degradation contract for the
+    champion path. A no-op for an already-ineligible projection, mirroring both existing note
+    appliers' identical guard.
+    """
+    if start_probability_model is None or not projection.is_eligible:
+        return projection
+
+    try:
+        feature_row = compute_features_for_player_gameweek(
+            session, player.id, target_gameweek_id, start_probability_model.feature_version
+        )
+        x_row = sp.build_start_probability_feature_row(feature_row)
+        x_aligned = align_columns(x_row, list(start_probability_model.sklearn_model.feature_names_in_))
+        p_start = float(start_probability_model.sklearn_model.predict_proba(x_aligned)[0, 1])
+    except Exception:  # noqa: BLE001 - this adjustment must never fail the caller
+        logger.warning(
+            "Start-probability adjustment failed for player_id=%s target_gameweek_id=%s "
+            "start_probability_model_id=%s; leaving projection unadjusted.",
+            player.id,
+            target_gameweek_id,
+            start_probability_model.start_probability_model_id,
+            exc_info=True,
+        )
+        return projection
+
+    if math.isnan(p_start):
+        return projection
+
+    return PlayerProjection(
+        projection.player_id,
+        projection.projected_points * p_start,
+        f"{projection.source}{START_PROBABILITY_ADJUSTED_SUFFIX}",
+        is_eligible=True,
+    )
+
+
 def project_player_with_champion(
     session: Session,
     player: Player,
     target_gameweek_id: uuid.UUID,
     champion: LoadedChampion | None,
+    start_probability_model: LoadedStartProbabilityModel | None = None,
 ) -> PlayerProjection:
     """Champion-model-aware projection, falling back to ``project_player`` when unavailable.
 
@@ -427,14 +497,17 @@ def project_player_with_champion(
        ``f"ml_champion_{champion.model_family.value}"`` so it's always
        possible to tell, after the fact, which players in a recommendation
        used the trained model versus the fallback formula.
-    7. Whatever the above produces (steps 2-6), two final passes apply any active
-       ``player_availability_risk_notes`` (a discount — see ``_apply_availability_risk_notes``)
-       and any active ``player_role_notes`` (a boost — see ``_apply_role_boost_notes``) for this
-       player/gameweek, in that order, so both can compound if both are active at once (e.g. a
-       player carrying a minor knock who has ALSO just been handed penalty duty). Neither step is
-       skipped for the ``project_player`` fallback branches (2, 4, 5): a flagged risk or a
-       confirmed role change is just as real whether or not a champion model happened to be
-       available.
+    7. Whatever the above produces (steps 2-6), THREE final passes apply, in this fixed order:
+       ``_apply_start_probability_adjustment`` (a model-derived P(start) discount, no-op unless
+       ``start_probability_model`` was explicitly passed in -- see that function's own docstring
+       and ``app.optimization.start_probability_loader``), then any active
+       ``player_availability_risk_notes`` (a discount — see ``_apply_availability_risk_notes``),
+       then any active ``player_role_notes`` (a boost — see ``_apply_role_boost_notes``) for this
+       player/gameweek — so all three can compound if more than one applies at once (e.g. a
+       player the auxiliary model rates as rotation-risk who is ALSO carrying a minor knock).
+       None of the three is skipped for the ``project_player`` fallback branches (2, 4, 5): a
+       model-derived start-probability discount, a flagged risk, or a confirmed role change are
+       each just as real whether or not a champion model happened to be available.
     """
     if player.status in _HARD_EXCLUDE_STATUSES:
         return PlayerProjection(player.id, 0.0, "unavailable_status_excluded", is_eligible=False)
@@ -464,5 +537,8 @@ def project_player_with_champion(
                     player.id, prediction, f"ml_champion_{champion.model_family.value}", is_eligible=True
                 )
 
+    projection = _apply_start_probability_adjustment(
+        session, player, target_gameweek_id, start_probability_model, projection
+    )
     projection = _apply_availability_risk_notes(session, target_gameweek_id, projection)
     return _apply_role_boost_notes(session, target_gameweek_id, projection)

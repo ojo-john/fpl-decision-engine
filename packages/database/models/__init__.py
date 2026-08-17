@@ -49,6 +49,7 @@ from packages.database.models.rival_profile import RivalProfile
 from packages.database.models.rules_config import RulesConfig
 from packages.database.models.rules_config_field import RulesConfigField
 from packages.database.models.season import Season
+from packages.database.models.start_probability_model import StartProbabilityModel
 from packages.database.models.team import Team
 from packages.database.models.transfer_optimization_run import TransferOptimizationRun
 from packages.database.models.transfer_optimization_run_move import TransferOptimizationRunMove
@@ -98,6 +99,7 @@ __all__ = [
     "RulesConfig",
     "RulesConfigField",
     "Season",
+    "StartProbabilityModel",
     "Team",
     "TransferOptimizationRun",
     "TransferOptimizationRunMove",

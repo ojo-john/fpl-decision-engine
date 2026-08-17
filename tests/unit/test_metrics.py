@@ -8,6 +8,10 @@ import math
 import pytest
 
 from app.modeling.metrics import (
+    binary_accuracy,
+    binary_auc,
+    binary_f1,
+    binary_log_loss,
     calibration_buckets,
     mean_absolute_error,
     mean_bias,
@@ -124,3 +128,37 @@ def test_calibration_buckets_bucket_assignment_by_sorted_predicted_value_not_inp
     assert buckets[0]["mean_actual"] == pytest.approx(15.0)
     assert buckets[2]["mean_predicted"] == pytest.approx(5.5)
     assert buckets[2]["mean_actual"] == pytest.approx(55.0)
+
+
+# --- binary_auc / binary_accuracy / binary_f1 / binary_log_loss (app.modeling.start_probability) -
+
+
+def test_binary_auc_perfect_separation_is_one():
+    # every negative scores lower than every positive -> AUC = 1.0
+    assert binary_auc([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9]) == pytest.approx(1.0)
+
+
+def test_binary_auc_undefined_with_a_single_class_returns_none():
+    assert binary_auc([1, 1, 1], [0.9, 0.8, 0.7]) is None
+
+
+def test_binary_accuracy_hand_computed():
+    # 3 of 4 predicted labels match truth -> 0.75
+    assert binary_accuracy([1, 0, 1, 0], [1, 0, 1, 1]) == pytest.approx(0.75)
+
+
+def test_binary_f1_hand_computed():
+    # y_true=[1,1,0,0], y_pred=[1,0,1,0] -> TP=1, FP=1, FN=1 -> precision=0.5, recall=0.5, f1=0.5
+    assert binary_f1([1, 1, 0, 0], [1, 0, 1, 0]) == pytest.approx(0.5)
+
+
+def test_binary_f1_no_positive_predictions_is_zero_not_a_warning_or_nan():
+    assert binary_f1([1, 1, 0, 0], [0, 0, 0, 0]) == pytest.approx(0.0)
+
+
+def test_binary_log_loss_confident_and_correct_is_near_zero():
+    assert binary_log_loss([0, 1], [0.001, 0.999]) == pytest.approx(0.0, abs=1e-2)
+
+
+def test_binary_log_loss_undefined_with_a_single_class_returns_none():
+    assert binary_log_loss([1, 1, 1], [0.9, 0.8, 0.7]) is None

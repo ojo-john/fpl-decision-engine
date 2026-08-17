@@ -17,6 +17,7 @@ from app.jobs.handlers.model_training import ModelTrainingJobRunner
 from app.jobs.handlers.recommendation_generation import RecommendationGenerationJobRunner
 from app.jobs.handlers.rules_sync import RulesSyncJobRunner
 from app.jobs.handlers.squad_optimization import SquadOptimizationJobRunner
+from app.jobs.handlers.start_probability_training import StartProbabilityModelTrainingJobRunner
 from app.jobs.handlers.system_health import SystemHealthJobRunner
 from app.jobs.handlers.transfer_optimization import TransferOptimizationJobRunner
 from app.jobs.registry import JobHandlerNotImplementedError, get_handler
@@ -29,6 +30,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.HISTORICAL_DATA_INGESTION,
     JobType.FEATURE_GENERATION,
     JobType.MODEL_TRAINING,
+    JobType.START_PROBABILITY_MODEL_TRAINING,
     JobType.SQUAD_OPTIMIZATION,
     JobType.LINEUP_OPTIMIZATION,
     JobType.MANAGER_SYNC,
@@ -73,6 +75,10 @@ def test_lineup_optimization_resolves_to_its_runner():
 
 def test_model_training_resolves_to_its_runner():
     assert get_handler(JobType.MODEL_TRAINING) is ModelTrainingJobRunner
+
+
+def test_start_probability_model_training_resolves_to_its_runner():
+    assert get_handler(JobType.START_PROBABILITY_MODEL_TRAINING) is StartProbabilityModelTrainingJobRunner
 
 
 def test_manager_sync_resolves_to_its_runner():

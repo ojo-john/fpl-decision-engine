@@ -10,7 +10,11 @@ from collections.abc import Sequence
 
 import numpy as np
 from scipy.stats import spearmanr
+from sklearn.metrics import accuracy_score as _sklearn_accuracy
+from sklearn.metrics import f1_score as _sklearn_f1
+from sklearn.metrics import log_loss as _sklearn_log_loss
 from sklearn.metrics import mean_absolute_error as _sklearn_mae
+from sklearn.metrics import roc_auc_score as _sklearn_roc_auc
 from sklearn.metrics import root_mean_squared_error as _sklearn_rmse
 
 __all__ = [
@@ -20,6 +24,10 @@ __all__ = [
     "spearman_rank_correlation",
     "top_k_capture_rate",
     "calibration_buckets",
+    "binary_auc",
+    "binary_accuracy",
+    "binary_f1",
+    "binary_log_loss",
 ]
 
 
@@ -72,6 +80,46 @@ def top_k_capture_rate(y_true: Sequence[float], y_pred: Sequence[float], k: int 
     true_top_k = set(np.argsort(-true_arr, kind="stable")[:k].tolist())
     pred_top_k = set(np.argsort(-pred_arr, kind="stable")[:k].tolist())
     return len(true_top_k & pred_top_k) / k
+
+
+def binary_auc(y_true: Sequence[float], y_pred_proba: Sequence[float]) -> float | None:
+    """ROC AUC for a binary classifier's predicted probabilities.
+
+    ``None`` if ``y_true`` has fewer than 2 distinct classes -- AUC is undefined (not just "low")
+    when there is only one class present in the evaluation set, exactly mirroring
+    ``spearman_rank_correlation``'s own "undefined, not degenerate" convention above.
+    """
+    true_arr = np.asarray(y_true, dtype=float)
+    if len(np.unique(true_arr)) < 2:
+        return None
+    return float(_sklearn_roc_auc(true_arr, np.asarray(y_pred_proba, dtype=float)))
+
+
+def binary_accuracy(y_true: Sequence[float], y_pred_label: Sequence[float]) -> float:
+    """Plain accuracy for already-thresholded binary predictions (0.0/1.0), not probabilities."""
+    return float(_sklearn_accuracy(y_true, y_pred_label))
+
+
+def binary_f1(y_true: Sequence[float], y_pred_label: Sequence[float]) -> float:
+    """F1 score for already-thresholded binary predictions (0.0/1.0), not probabilities.
+
+    ``zero_division=0`` -- a fold where the classifier predicts the positive class for nobody (or
+    everybody) has a genuine, computable F1 of 0 rather than raising/warning, consistent with this
+    module's "never raise on a degenerate-but-real evaluation set" convention.
+    """
+    return float(_sklearn_f1(y_true, y_pred_label, zero_division=0))
+
+
+def binary_log_loss(y_true: Sequence[float], y_pred_proba: Sequence[float]) -> float | None:
+    """Binary cross-entropy log loss between true labels and predicted probabilities.
+
+    ``None`` if ``y_true`` has fewer than 2 distinct classes -- log loss against a single-class
+    evaluation set is degenerate for the same reason ``binary_auc`` returns ``None`` there.
+    """
+    true_arr = np.asarray(y_true, dtype=float)
+    if len(np.unique(true_arr)) < 2:
+        return None
+    return float(_sklearn_log_loss(true_arr, np.asarray(y_pred_proba, dtype=float)))
 
 
 def calibration_buckets(y_true: Sequence[float], y_pred: Sequence[float], n_buckets: int = 5) -> dict:
