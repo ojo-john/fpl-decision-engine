@@ -227,6 +227,19 @@ def test_project_player_with_champion_uses_cold_start_blend_for_a_player_with_no
     gameweek = db_session.execute(
         select(Gameweek).where(Gameweek.season_id == current_season_id).limit(1)
     ).scalar_one()
+    # Explicitly clear any pre-existing rows for these two players first, mirroring this file's
+    # own "no champion" test's precedent (see module docstring) rather than assuming a pristine
+    # DB -- this project's integration tests run against a shared, never-truncated Postgres, and
+    # ``current_season_id``/its players are reused (get-or-create by season label) across every
+    # test in the suite that seeds this same "current" season, so an earlier test run may have
+    # already given one of these two positionally-selected players a stats row of their own.
+    db_session.execute(
+        delete(PlayerGameweekStats).where(
+            PlayerGameweekStats.player_id.in_([warm_player.id, cold_player.id]),
+            PlayerGameweekStats.season_id == current_season_id,
+        )
+    )
+    db_session.commit()
     db_session.add(
         PlayerGameweekStats(
             player_id=warm_player.id,
