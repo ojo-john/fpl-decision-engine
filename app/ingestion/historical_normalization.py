@@ -233,6 +233,31 @@ def _blank_to_none(value: Any) -> Any:
     return None if _is_blank(value) else value
 
 
+# Real, verified bug (found 2026-08-17 while building POSITION_SEGMENTATION_VALIDATION): the
+# `gws/merged_gw.csv` source's own free-text "position" column is NOT the canonical FPL short
+# code -- it inconsistently uses "GK" instead of "GKP" for real goalkeepers, and not even
+# consistently per player: querying the real ingested data showed the SAME real goalkeeper (e.g.
+# Altay Bayindir, Hakon Valdimarsson) labeled "GK" in some gameweeks and "GKP" in others, within
+# the SAME season, across all 6 real historical seasons ingested. `app.modeling.candidates
+# .KNOWN_POSITIONS = ("GKP", "DEF", "MID", "FWD")` only recognizes "GKP", so every "GK"-labeled
+# row (the large majority of real goalkeeper rows -- e.g. 2023-24: 3406 "GK" vs only 394 "GKP")
+# was silently one-hot-encoded as "unknown position" (`_one_hot_position` in candidates.py),
+# not bucketed to goalkeeper at all. This affects every model ever trained on this historical
+# data, including the live champion. Two other stray labels ("AM"/"MNG", 2024-25 only) were
+# investigated and are NOT a bug -- they're real Assistant Manager/Manager fantasy picks (verified
+# against real names: Guardiola, Arteta, Postecoglou, ...), correctly excluded from
+# KNOWN_POSITIONS since they are not real player positions.
+_POSITION_SHORT_NAME_ALIASES = {"GK": "GKP"}
+
+
+def _normalize_position_short_name(value: Any) -> Any:
+    """Canonicalize `gws/merged_gw.csv`'s own free-text position label -- see
+    `_POSITION_SHORT_NAME_ALIASES`'s own comment for the real bug this closes. Unrecognized
+    values (including the real, non-bug "AM"/"MNG" manager-pick labels) pass through unchanged,
+    exactly as before -- this only touches the one confirmed, real alias."""
+    return _POSITION_SHORT_NAME_ALIASES.get(value, value)
+
+
 # --- Season -------------------------------------------------------------
 
 
@@ -598,7 +623,7 @@ def _normalize_pgw_row(row: dict[str, Any]) -> dict[str, Any]:
         "fixture": _parse_int_or_none(row.get("fixture")),
         "opponent_team": _parse_int_or_none(row.get("opponent_team")),
         "was_home": _parse_bool_or_none(row.get("was_home")),
-        "position": _blank_to_none(row.get("position")),
+        "position": _normalize_position_short_name(_blank_to_none(row.get("position"))),
         "minutes": _parse_int_or_zero(row.get("minutes")),
         "total_points": _parse_int_or_zero(row.get("total_points")),
         "goals_scored": _parse_int_or_zero(row.get("goals_scored")),

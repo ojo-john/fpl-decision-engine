@@ -123,6 +123,39 @@ def test_blank_column_value_also_becomes_none_not_missing_key():
     assert normalized["expected_goals"] is None
 
 
+# --- Real bug (found 2026-08-17): merged_gw.csv's own "position" column uses "GK", not FPL's
+# canonical "GKP" -- and does so inconsistently even for the SAME real goalkeeper across
+# gameweeks within one season. app.modeling.candidates.KNOWN_POSITIONS only recognizes "GKP", so
+# every "GK"-labeled row was silently one-hot-encoded as "unknown position", not goalkeeper. -----
+
+
+def test_goalkeeper_position_gk_alias_normalizes_to_canonical_gkp():
+    row = {**_ROW_2023_24_ERA, "position": "GK"}
+    normalized = _normalize_pgw_row(row)
+    assert normalized["position"] == "GKP"
+
+
+def test_goalkeeper_position_already_canonical_gkp_is_unchanged():
+    row = {**_ROW_2023_24_ERA, "position": "GKP"}
+    normalized = _normalize_pgw_row(row)
+    assert normalized["position"] == "GKP"
+
+
+def test_outfield_positions_are_unaffected_by_the_gk_alias():
+    for position in ("DEF", "MID", "FWD"):
+        row = {**_ROW_2023_24_ERA, "position": position}
+        assert _normalize_pgw_row(row)["position"] == position
+
+
+def test_manager_pick_position_labels_pass_through_unchanged():
+    """"AM"/"MNG" (2024-25 only) are real Assistant Manager/Manager fantasy picks, not a
+    mislabeled player position -- verified against real ingested names (Guardiola, Arteta, ...).
+    Correctly excluded from KNOWN_POSITIONS; must NOT be aliased to anything."""
+    for position in ("AM", "MNG"):
+        row = {**_ROW_2023_24_ERA, "position": position}
+        assert _normalize_pgw_row(row)["position"] == position
+
+
 # --- Raw ownership COUNT vs percent must never be conflated -----------------
 
 
