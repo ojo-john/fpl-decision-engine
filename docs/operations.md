@@ -159,6 +159,76 @@ See the README's "Web dashboard" section for local setup. Operationally:
   response, regenerate it (see the README) rather than hand-editing the
   generated file.
 
+## Post-deadline real-data verification
+
+Six features have only ever been exercised against `tests/`'s committed
+fixtures/synthetic seasons (see this repo's `CLAUDE.md` — the test suite
+never hits the real FPL API or a live season): `MANAGER_SYNC`'s squad fetch,
+the user's own chip-inventory derivation (`app.chips.inventory`),
+`LEAGUE_SYNC`'s standings/matches sync, rival-profile derivation
+(`app.h2h.rival_state`), rival picks-based squad differentials
+(`app.h2h.differential`), and price-signal threshold calibration
+(`app.players.price_signal_calibration`). Each depends on a real,
+FPL-platform-imposed precondition that a synthetic fixture can't reproduce:
+
+| Feature | Real precondition | Confirmed by |
+|---|---|---|
+| `MANAGER_SYNC` squad fetch | The gameweek's own deadline has passed — FPL withholds every manager's picks (own included) until then, live-confirmed against `/entry/{id}/event/{event}/picks/` | `app/jobs/handlers/manager_sync.py` module docstring |
+| Chip inventory (`app.chips.inventory`) | A current `ManagerSquadSnapshot` exists — i.e. `MANAGER_SYNC` above has succeeded once | derived directly |
+| `LEAGUE_SYNC` standings/entries | The season has started AND at least one gameweek has finished — FPL's `leagues-h2h/{id}/standings/` returns zero `standings.results` before that (joined managers sit under `new_entries` instead) | `app/jobs/handlers/league_sync.py` module docstring; also documented in `ARCHITECTURE.md`'s "League Watch" section |
+| Rival profile computation | Same as `LEAGUE_SYNC` standings above — Layer 2 only computes a profile per standings entry row | derived directly |
+| Rival squad differentials (`app.h2h.differential`) | Both the user's own squad (`MANAGER_SYNC`) AND at least one rival's picks for a finished gameweek (`LEAGUE_SYNC`) | derived directly |
+| Price-signal calibration (`app.players.price_signal_calibration`) | At least `MIN_CALIBRATION_SAMPLE_SIZE` (30) real (signal, price-change) pairs — needs real price movements across a live season, accumulated via repeated `DATA_INGESTION` runs | module docstring |
+
+### Running the smoke test
+
+```bash
+# Real dev DB (never .env.test) and the real, live FPL API -- pydantic-settings
+# loads .env automatically (packages/shared/config.py's env_file=".env"), no
+# manual `source` needed as long as .env exists in the repo root you're running from.
+uv run python scripts/post_deadline_smoke_test.py
+```
+
+Runs six checks (one per feature above) against the real dev database and
+prints one of three verdicts per check:
+
+- **PASS** — the real precondition is met and the feature produced real,
+  sane output.
+- **PENDING** — the real precondition genuinely hasn't happened yet (expected
+  pre-season/pre-deadline state, not a failure). Every check names exactly
+  which precondition is still outstanding.
+- **FAIL** — the precondition IS met and the feature still broke. This is
+  the only outcome that should ever fail CI/block a release; the script's
+  exit code is `0` unless at least one check is `FAIL`.
+
+`MANAGER_SYNC`/`LEAGUE_SYNC` checks execute the real job (same
+`app.jobs.service.execute_job` path as `scripts/run_job.py`) with a
+same-day idempotency key, so rerunning the script multiple times in one day
+returns the already-recorded result instead of re-hitting the live FPL API
+on every invocation. Defaults to this app's own real manager (`918600`) and
+H2H league (`814682`, "Pro Clubs '27") — override with `--fpl-manager-id`/
+`--fpl-league-id` if verifying a different manager/league.
+
+### What to actually check once GW1's deadline (2026-08-21 17:30 UTC) has passed
+
+1. Run the smoke test. `manager_sync` and `chip_inventory` should flip to
+   PASS immediately (the deadline is the only precondition for both).
+   `league_sync`/`rival_profile_computation` need the season to have
+   started *and* GW1 to finish being played (a few days later, not the
+   instant the deadline passes) — they'll still legitimately read PENDING
+   in between; don't treat that as a bug.
+2. Once GW1 has actually finished, rerun it — `league_sync`,
+   `rival_profile_computation`, and `rival_differentials` should all flip to
+   PASS (assuming `manager_sync`/`chip_inventory` already passed in step 1).
+3. `price_signal_calibration` will likely stay PENDING for longer — FPL
+   moves individual player prices based on transfer momentum, not on a
+   fixed schedule, so accumulating 30 real (signal, outcome) pairs takes
+   multiple gameweeks of repeated `DATA_INGESTION` runs. Re-check
+   periodically; there is nothing actionable to do before then.
+4. Any `FAIL` at this point is a real regression, not an expected gap —
+   investigate via the specific job/table the check names before assuming
+   it's another platform quirk.
+
 ## Secret rotation
 
 `APP_SHARED_TOKEN` is the one real secret in this system once it's deployed

@@ -48,6 +48,19 @@ the same "resolve to this season's ``Player.fpl_element_id``, report
 unresolved ids, never block on it" logic ``MANAGER_SYNC`` already
 established.
 
+Empty-standings pre-season window (live-confirmed, see
+``scripts/post_deadline_smoke_test.py`` and ARCHITECTURE.md's "League Watch"
+section): FPL's own ``leagues-h2h/{id}/standings/`` genuinely returns zero
+``standings.results`` for a real, active league until the season has started
+AND at least one gameweek has finished — joined managers show up under
+``new_entries`` instead during that window. This run still succeeds and
+persists the ``League`` row in that case; there are simply zero
+``LeagueEntry`` rows (and, since the per-rival picks/profile loops below both
+iterate ``standings_results``, zero ``RivalGameweekSnapshot``/``RivalProfile``
+rows either) until that precondition is met. Not a bug — callers checking
+"did this sync actually work" pre-season must check for this explicitly
+rather than treating zero entries as a failure.
+
 Milestone 5 Layer 2 (H2H Strategy: rival-state derivation/prediction) is
 appended to this same handler rather than built as its own job type — after
 every rival's ``RivalGameweekSnapshot`` row is persisted for this run (the
