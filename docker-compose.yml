@@ -40,6 +40,24 @@ services:
       timeout: 5s
       retries: 5
 
+  # Real local automation: keeps the real database current (LEAGUE_SYNC, GAMEWEEK_REVIEW,
+  # periodic DATA_INGESTION) with zero human interaction, as long as this stack is running -- see
+  # scripts/scheduler.py's own module docstring for the full "why" (short version: GitHub Actions
+  # cannot reach this database at all, so this is the real fix, not that). Starts by default with
+  # a plain `docker compose up`, same as api/web -- if you don't want background automation
+  # running, either `docker compose stop scheduler` after starting everything else, or comment
+  # this whole service block out. Reuses the `api` service's own image (same Dockerfile/deps,
+  # nothing extra to build) -- just runs a different command against the same database.
+  scheduler:
+    build: { context: ., dockerfile: Dockerfile }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres: { condition: service_healthy }
+    command: ["uv", "run", "python", "scripts/scheduler.py"]
+    restart: unless-stopped
+
   web:
     build: { context: ./apps/web, dockerfile: Dockerfile }
     env_file: .env

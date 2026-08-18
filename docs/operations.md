@@ -125,6 +125,37 @@ cadence) using a 4-hour-bucketed idempotency key. This is still a
 placeholder cadence, not real deadline-aware scheduling — see the README for
 details.
 
+**Important: this workflow (and `ingest.yml`) spin up their OWN empty, throwaway Postgres
+service container inside the GitHub Actions runner.** They have never touched, and structurally
+cannot touch, the real local database `docker-compose.yml`'s own `postgres` service serves —
+GitHub's runners have no network path to your machine. They exist to prove the
+idempotent-job/ephemeral-Postgres CI pattern works, not to keep your real data current. For real
+automation against your real database, see the next section.
+
+### Local scheduler — the real automation (`scripts/scheduler.py`)
+
+Starts automatically as the `scheduler` service the moment you run `docker compose up` (reuses
+the `api` service's own image, no extra build) — as long as your Docker stack is running, it:
+
+- Reviews a gameweek automatically the moment it finishes and hasn't been reviewed yet
+  (`GAMEWEEK_REVIEW`, checked every 15 minutes, fires at most once per gameweek).
+- Syncs your league's real rival data every 6 hours (`LEAGUE_SYNC`).
+- Refreshes live player/price/status data every 4 hours (`DATA_INGESTION`) — the real equivalent
+  of what `scheduled-dispatcher.yml` above only ever simulates in CI.
+
+To opt out of background automation: `docker compose stop scheduler` after bringing the rest of
+the stack up, or comment the `scheduler` service block out of `docker-compose.yml` entirely. The
+manual "sync"/"review" buttons already in the web dashboard (see below) keep working exactly the
+same either way — this is purely additive, on-demand triggering was never removed.
+
+**Limitation, stated plainly**: this only runs while your own machine is on and Docker is up. It
+is a deliberate, zero-hosting-decision substitute for real automation, not a replacement for
+actually deploying this app somewhere with a real, always-on, publicly-reachable database — that
+remains a real, separate decision (which provider, cost, etc.) nobody has made yet. If this app
+is ever deployed that way, `scheduled-dispatcher.yml`/`ingest.yml` would need the same real
+`DATABASE_URL`-pointing treatment this script already gets locally, and this script's own loop
+could run as a normal background process there too rather than needing GitHub Actions at all.
+
 ## Running / rolling back a migration
 
 ```bash
