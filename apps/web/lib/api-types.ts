@@ -65,6 +65,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/players/notes/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Active Notes
+         * @description Every currently-active availability-risk and role-boost note across every player, for the
+         *     current/next unfinished gameweek -- NOT player-scoped, unlike every other note endpoint on
+         *     this router. Built for external, read-only consumers that can't reach this app's database
+         *     directly (see ``.github/workflows/scout-watch.yml``'s dedup step) to know what's already
+         *     known before proposing something as new. Registered before ``/{player_id}`` so ``notes`` can
+         *     never be misread as a player id (same defensive route-ordering discipline as
+         *     ``apps.api.routers.optimization``'s own chips-vs-catch-all precedent -- see that router's own
+         *     comment -- even though these two paths don't actually collide in segment count).
+         *
+         *     Returns an empty list (not 404) when there's no current season or no unfinished gameweek to
+         *     evaluate against (off-season) -- there's nothing "active" to report in either case, and a
+         *     consuming script shouldn't need special-case 404 handling for what is, for its purposes, the
+         *     same as "nothing found".
+         */
+        get: operations["list_active_notes_players_notes_active_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/players/{player_id}": {
         parameters: {
             query?: never;
@@ -135,6 +167,14 @@ export interface paths {
          *     attribution (no SHAP, no per-feature contribution breakdown) -- these are
          *     the same few numbers the projection formula itself already computes, just
          *     surfaced rather than recomputed or approximated.
+         *
+         *     Also surfaces ``defensive_contribution_hit_rate_prior_seasons``/``..._games`` (DEF/MID only):
+         *     this player's real historical rate of hitting FPL's 2025-26+ defensive-contribution bonus
+         *     threshold, via ``app.modeling.cold_start_validation
+         *     .defensive_contribution_hit_rate_prior_seasons``. PURELY INFORMATIONAL -- unlike every other
+         *     field here, this one is NOT an input ``_cold_start_projection`` actually used; there is
+         *     currently no real, leakage-safe evidence to justify wiring it into the formula (see that
+         *     function's own docstring). Surfaced anyway so a reader can see the same real signal directly.
          */
         get: operations["get_player_projection_players__player_id__projection_get"];
         put?: never;
@@ -717,6 +757,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs/cold-start-validation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Cold Start Validation */
+        post: operations["run_cold_start_validation_jobs_cold_start_validation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/learning/latest": {
         parameters: {
             query?: never;
@@ -777,6 +834,40 @@ export interface paths {
         };
         /** List Backtest Runs */
         get: operations["list_backtest_runs_learning_backtests_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/learning/cold-start-validations/{cold_start_validation_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Cold Start Validation Run */
+        get: operations["get_cold_start_validation_run_learning_cold_start_validations__cold_start_validation_run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/learning/cold-start-validations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Cold Start Validation Runs */
+        get: operations["list_cold_start_validation_runs_learning_cold_start_validations_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -951,6 +1042,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/models/start-probability-training": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Start Probability Training */
+        post: operations["run_start_probability_training_models_start_probability_training_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/models/start-probability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Start Probability Models */
+        get: operations["list_start_probability_models_models_start_probability_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/models/start-probability/{start_probability_model_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Start Probability Model */
+        get: operations["get_start_probability_model_models_start_probability__start_probability_model_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/data/refresh": {
         parameters: {
             query?: never;
@@ -973,8 +1115,113 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * ActiveNoteOut
+         * @description One row in ``GET /players/notes/active`` -- every currently-active
+         *     ``player_availability_risk_notes``/``player_role_notes`` row across every player, for the
+         *     CURRENT/next unfinished gameweek (not player-scoped like the existing per-player note
+         *     endpoints). Built for external, read-only consumers that can't reach this app's database
+         *     directly (e.g. ``.github/workflows/scout-watch.yml``'s dedup step) to know what's already
+         *     known before proposing something as new.
+         *
+         *     ``category`` is ``"availability_risk"`` or ``"role_boost"`` -- a plain str, not an enum,
+         *     mirroring ``player_role_notes.role``'s own "nothing branches on the exact string" reasoning.
+         *     ``role`` is only ever set for ``role_boost`` rows (``None`` for ``availability_risk``, which
+         *     has no equivalent column).
+         */
+        ActiveNoteOut: {
+            /**
+             * Player Id
+             * Format: uuid
+             */
+            player_id: string;
+            /** Web Name */
+            web_name: string | null;
+            /** Category */
+            category: string;
+            /** Role */
+            role: string | null;
+            /** Reason */
+            reason: string;
+            /** Severity */
+            severity: string;
+            /** Valid From Fpl Event Id */
+            valid_from_fpl_event_id: number | null;
+            /** Valid Until Fpl Event Id */
+            valid_until_fpl_event_id: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+        };
+        /**
          * AvailabilityRiskNoteCreate
          * @description Body for ``POST /players/{player_id}/availability-risk-notes``.
+         *
+         *     Severity-selection rubric, grounded in the real availability-risk notes created this
+         *     season (read live via ``GET /players/notes/active``, not invented categories). Every note
+         *     created so far falls into one of four bands, by how CONFIRMED and how LONG the reduced/
+         *     absent involvement is expected to be. ``severity`` is a discount multiplier in ``(0, 1]``;
+         *     LOWER means MORE severe (see ``app.optimization.projection.get_active_availability_risk_note``'s
+         *     own "most severe wins" tie-break when several notes are active for the same player).
+         *
+         *     - **0.0-0.10 -- confirmed out for an extended, specific period (weeks), club- or
+         *       multi-source-confirmed injury/suspension with a defined-ish recovery timeline.** Leave
+         *       literal ``0.0`` to the hard-exclude statuses ``i``/``s``/``u`` this table never needs to
+         *       duplicate (see ``app.optimization.projection._HARD_EXCLUDE_STATUSES``) -- this band is
+         *       for "realistically not featuring at normal involvement for multiple gameweeks", not "will
+         *       not play at all this window".
+         *       - Kroupi.Jr, 0.05: confirmed fifth-metatarsal-fracture surgery, multiple independent
+         *         outlets agreeing on a 3-4 month layoff, for a genuinely popular (~185k owners) asset.
+         *       - Minteh, 0.05: forced off with a leg injury in a pre-season friendly; club-communicated
+         *         2-3 month expectation, on an already-depleted position group.
+         *       - Madjo, 0.10: confirmed out for a named run of specific fixtures (opener plus 4 more,
+         *         ~6-week timeline) after a debut injury -- slightly higher than the two above because the
+         *         return point is more concretely bounded (a named fixture list, not "2-3 months").
+         *
+         *     - **0.60-0.75 -- significant, sourced fatigue/match-fitness concern, not yet officially
+         *       listed injured/doubtful by FPL, genuinely uncertain whether it costs the player a start.**
+         *       The largest real category so far: players who went deep into a summer international
+         *       tournament and return to club training only days before a season opener. Within this
+         *       band, rank by tournament depth/minutes actually played and how late the return-to-
+         *       training date is relative to the opener.
+         *       - Senesi, 0.60: played the actual FINAL (~120 minutes in that match alone) -- the latest
+         *         realistic return-to-club window of anyone noted so far.
+         *       - Rice / Saka, 0.65 each: lost in the semifinal, confirmed not returning to club training
+         *         until 11 days before the opener; Saka additionally reported playing through pain for
+         *         much of the tournament.
+         *       - Guehi, 0.65: same semifinal-loss tournament length as Rice/Saka, plus 120 minutes of a
+         *         quarterfinal while managing a knock.
+         *
+         *     - **0.80-0.95 -- a milder or more uncertain version of the 0.60-0.75 band, OR a genuine
+         *       rotation/competition-for-minutes risk that is not injury-driven at all.** Real concern,
+         *       but with a mitigating factor (an earlier partial return, a shorter tournament run, or
+         *       simply "this player has to win a starting spot, not recover from anything") that argues
+         *       for a smaller discount than the band above.
+         *       - Rogers, 0.75: same semifinal-length tournament as Rice/Saka/Guehi, but also just
+         *         completed a mid-tournament transfer to a new club -- kept at the low end of this band,
+         *         not lower, because he'd already done one individual training session ahead of
+         *         Rice/Saka's fully-absent status.
+         *       - Lacroix, 0.85: real tournament minutes (150, including a 30th-minute sub appearance in
+         *         the semifinal) but as a squad-depth/injury-cover option, not a full-tournament nailed
+         *         starter -- milder than the heaviest-minutes cases.
+         *       - Woltemade, 0.85: not a tournament-fatigue case at all -- a genuine three-way rotation
+         *         competition for the same striker slot under a new manager, plus a real, quantified
+         *         second-half-of-last-season decline (minutes ~79/game to ~41/game). Discount reflects
+         *         real competition for a starting shirt, not an injury/unavailability concern -- still the
+         *         same numeric band as the milder fatigue cases because the underlying uncertainty ("will
+         *         this player start") is comparably real, just for a different reason.
+         *
+         *     A genuinely new situation that doesn't fit one of these four bands (e.g. a confirmed,
+         *     club-announced multi-MONTH injury for a nailed starter with no realistic return this
+         *     season) should not be force-fit into the closest existing band -- go lower (nearer 0.0)
+         *     than any of the above, same principle as the 0.05-0.10 band: the more confirmed and the
+         *     longer the expected absence, the closer to 0. Cite the real note(s) above most similar to
+         *     the new situation in the new note's own ``reason`` text -- this rubric is only useful if a
+         *     future note-writer (human, Scout Watch's automated proposals, or a future session) can
+         *     point at precedent, not just pick a number in isolation.
          */
         AvailabilityRiskNoteCreate: {
             /** Reason */
@@ -1226,6 +1473,87 @@ export interface components {
             stop_deadline: string | null;
             /** Status */
             status: string;
+        };
+        /** ColdStartValidationRequest */
+        ColdStartValidationRequest: {
+            /** Half Life Candidates */
+            half_life_candidates?: number[] | null;
+            /** Difficulty Coefficient Candidates */
+            difficulty_coefficient_candidates?: number[] | null;
+            /** Blend Ratio Candidates */
+            blend_ratio_candidates?: number[] | null;
+            /** Requested By */
+            requested_by?: string | null;
+        };
+        /** ColdStartValidationRunOut */
+        ColdStartValidationRunOut: {
+            /**
+             * Cold Start Validation Run Id
+             * Format: uuid
+             */
+            cold_start_validation_run_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Early Season Gameweek Cutoff */
+            early_season_gameweek_cutoff: number;
+            /** Component Evaluated */
+            component_evaluated: string;
+            /** Usable Seasons */
+            usable_seasons: string[];
+            /** Seasons Evaluated */
+            seasons_evaluated: string[];
+            /** N Observations */
+            n_observations: number;
+            /** Half Life Sweep */
+            half_life_sweep: {
+                [key: string]: unknown;
+            }[];
+            /** Default Half Life Seasons */
+            default_half_life_seasons: string;
+            /** Default Half Life Mae */
+            default_half_life_mae: string | null;
+            /** Best Half Life Seasons */
+            best_half_life_seasons: string;
+            /** Best Half Life Label */
+            best_half_life_label: string;
+            /** Best Half Life Mae */
+            best_half_life_mae: string;
+            /** Difficulty Coefficient Sweep */
+            difficulty_coefficient_sweep: {
+                [key: string]: unknown;
+            }[];
+            /** Default Difficulty Coefficient */
+            default_difficulty_coefficient: string;
+            /** Default Difficulty Coefficient Mae */
+            default_difficulty_coefficient_mae: string | null;
+            /** Best Difficulty Coefficient */
+            best_difficulty_coefficient: string | null;
+            /** Best Difficulty Coefficient Mae */
+            best_difficulty_coefficient_mae: string | null;
+            /** Blend Ratio Sweep */
+            blend_ratio_sweep: {
+                [key: string]: unknown;
+            }[];
+            /** Default Blend Career Avg Weight */
+            default_blend_career_avg_weight: string;
+            /** Default Blend Mae */
+            default_blend_mae: string | null;
+            /** Best Blend Career Avg Weight */
+            best_blend_career_avg_weight: string | null;
+            /** Best Blend Mae */
+            best_blend_mae: string | null;
+            /** Blend Ratio Caveat */
+            blend_ratio_caveat: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /**
+             * Completed At
+             * Format: date-time
+             */
+            completed_at: string;
         };
         /**
          * CompositionRiskOut
@@ -2018,6 +2346,10 @@ export interface components {
             role_boost_reason?: string | null;
             /** Role Boost Severity */
             role_boost_severity?: string | null;
+            /** Defensive Contribution Hit Rate Prior Seasons */
+            defensive_contribution_hit_rate_prior_seasons?: number | null;
+            /** Defensive Contribution Hit Rate Prior Games */
+            defensive_contribution_hit_rate_prior_games?: number | null;
             /** Explanation */
             explanation: string;
         };
@@ -2200,6 +2532,58 @@ export interface components {
         /**
          * RoleNoteCreate
          * @description Body for ``POST /players/{player_id}/role-notes``.
+         *
+         *     Severity-selection rubric, grounded in the real role-boost notes created this season (read
+         *     live via ``GET /players/notes/active``, not invented categories). Every note created so far
+         *     falls into one of four bands, by how CONFIRMED and how VALUABLE the specific role fact is.
+         *     ``severity`` is a boost multiplier, normally ``> 1.0`` (see ``app.optimization.projection.
+         *     get_active_role_boost_note``'s own "strongest confirmed claim wins" tie-break -- the INVERSE
+         *     tie-break direction from availability-risk notes, since a role fact is usually unambiguous
+         *     once properly sourced).
+         *
+         *     - **1.05-1.10 -- confirmed for ONE real but narrower sub-role, while the MORE valuable
+         *       sub-roles for the same player remain genuinely undecided.** Don't inflate severity to
+         *       reflect a role the player might ALSO pick up later but hasn't been confirmed for yet.
+         *       - Szoboszlai, 1.08: real, confirmed, well-sourced primary free-kick taker -- but penalty
+         *         and corner duty are explicitly reported as undecided following a teammate's departure
+         *         ("could be on everything", not yet confirmed). Kept modest specifically because the more
+         *         valuable duties (penalties/corners) are still open.
+         *
+         *     - **1.10-1.20 -- confirmed, cross-sourced primary set-piece duty (penalties and/or
+         *       corners/free-kicks), continuing or newly assigned, with multiple independent trackers
+         *       agreeing.** The clearest, most straightforwardly-verifiable category -- "who takes this
+         *       team's penalties/corners" is close to a fact once 2-3 independent trackers agree.
+         *       - Gross, 1.15: confirmed main penalty AND corner/free-kick taker, cross-verified by 3
+         *         independent set-piece trackers.
+         *       - Igor Thiago, 1.15: confirmed RETAINING first-choice penalty duty (not a new assignment)
+         *         after a 22-goal season, again cross-verified by multiple independent trackers.
+         *
+         *     - **1.30-1.40 -- a verified, QUANTITATIVE pattern in this app's OWN historical data that the
+         *       automated projection formula demonstrably underweights.** Distinct from the two bands
+         *       above (which are about a role FACT reported externally) -- this band is for when the
+         *       evidence is a real, checked number already sitting in this app's own database, not outside
+         *       reporting.
+         *       - Joao Pedro, 1.35: early-season points-per-game improving every single season on record
+         *         (0.17 -> 3.00 -> 3.17 -> 6.17), where the recency-weighted multi-season blend (half-life
+         *         2.0 seasons) still lands well below the most recent, most representative season alone --
+         *         a genuinely different justification from a "who takes penalties" role note, hence the
+         *         higher band: it's correcting a demonstrated formula blind spot, not just encoding an
+         *         external fact.
+         *
+         *     - **1.45-1.65 -- a confirmed MAJOR status/role upgrade: promotion from a backup/fringe role
+         *       to genuinely expected first-choice at a position of real attacking importance.** Reserved
+         *       for the single biggest category of role change (not a set-piece duty, a straight
+         *       playing-time/status upgrade) -- use sparingly, since this is the strongest boost in the
+         *       table and should only apply when the OLD historical data is genuinely stale/misleading for
+         *       what the player's role is NOW.
+         *       - Osula, 1.6: historical ``career_avg_points_prior_seasons`` (~1.06) reflects an old
+         *         fringe-backup role that real, current reporting says no longer applies -- reported as the
+         *         CURRENT leading option for a starting striker slot under a new manager. The highest
+         *         severity of any note so far, specifically because the gap between what the historical
+         *         average implies and what current reporting says is the largest of any note created.
+         *
+         *     As with availability-risk notes, cite the closest real precedent above in the new note's own
+         *     ``reason`` text when creating a new one.
          */
         RoleNoteCreate: {
             /** Role */
@@ -2328,6 +2712,61 @@ export interface components {
         SquadPreviewRequest: {
             /** Exclude Player Ids */
             exclude_player_ids?: string[];
+        };
+        /**
+         * StartProbabilityModelOut
+         * @description See packages.database.models.start_probability_model.StartProbabilityModel.
+         *
+         *     ``is_active`` is always ``False`` on a just-trained row -- see that model's own docstring for
+         *     why activation is a deliberate, separate, human-reviewed decision this schema surfaces the
+         *     real evidence for (``aggregate_*``) but does not itself trigger.
+         */
+        StartProbabilityModelOut: {
+            /**
+             * Start Probability Model Id
+             * Format: uuid
+             */
+            start_probability_model_id: string;
+            /** Feature Version */
+            feature_version: number;
+            /** Target Variable */
+            target_variable: string;
+            /** Usable Seasons */
+            usable_seasons: string[];
+            /** Fold Count */
+            fold_count: number;
+            /** Degenerate Single Season */
+            degenerate_single_season: boolean;
+            /** Aggregate Auc */
+            aggregate_auc: string | null;
+            /** Aggregate Accuracy */
+            aggregate_accuracy: string | null;
+            /** Aggregate F1 */
+            aggregate_f1: string | null;
+            /** Aggregate Log Loss */
+            aggregate_log_loss: string | null;
+            /** N Observations */
+            n_observations: number;
+            /** Is Active */
+            is_active: boolean;
+            /**
+             * Trained At
+             * Format: date-time
+             */
+            trained_at: string;
+        };
+        /**
+         * StartProbabilityTrainingRequest
+         * @description See app.jobs.handlers.start_probability_training's own module docstring.
+         *
+         *     ``requested_by`` mirrors every other job-trigger request schema's own optional
+         *     "who asked for this" field (e.g. BacktestRequest).
+         */
+        StartProbabilityTrainingRequest: {
+            /** Feature Version */
+            feature_version?: number | null;
+            /** Requested By */
+            requested_by?: string | null;
         };
         /** TransferMoveOut */
         TransferMoveOut: {
@@ -2534,6 +2973,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlayerListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_active_notes_players_notes_active_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveNoteOut"][];
                 };
             };
             /** @description Validation Error */
@@ -3724,6 +4194,41 @@ export interface operations {
             };
         };
     };
+    run_cold_start_validation_jobs_cold_start_validation_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ColdStartValidationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ColdStartValidationRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_latest_learning_report_learning_latest_get: {
         parameters: {
             query?: never;
@@ -3841,6 +4346,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BacktestRunOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_cold_start_validation_run_learning_cold_start_validations__cold_start_validation_run_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                cold_start_validation_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ColdStartValidationRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_cold_start_validation_runs_learning_cold_start_validations_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ColdStartValidationRunOut"][];
                 };
             };
             /** @description Validation Error */
@@ -4107,6 +4676,105 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChampionModelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_start_probability_training_models_start_probability_training_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartProbabilityTrainingRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartProbabilityModelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_start_probability_models_models_start_probability_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartProbabilityModelOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_start_probability_model_models_start_probability__start_probability_model_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                start_probability_model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartProbabilityModelOut"];
                 };
             };
             /** @description Validation Error */
