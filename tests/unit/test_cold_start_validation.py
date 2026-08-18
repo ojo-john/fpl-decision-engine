@@ -12,14 +12,18 @@ Failure/boundary cases come first per this repo's own test-priority convention, 
 """
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from app.features.engineering import PriorGameweekStat
 from app.modeling.cold_start_validation import (
+    DcReliabilityObservation,
     EarlyGameweekActual,
     PlayerSeasonObservation,
     PriceComparableBucket,
+    _dc_hit_rate,
     lookup_price_comparable_bucket,
     sweep_blend_ratio_candidates,
+    sweep_dc_reliability_coefficient_candidates,
     sweep_difficulty_coefficient_candidates,
     sweep_half_life_candidates,
 )
@@ -240,3 +244,109 @@ def test_lookup_price_comparable_bucket_price_at_exact_boundary_is_inclusive():
 
     assert result is not None
     assert result.avg_early_season_points == 1.0
+
+
+# --- _dc_hit_rate: boundary/failure cases first ------------------------------------------------------
+#
+# The DB-backed observation-BUILDING step (build_dc_reliability_observations, including the
+# leakage-critical strictly-prior-season cutoff) requires real Season/Gameweek/Player/
+# PlayerGameweekStats rows and is covered by
+# tests/integration/test_cold_start_projection_validation_job.py instead, mirroring this file's own
+# existing "DB-backed building vs pure function" split for every other signal above.
+
+
+def test_dc_hit_rate_no_rows_returns_none():
+    assert _dc_hit_rate([], "DEF", cutoff=datetime(2021, 8, 1, tzinfo=UTC)) is None
+
+
+def test_dc_hit_rate_all_rows_at_or_after_cutoff_returns_none():
+    # Real leakage guard: a row exactly AT the cutoff (this player's own target-season gameweek 1
+    # deadline) must not count as "strictly prior" -- mirrors filter_to_strictly_prior's own
+    # exclusive boundary everywhere else in this module.
+    rows = [(uuid4(), datetime(2021, 8, 1, tzinfo=UTC), 12, "DEF")]
+
+    assert _dc_hit_rate(rows, "DEF", cutoff=datetime(2021, 8, 1, tzinfo=UTC)) is None
+
+
+def test_dc_hit_rate_defender_threshold_is_ten():
+    season = uuid4()
+    rows = [
+        (season, datetime(2020, 8, gw, tzinfo=UTC), dc, "DEF")
+        for gw, dc in enumerate([10, 9, 10, 8], start=1)  # 2 of 4 real games hit the real >=10 threshold
+    ]
+
+    result = _dc_hit_rate(rows, "DEF", cutoff=datetime(2021, 8, 1, tzinfo=UTC))
+
+    assert result == (0.5, 4)
+
+
+def test_dc_hit_rate_midfielder_threshold_is_twelve_not_ten():
+    # Same raw defensive-action counts as the defender test above, but scored against the real,
+    # HIGHER midfielder/forward threshold (12, not 10) -- only 1 of 4 games qualifies here, not 2.
+    season = uuid4()
+    rows = [
+        (season, datetime(2020, 8, gw, tzinfo=UTC), dc, "MID")
+        for gw, dc in enumerate([10, 9, 12, 8], start=1)
+    ]
+
+    result = _dc_hit_rate(rows, "MID", cutoff=datetime(2021, 8, 1, tzinfo=UTC))
+
+    assert result == (0.25, 4)
+
+
+# --- sweep_dc_reliability_coefficient_candidates: boundary/failure cases first ----------------------
+
+
+def _dc_observation(
+    *, actual: float, career_avg_baseline: float, prior_dc_hit_rate: float
+) -> DcReliabilityObservation:
+    return DcReliabilityObservation(
+        fpl_code=1,
+        season_label="2021-22",
+        position_short_name="DEF",
+        actual_early_season_avg=actual,
+        career_avg_baseline=career_avg_baseline,
+        prior_dc_hit_rate=prior_dc_hit_rate,
+        prior_dc_games=10,
+    )
+
+
+def test_sweep_dc_reliability_coefficient_candidates_empty_observations_returns_undefined_mae():
+    # The REAL, current state of this sweep against real data -- see
+    # build_dc_reliability_observations's own docstring for why this is honest, not a test gap.
+    results = sweep_dc_reliability_coefficient_candidates([], candidates=[0.0, 0.1])
+
+    assert all(r.mae is None and r.n_observations == 0 for r in results)
+
+
+def test_sweep_dc_reliability_coefficient_candidates_zero_coefficient_is_a_pure_no_op():
+    # Matches _cold_start_projection's actual current production behavior: this signal isn't
+    # applied at all -- coefficient=0.0 must reproduce career_avg_baseline exactly, regardless of
+    # prior_dc_hit_rate.
+    obs = _dc_observation(actual=5.0, career_avg_baseline=4.0, prior_dc_hit_rate=0.9)
+
+    results = sweep_dc_reliability_coefficient_candidates([obs], candidates=[0.0])
+
+    assert results[0].mae == 1.0  # |4.0 - 5.0|, career_avg_baseline completely unadjusted
+
+
+def test_sweep_dc_reliability_coefficient_candidates_centers_on_a_fifty_percent_hit_rate():
+    # A player at EXACTLY the 0.5 coin-flip center gets zero adjustment at any coefficient --
+    # mirrors _cold_start_projection's fixture-difficulty formula's own "neutral at difficulty 3"
+    # structure.
+    obs = _dc_observation(actual=4.0, career_avg_baseline=4.0, prior_dc_hit_rate=0.5)
+
+    results = sweep_dc_reliability_coefficient_candidates([obs], candidates=[0.3])
+
+    assert results[0].mae == 0.0
+
+
+def test_sweep_dc_reliability_coefficient_candidates_high_hit_rate_improves_mae_when_predictive():
+    # A player who reliably hits the real threshold (hit_rate=1.0) under-projected by their own
+    # aggregate history -- a positive coefficient should push the prediction up, closer to actual.
+    obs = _dc_observation(actual=6.0, career_avg_baseline=4.0, prior_dc_hit_rate=1.0)
+
+    results = sweep_dc_reliability_coefficient_candidates([obs], candidates=[0.0, 0.5])
+    by_candidate = {r.coefficient: r for r in results}
+
+    assert by_candidate[0.5].mae < by_candidate[0.0].mae

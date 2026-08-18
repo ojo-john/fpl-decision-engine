@@ -450,6 +450,48 @@ value as a signal overall. This evaluation covered one real season (narrower tha
 evidence behind the cold-start blend's other constants) out of respect for ClubElo's own "be
 reasonable" rate-limit ask — documented honestly rather than overstated.
 
+**Defensive-contribution reliability — real infrastructure, currently zero real evidence, deliberately not
+wired into production.** A real gap surfaced through direct manual comparison of two real defenders at
+the same price who project similarly on aggregate history alone (Tarkowski, Everton: hits FPL's real
+2025-26+ CBIT bonus threshold in 57.9% of real games; Calafiori, Arsenal: 0.0%) — the cold-start blend's
+`career_avg_early_season_points_prior_seasons` input is an AGGREGATE historical points average that
+can't distinguish a repeatable defensive-work-rate-driven scoring pattern from a more variance-prone
+one, even though the real, current CBIT/CBIRT bonus (verified 2026-08-18 against real Premier League/
+Draft Fantasy sources, not assumed: defenders need 10 combined clearances+blocks+interceptions+tackles;
+midfielders/forwards need a higher 12, since ball recoveries also count for them) is part of the actual
+points formula being predicted.
+
+`app/modeling/cold_start_validation.py` adds a fifth, DEF/MID-only observation set and coefficient
+sweep for this: `build_dc_reliability_observations` (same leakage-safe `career_avg_early_season_points_
+prior_seasons`/`filter_to_strictly_prior` machinery every other builder in that module reuses, further
+requiring a real, non-null `defensive_contribution` gameweek in STRICTLY PRIOR seasons) and
+`sweep_dc_reliability_coefficient_candidates` (`career_avg_baseline * (1 + (prior_dc_hit_rate - 0.5) *
+coefficient)` — centered on a 0.5 coin-flip hit rate, mirroring the fixture-difficulty adjustment's own
+"neutral at difficulty 3" structure). Persists to five new `cold_start_validation_runs` columns
+(migration 0042: `n_dc_reliability_observations`, `dc_reliability_sweep_json`,
+`default_dc_reliability_coefficient`/`_mae`, `best_dc_reliability_coefficient`/`_mae`,
+`dc_reliability_caveat`), wired into `COLD_START_PROJECTION_VALIDATION`'s `run()` with the same
+never-fails-the-main-sweeps discipline as the true-rookie/price-prior population.
+
+**Real, honest result (checked directly against the real dev database, not assumed): this currently,
+always, evaluates ZERO observations.** `defensive_contribution` is only non-null starting the 2025-26
+season (the CBIT rule's first real season) — leakage-safe validation needs a player's STRICTLY PRIOR
+season's own DC data to predict a LATER, already-known season's outcome, and 2025-26 has no
+strictly-prior season carrying this stat; the next season that would (2026-27) hasn't been played yet.
+**This signal is therefore NOT wired into `_cold_start_projection` at all** — there is no real evidence
+to justify even the SIGN of an adjustment, let alone a magnitude, and this codebase's own established
+discipline (see the three constants and the Elo result above) is evidence-first, not intuition-first.
+Real evidence becomes possible automatically, with no code changes needed, the first time 2026-27
+gameweeks are ingested with their own real `defensive_contribution` values — re-run
+`COLD_START_PROJECTION_VALIDATION` at that point.
+
+Instead, the same real signal (`defensive_contribution_hit_rate_prior_seasons`) is exposed as a
+PURELY INFORMATIONAL field on `GET /players/{id}/projection` — `defensive_contribution_hit_rate_
+prior_seasons`/`_prior_games` (DEF/MID only, `None` for GKP/FWD or a player with no such gameweek) —
+so a manager can see the same real historical reliability signal directly rather than hand-querying
+`player_gameweek_stats.defensive_contribution`, without the API pretending it already shapes
+`projected_points`.
+
 Both `SQUAD_OPTIMIZATION` and `/optimize/preview` rank candidates by
 points summed across the next `SQUAD_BUILD_HORIZON_LENGTH` (6) unfinished
 gameweeks (`app.optimization.gameweek_resolution.resolve_horizon_gameweeks`

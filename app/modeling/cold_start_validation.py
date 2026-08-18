@@ -67,6 +67,8 @@ __all__ = [
     "BLEND_RATIO_SWEEP_CANDIDATES",
     "PRICE_COMPARABLE_BUCKETS_PER_POSITION",
     "PRICE_PRIOR_BLEND_WEIGHT_SWEEP_CANDIDATES",
+    "DC_CBIT_THRESHOLD_BY_POSITION",
+    "DC_RELIABILITY_COEFFICIENT_SWEEP_CANDIDATES",
     "PlayerSeasonObservation",
     "EarlyGameweekActual",
     "HalfLifeSweepResult",
@@ -76,6 +78,8 @@ __all__ = [
     "PriceComparablePoolEntry",
     "PriceComparableBucket",
     "PricePriorSweepResult",
+    "DcReliabilityObservation",
+    "DcReliabilityCoefficientSweepResult",
     "usable_season_labels_with_gameweek_stats",
     "build_player_season_observations",
     "sweep_half_life_candidates",
@@ -85,6 +89,9 @@ __all__ = [
     "compute_price_comparable_buckets",
     "sweep_price_prior_blend_weight_candidates",
     "lookup_price_comparable_bucket",
+    "build_dc_reliability_observations",
+    "sweep_dc_reliability_coefficient_candidates",
+    "defensive_contribution_hit_rate_prior_seasons",
 ]
 
 # A season 2 seasons ago weighted half as much as the most recent one, etc. -- see
@@ -121,6 +128,28 @@ PRICE_COMPARABLE_BUCKETS_PER_POSITION = 5
 # sweep_price_prior_blend_weight_candidates's own docstring for why this is a WEAKER evidentiary
 # footing than BLEND_RATIO_SWEEP_CANDIDATES's own already-caveated ep_next proxy.
 PRICE_PRIOR_BLEND_WEIGHT_SWEEP_CANDIDATES: tuple[float, ...] = (0.0, 0.3, 0.5, 0.7, 1.0)
+
+# Real FPL 2025-26+ defensive-contribution bonus thresholds (2 points, capped at 2 per match,
+# never more). Verified 2026-08-18 against real, current sources (the Premier League's own "What's
+# new for 2025/26" announcement and Draft Fantasy's 2026/27 DEFCON explainer) rather than assumed:
+# defenders need 10 combined clearances+blocks+interceptions+tackles (CBIT) in a match; midfielders
+# (and forwards) need a HIGHER 12, because their own count also includes ball recoveries (CBIRT) --
+# a real, position-dependent asymmetry, not one universal number. This module only ever computes
+# this signal for DEF/MID (see ``build_dc_reliability_observations``) -- FWD/GKP aren't where this
+# rule is meaningfully concentrated in practice (see that function's own docstring).
+DC_CBIT_THRESHOLD_BY_POSITION: dict[str, int] = {"DEF": 10, "MID": 12}
+
+# Candidate coefficients for a "trust this player's aggregate historical average more when it's
+# demonstrably driven by a repeatable defensive-work-rate skill" adjustment -- see
+# sweep_dc_reliability_coefficient_candidates's own docstring for the exact formula, and, critically,
+# why real evaluation of this sweep currently returns ZERO observations for every single candidate
+# (defensive_contribution is only non-null for the 2025-26 season -- the CBIT rule's first real
+# season -- and leakage-safe validation needs a player's STRICTLY PRIOR season's own DC data to
+# predict a LATER, already-known season's outcome; 2025-26 has no strictly-prior season carrying
+# this stat, and the next season that would (2026-27) hasn't been played yet). This sweep is real,
+# correct, and ready -- it just has nothing to validate against yet. See this module's own top-level
+# docstring and ARCHITECTURE.md's cold-start-validation section for the honest, current state.
+DC_RELIABILITY_COEFFICIENT_SWEEP_CANDIDATES: tuple[float, ...] = (0.0, 0.05, 0.1, 0.15, 0.2, 0.3)
 
 
 @dataclass(frozen=True)
@@ -244,6 +273,35 @@ class PriceComparableBucket:
 class PricePriorSweepResult:
     price_prior_weight: float
     ep_next_weight: float
+    mae: float | None
+    spearman: float | None
+    n_observations: int
+
+
+@dataclass(frozen=True)
+class DcReliabilityObservation:
+    """One real, leakage-safe (player, target season) evaluation pair for the DC-reliability
+    adjustment -- DEF/MID only (see ``DC_CBIT_THRESHOLD_BY_POSITION``), requiring at least one real
+    ``defensive_contribution``-carrying gameweek in STRICTLY PRIOR seasons.
+
+    ``career_avg_baseline`` is the SAME isolated ``career_avg_early_season_points_prior_seasons``
+    component ``sweep_difficulty_coefficient_candidates`` evaluates against -- deliberately not the
+    full ``ep_next``-blended prediction, so this sweep carries none of
+    ``sweep_blend_ratio_candidates``'s own ``ep_next``-proxy caveat either.
+    """
+
+    fpl_code: int
+    season_label: str
+    position_short_name: str
+    actual_early_season_avg: float
+    career_avg_baseline: float
+    prior_dc_hit_rate: float
+    prior_dc_games: int
+
+
+@dataclass(frozen=True)
+class DcReliabilityCoefficientSweepResult:
+    coefficient: float
     mae: float | None
     spearman: float | None
     n_observations: int
@@ -967,6 +1025,232 @@ def sweep_blend_ratio_candidates(
                 mae=metric_fns.mean_absolute_error(y_true, y_pred) if pairs else None,
                 spearman=metric_fns.spearman_rank_correlation(y_true, y_pred) if pairs else None,
                 n_observations=len(pairs),
+            )
+        )
+    return results
+
+
+def _load_dc_rows_by_fpl_code(session: Session) -> dict[int, list[tuple[uuid.UUID, datetime, int, str]]]:
+    """Every real, non-null ``defensive_contribution`` row for every non-quarantined player, keyed
+    by ``fpl_code``, as ``(season_id, gameweek_deadline, defensive_contribution, position_short_name)``
+    tuples -- a dedicated loader (mirrors ``_load_early_gameweek_fixture_rows``'s own "one small,
+    purpose-built query per new signal" precedent) rather than further overloading
+    ``_load_all_stats_by_fpl_code``'s shared ``PriorGameweekStat`` shape with a per-row position
+    field only this one signal needs.
+
+    Restricted to DEF/MID rows only (see ``DC_CBIT_THRESHOLD_BY_POSITION`` -- FWD/GKP don't earn
+    this bonus in any way this module models). Real, confirmed via direct query against the real
+    dev database (2026-08-18): ``defensive_contribution`` is NULL for every row before the 2025-26
+    season (the rule didn't exist), fully populated for every 2025-26 row -- so this dict is
+    populated ONLY from 2025-26 rows in practice today, exactly as documented on
+    ``DC_RELIABILITY_COEFFICIENT_SWEEP_CANDIDATES``.
+    """
+    rows = session.execute(
+        select(
+            Player.fpl_code,
+            Player.season_id,
+            Gameweek.deadline_time,
+            PlayerGameweekStats.defensive_contribution,
+            PlayerGameweekStats.position_short_name_at_time,
+        )
+        .join(PlayerGameweekStats, PlayerGameweekStats.player_id == Player.id)
+        .join(Gameweek, Gameweek.id == PlayerGameweekStats.gameweek_id)
+        .where(
+            Player.fpl_code.is_not(None),
+            Player.is_quarantined.is_(False),
+            PlayerGameweekStats.defensive_contribution.is_not(None),
+            PlayerGameweekStats.position_short_name_at_time.in_(list(DC_CBIT_THRESHOLD_BY_POSITION)),
+        )
+    ).all()
+
+    result: dict[int, list[tuple[uuid.UUID, datetime, int, str]]] = defaultdict(list)
+    for row in rows:
+        result[row.fpl_code].append(
+            (row.season_id, row.deadline_time, row.defensive_contribution, row.position_short_name_at_time)
+        )
+    return result
+
+
+def _dc_hit_rate(
+    rows: Sequence[tuple[uuid.UUID, datetime, int, str]],
+    position_short_name: str,
+    cutoff: datetime,
+) -> tuple[float, int] | None:
+    """Real threshold-hit rate (fraction of games meeting ``DC_CBIT_THRESHOLD_BY_POSITION`` for
+    ``position_short_name``) across every row in ``rows`` strictly before ``cutoff`` -- ``None`` if
+    zero such rows exist (nothing to compute a rate from, not a false ``0.0``).
+    """
+    threshold = DC_CBIT_THRESHOLD_BY_POSITION[position_short_name]
+    prior_rows = [row for row in rows if row[1] < cutoff]
+    if not prior_rows:
+        return None
+    hits = sum(1 for row in prior_rows if row[2] >= threshold)
+    return hits / len(prior_rows), len(prior_rows)
+
+
+def defensive_contribution_hit_rate_prior_seasons(
+    session: Session, fpl_code: int, position_short_name: str, as_of: datetime
+) -> tuple[float, int] | None:
+    """The real, live, PURELY INFORMATIONAL defensive-contribution reliability signal for one
+    player -- their real historical rate of hitting ``DC_CBIT_THRESHOLD_BY_POSITION`` across every
+    ``defensive_contribution``-carrying gameweek strictly before ``as_of``, or ``None`` if they have
+    none (the common case today -- see this module's own docstring on real data availability).
+
+    NOT used anywhere in ``app.optimization.projection``'s actual ``projected_points`` calculation
+    -- ``sweep_dc_reliability_coefficient_candidates`` currently has zero real observations to
+    validate ANY coefficient against, so wiring this into the live formula would be an unvalidated,
+    intuition-driven change, not evidence-based. Exposed instead as a real, honest, informational
+    field on ``GET /players/{id}/projection`` (see ``apps.api.routers.players``) so a human reader
+    can see the same real signal directly rather than needing to hand-query
+    ``player_gameweek_stats.defensive_contribution`` themselves, without the API pretending it
+    already shapes the number returned.
+
+    Only meaningful for DEF/MID (``position_short_name`` outside ``DC_CBIT_THRESHOLD_BY_POSITION``
+    returns ``None`` immediately -- this bonus isn't concentrated in FWD/GKP play in any way this
+    module models).
+    """
+    if position_short_name not in DC_CBIT_THRESHOLD_BY_POSITION:
+        return None
+    rows = _load_dc_rows_by_fpl_code(session).get(fpl_code, [])
+    return _dc_hit_rate(rows, position_short_name, as_of)
+
+
+def build_dc_reliability_observations(
+    session: Session, early_season_gameweek_cutoff: int = engineering.DEFAULT_EARLY_SEASON_GAMEWEEK_CUTOFF
+) -> tuple[list[DcReliabilityObservation], list[str]]:
+    """Every real, leakage-safe (player, target season) observation for the DC-reliability
+    adjustment, DEF/MID only -- reuses ``build_player_season_observations``'s exact same target-season/
+    ``prior_stats``/``career_avg`` machinery (the "actual" being predicted, and the isolated
+    ``career_avg_early_season_points_prior_seasons`` baseline being adjusted, are IDENTICAL to that
+    function's own -- this only adds the DC-hit-rate filter/lookup on top), further requiring:
+
+    - This player's TARGET-season position (via ``_load_earliest_early_gameweek_price_and_position``,
+      the same real, non-leaky "earliest early-season row this season" resolution
+      ``build_true_rookie_observations`` already uses) is DEF or MID.
+    - At least one real ``defensive_contribution``-carrying gameweek exists in this player's
+      STRICTLY PRIOR seasons (``_dc_hit_rate``, cutoff at season S's own earliest gameweek deadline
+      -- the same leakage boundary every other builder in this module uses).
+
+    HONEST, REAL RESULT (confirmed against the real dev database, not assumed): this currently
+    returns ZERO observations, always, for every real season. ``defensive_contribution`` is only
+    non-null starting the 2025-26 season (the CBIT rule's first real season) -- so the ONLY season
+    that could ever satisfy "has real DC data in strictly-prior seasons" is one played strictly
+    after 2025-26, i.e. 2026-27 -- which has no real ``player_gameweek_stats`` rows yet (this app's
+    whole reason for having a cold-start formula at all). This function is real, correct, and fully
+    exercised by synthetic-data unit tests -- it simply has nothing real to evaluate yet. The FIRST
+    real evaluable observations will appear automatically, with no code changes needed, once 2026-27
+    gameweeks start being ingested with real ``defensive_contribution`` values of their own (letting
+    a LATER target season use 2026-27 as a strictly-prior source) -- re-run
+    ``COLD_START_PROJECTION_VALIDATION`` at that point and treat its real output as first-time
+    evidence, not a re-confirmation of anything checked here.
+    """
+    usable = usable_season_labels_with_gameweek_stats(session)
+    if len(usable) < 2:
+        return [], usable
+
+    season_rows = session.execute(select(Season.id, Season.label).where(Season.label.in_(usable))).all()
+    season_id_by_label = {label: season_id for season_id, label in season_rows}
+    eval_labels = usable[1:]
+    eval_season_ids = [season_id_by_label[label] for label in eval_labels]
+
+    gw1_deadline_by_season_id = _earliest_gameweek_deadline_by_season(
+        session, list(season_id_by_label.values())
+    )
+    stats_by_fpl_code = _load_all_stats_by_fpl_code(session)
+    price_position_by_key = _load_earliest_early_gameweek_price_and_position(
+        session, eval_season_ids, early_season_gameweek_cutoff
+    )
+    dc_rows_by_fpl_code = _load_dc_rows_by_fpl_code(session)
+
+    observations: list[DcReliabilityObservation] = []
+    for season_label in eval_labels:
+        season_id = season_id_by_label[season_label]
+        season_id_str = str(season_id)
+        gw1_deadline = gw1_deadline_by_season_id[season_id]
+
+        for fpl_code, all_stats in stats_by_fpl_code.items():
+            current_season_stats = [stat for stat in all_stats if stat.season_id == season_id_str]
+            if not current_season_stats:
+                continue
+            actual = engineering.career_avg_early_season_points_prior_seasons(
+                current_season_stats, early_season_gameweek_cutoff, half_life_seasons=1.0
+            )
+            if actual is None:
+                continue
+
+            prior_stats = engineering.filter_to_strictly_prior(all_stats, gw1_deadline)
+            if not prior_stats:
+                continue
+            career_avg_baseline = engineering.career_avg_early_season_points_prior_seasons(
+                prior_stats, early_season_gameweek_cutoff, engineering.DEFAULT_EARLY_SEASON_HALF_LIFE_SEASONS
+            )
+            if career_avg_baseline is None:
+                continue
+
+            price_position = price_position_by_key.get((fpl_code, season_id))
+            if price_position is None:
+                continue
+            _price, position_short_name = price_position
+            if position_short_name not in DC_CBIT_THRESHOLD_BY_POSITION:
+                continue
+
+            hit_rate_result = _dc_hit_rate(
+                dc_rows_by_fpl_code.get(fpl_code, []), position_short_name, gw1_deadline
+            )
+            if hit_rate_result is None:
+                continue
+            prior_dc_hit_rate, prior_dc_games = hit_rate_result
+
+            observations.append(
+                DcReliabilityObservation(
+                    fpl_code=fpl_code,
+                    season_label=season_label,
+                    position_short_name=position_short_name,
+                    actual_early_season_avg=float(actual),
+                    career_avg_baseline=float(career_avg_baseline),
+                    prior_dc_hit_rate=prior_dc_hit_rate,
+                    prior_dc_games=prior_dc_games,
+                )
+            )
+    return observations, usable
+
+
+def sweep_dc_reliability_coefficient_candidates(
+    observations: Sequence[DcReliabilityObservation],
+    candidates: Sequence[float] = DC_RELIABILITY_COEFFICIENT_SWEEP_CANDIDATES,
+) -> list[DcReliabilityCoefficientSweepResult]:
+    """Real MAE/Spearman for a "trust this player's aggregate historical average more when it's
+    demonstrably driven by a repeatable defensive-work-rate skill" adjustment, per candidate
+    coefficient: ``career_avg_baseline * (1 + (prior_dc_hit_rate - 0.5) * coefficient)`` -- centered
+    on 0.5 (a coin-flip hit rate is neutral, mirroring ``_cold_start_projection``'s own
+    fixture-difficulty formula's "neutral at difficulty 3" structure), so a player who NEVER hits
+    the real CBIT/CBIRT threshold is adjusted down, one who ALWAYS does is adjusted up, and
+    ``coefficient=0.0`` is an explicit no-adjustment control matching today's actual production
+    behavior (this signal isn't wired into ``_cold_start_projection`` at all right now).
+
+    ``career_avg_baseline`` isolates this from ``ep_next`` entirely (same isolation
+    ``sweep_difficulty_coefficient_candidates`` uses for the identical reason) -- this sweep's real
+    MAE numbers carry none of ``sweep_blend_ratio_candidates``'s own ``ep_next``-proxy caveat.
+
+    HONEST RESULT, always, until real 2026-27 data exists (see ``build_dc_reliability_observations``'s
+    own docstring for the full reason): ``observations`` is empty, so every candidate here returns
+    ``mae=None``/``spearman=None``/``n_observations=0`` -- this sweep genuinely cannot currently
+    determine even the SIGN of a real effect, let alone a magnitude, and must not be used to justify
+    changing production behavior until it has real pairs to score.
+    """
+    results = []
+    for coefficient in candidates:
+        y_true = [obs.actual_early_season_avg for obs in observations]
+        y_pred = [
+            obs.career_avg_baseline * (1 + (obs.prior_dc_hit_rate - 0.5) * coefficient)
+            for obs in observations
+        ]
+        results.append(
+            DcReliabilityCoefficientSweepResult(
+                coefficient=coefficient,
+                mae=metric_fns.mean_absolute_error(y_true, y_pred) if observations else None,
+                spearman=metric_fns.spearman_rank_correlation(y_true, y_pred) if observations else None,
+                n_observations=len(observations),
             )
         )
     return results

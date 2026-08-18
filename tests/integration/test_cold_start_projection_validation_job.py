@@ -25,6 +25,7 @@ from sqlalchemy import select
 
 from app.jobs.service import execute_job
 from app.modeling.cold_start_validation import (
+    build_dc_reliability_observations,
     build_player_season_observations,
     build_true_rookie_observations,
     compute_price_comparable_buckets,
@@ -485,6 +486,230 @@ def test_sweep_price_prior_blend_weight_candidates_never_leaks_target_seasons_ow
     assert results[0].mae < 5.0
 
 
+# --- DC-reliability adjustment: build_dc_reliability_observations -----------------------------------
+# The critical leakage case (would fail if leakage prevention were broken) first.
+
+
+def _add_stats_with_dc(
+    db_session,
+    player,
+    season,
+    gameweeks,
+    points_per_gw: int,
+    price: int,
+    position_short_name: str,
+    defensive_contribution: int,
+) -> None:
+    """Same as ``_add_stats_with_price`` but also sets ``defensive_contribution`` -- the one column
+    ``build_dc_reliability_observations`` needs that every other helper in this file leaves null."""
+    for gw in gameweeks:
+        db_session.add(
+            PlayerGameweekStats(
+                player_id=player.id,
+                season_id=season.id,
+                gameweek_id=gw.id,
+                total_points=points_per_gw,
+                minutes=90,
+                value_at_time=price,
+                position_short_name_at_time=position_short_name,
+                defensive_contribution=defensive_contribution,
+                data_source="test_fixture",
+            )
+        )
+    db_session.commit()
+
+
+def test_build_dc_reliability_observations_never_leaks_the_target_seasons_own_dc_data(db_session):
+    prior_season = _make_season(db_session)
+    target_season = _make_season(db_session)
+    prior_gws = _make_gameweeks(db_session, prior_season, 2060)
+    target_gws = _make_gameweeks(db_session, target_season, 2061)
+
+    fpl_code = secrets.randbelow(10**8)
+    prior_player = _make_player(db_session, prior_season, fpl_code, fpl_element_id=1)
+    target_player = _make_player(db_session, target_season, fpl_code, fpl_element_id=1)
+
+    # Prior season (the only real, leakage-safe source): NEVER hits the real DEF threshold (10).
+    _add_stats_with_dc(
+        db_session,
+        prior_player,
+        prior_season,
+        prior_gws,
+        points_per_gw=3,
+        price=50,
+        position_short_name="DEF",
+        defensive_contribution=2,
+    )
+    # Target season's OWN dc data: if this leaked into "prior" hit-rate, it would push the rate to
+    # 1.0 (every game hits an extreme 20). It must not -- this is this player's own TARGET-season
+    # data, not prior-season data.
+    _add_stats_with_dc(
+        db_session,
+        target_player,
+        target_season,
+        target_gws,
+        points_per_gw=4,
+        price=50,
+        position_short_name="DEF",
+        defensive_contribution=20,
+    )
+
+    observations, _usable = build_dc_reliability_observations(db_session)
+    obs = next(o for o in observations if o.fpl_code == fpl_code)
+
+    assert obs.prior_dc_hit_rate == 0.0  # only the prior season's real (never-hit) rows count
+    assert obs.prior_dc_games == 6
+
+
+def test_build_dc_reliability_observations_skips_when_no_strictly_prior_dc_data(db_session):
+    """The real, honest, current-production state: defensive_contribution is only real for the
+    2025-26 season, which has no strictly-prior season carrying it either -- see this function's
+    own docstring. Confirmed here with a player who has prior-season history and points, but no
+    defensive_contribution value on any of it (exactly matching every real historical row before
+    2025-26)."""
+    prior_season = _make_season(db_session)
+    target_season = _make_season(db_session)
+    prior_gws = _make_gameweeks(db_session, prior_season, 2062)
+    target_gws = _make_gameweeks(db_session, target_season, 2063)
+
+    fpl_code = secrets.randbelow(10**8)
+    prior_player = _make_player(db_session, prior_season, fpl_code, fpl_element_id=1)
+    target_player = _make_player(db_session, target_season, fpl_code, fpl_element_id=1)
+    _add_stats_with_price(
+        db_session,
+        prior_player,
+        prior_season,
+        prior_gws,
+        points_per_gw=3,
+        price=50,
+        position_short_name="DEF",
+    )
+    _add_stats_with_price(
+        db_session,
+        target_player,
+        target_season,
+        target_gws,
+        points_per_gw=4,
+        price=50,
+        position_short_name="DEF",
+    )
+
+    observations, _usable = build_dc_reliability_observations(db_session)
+
+    assert all(o.fpl_code != fpl_code for o in observations)
+
+
+def test_build_dc_reliability_observations_computes_a_real_hit_rate_from_prior_season_data(db_session):
+    prior_season = _make_season(db_session)
+    target_season = _make_season(db_session)
+    prior_gws = _make_gameweeks(db_session, prior_season, 2064, count=4)
+    target_gws = _make_gameweeks(db_session, target_season, 2065)
+
+    fpl_code = secrets.randbelow(10**8)
+    prior_player = _make_player(db_session, prior_season, fpl_code, fpl_element_id=1)
+    target_player = _make_player(db_session, target_season, fpl_code, fpl_element_id=1)
+    for gw, dc in zip(prior_gws, [10, 9, 10, 8], strict=True):
+        _add_stats_with_dc(
+            db_session,
+            prior_player,
+            prior_season,
+            [gw],
+            points_per_gw=3,
+            price=50,
+            position_short_name="DEF",
+            defensive_contribution=dc,
+        )
+    _add_stats_with_price(
+        db_session,
+        target_player,
+        target_season,
+        target_gws,
+        points_per_gw=5,
+        price=50,
+        position_short_name="DEF",
+    )
+
+    observations, _usable = build_dc_reliability_observations(db_session)
+    obs = next(o for o in observations if o.fpl_code == fpl_code)
+
+    assert obs.prior_dc_hit_rate == 0.5  # 2 of 4 real games at/above the real DEF threshold (10)
+    assert obs.prior_dc_games == 4
+    assert obs.position_short_name == "DEF"
+    assert obs.actual_early_season_avg == 5.0
+
+
+def test_build_dc_reliability_observations_uses_the_higher_midfielder_threshold(db_session):
+    prior_season = _make_season(db_session)
+    target_season = _make_season(db_session)
+    prior_gws = _make_gameweeks(db_session, prior_season, 2066, count=2)
+    target_gws = _make_gameweeks(db_session, target_season, 2067)
+
+    fpl_code = secrets.randbelow(10**8)
+    prior_player = _make_player(db_session, prior_season, fpl_code, fpl_element_id=1)
+    target_player = _make_player(db_session, target_season, fpl_code, fpl_element_id=1)
+    # 10 is the real DEF threshold but NOT the real, higher MID threshold (12) -- must not count as
+    # a "hit" for a midfielder.
+    for gw in prior_gws:
+        _add_stats_with_dc(
+            db_session,
+            prior_player,
+            prior_season,
+            [gw],
+            points_per_gw=3,
+            price=60,
+            position_short_name="MID",
+            defensive_contribution=10,
+        )
+    _add_stats_with_price(
+        db_session,
+        target_player,
+        target_season,
+        target_gws,
+        points_per_gw=5,
+        price=60,
+        position_short_name="MID",
+    )
+
+    observations, _usable = build_dc_reliability_observations(db_session)
+    obs = next(o for o in observations if o.fpl_code == fpl_code)
+
+    assert obs.prior_dc_hit_rate == 0.0
+
+
+def test_build_dc_reliability_observations_skips_goalkeepers(db_session):
+    prior_season = _make_season(db_session)
+    target_season = _make_season(db_session)
+    prior_gws = _make_gameweeks(db_session, prior_season, 2068)
+    target_gws = _make_gameweeks(db_session, target_season, 2069)
+
+    fpl_code = secrets.randbelow(10**8)
+    prior_player = _make_player(db_session, prior_season, fpl_code, fpl_element_id=1)
+    target_player = _make_player(db_session, target_season, fpl_code, fpl_element_id=1)
+    _add_stats_with_dc(
+        db_session,
+        prior_player,
+        prior_season,
+        prior_gws,
+        points_per_gw=3,
+        price=50,
+        position_short_name="GKP",
+        defensive_contribution=10,
+    )
+    _add_stats_with_price(
+        db_session,
+        target_player,
+        target_season,
+        target_gws,
+        points_per_gw=4,
+        price=50,
+        position_short_name="GKP",
+    )
+
+    observations, _usable = build_dc_reliability_observations(db_session)
+
+    assert all(o.fpl_code != fpl_code for o in observations)
+
+
 # --- Full job, end-to-end via execute_job -------------------------------------------------------------
 
 
@@ -602,6 +827,80 @@ def test_cold_start_validation_produces_price_prior_results_and_buckets_end_to_e
     assert row.price_comparable_buckets_json  # not None/empty
     assert row.price_prior_caveat is not None
     assert row.default_price_prior_weight is not None
+
+
+def test_cold_start_validation_dc_reliability_fields_are_always_well_formed(db_session):
+    """The DC-reliability sweep must never fail the job and must always persist well-formed fields,
+    regardless of how many real observations it finds. NOT asserting an exact
+    ``n_dc_reliability_observations`` count here -- unlike every other dimension in this file,
+    that count is GLOBAL (every ``defensive_contribution``-carrying row across the whole shared,
+    never-truncated test database, not scoped to this test's own seeded players -- see
+    ``build_dc_reliability_observations``'s own docstring), so it is genuinely NOT a stable,
+    assertable value in a suite where sibling tests in this same file legitimately seed real
+    ``defensive_contribution`` rows of their own (see
+    ``test_cold_start_validation_dc_reliability_produces_real_results_when_prior_dc_data_exists``
+    below). ``default_dc_reliability_coefficient``, by contrast, IS a stable, non-data-dependent
+    value (fixed at 0.0 by production code, matching ``_cold_start_projection``'s own actual
+    current no-op behavior for this signal) -- safe to assert exactly."""
+    _seed_evaluable_seasons(db_session)
+
+    job = _run_cold_start_validation_job(db_session)
+
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    output = job.output_json
+    assert output["n_dc_reliability_observations"] >= 0
+    assert (
+        len(output["dc_reliability_sweep"]) == 6
+    )  # DC_RELIABILITY_COEFFICIENT_SWEEP_CANDIDATES's own length
+    assert output["dc_reliability_caveat"] is not None
+
+    row = db_session.get(ColdStartValidationRun, uuid.UUID(output["cold_start_validation_run_id"]))
+    assert row is not None
+    assert row.n_dc_reliability_observations is not None
+    assert row.default_dc_reliability_coefficient == 0  # matches production's actual no-op behavior
+    assert row.dc_reliability_caveat is not None
+
+
+def test_cold_start_validation_dc_reliability_produces_real_results_when_prior_dc_data_exists(db_session):
+    """When real, strictly-prior-season defensive_contribution data DOES exist (the state this will
+    be in once 2026-27 gameweeks accumulate their own real DC values), the sweep must produce real,
+    scoreable observations -- proving the wiring genuinely works end-to-end, not just the honest
+    zero-observations default above."""
+    prior_season = _make_season(db_session)
+    target_season = _make_season(db_session)
+    prior_gws = _make_gameweeks(db_session, prior_season, 2070, count=4)
+    target_gws = _make_gameweeks(db_session, target_season, 2071)
+
+    fpl_code = secrets.randbelow(10**8)
+    prior_player = _make_player(db_session, prior_season, fpl_code, fpl_element_id=1)
+    target_player = _make_player(db_session, target_season, fpl_code, fpl_element_id=1)
+    for gw, dc in zip(prior_gws, [10, 9, 10, 8], strict=True):
+        _add_stats_with_dc(
+            db_session,
+            prior_player,
+            prior_season,
+            [gw],
+            points_per_gw=3,
+            price=50,
+            position_short_name="DEF",
+            defensive_contribution=dc,
+        )
+    _add_stats_with_price(
+        db_session,
+        target_player,
+        target_season,
+        target_gws,
+        points_per_gw=5,
+        price=50,
+        position_short_name="DEF",
+    )
+
+    job = _run_cold_start_validation_job(db_session)
+
+    assert job.status == JobStatus.SUCCEEDED, job.error_message
+    output = job.output_json
+    assert output["n_dc_reliability_observations"] >= 1
+    assert any(r["mae"] is not None for r in output["dc_reliability_sweep"])
 
 
 def test_cold_start_validation_rerun_creates_a_second_insert_only_row(db_session):

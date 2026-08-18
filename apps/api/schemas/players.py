@@ -176,6 +176,16 @@ class PlayerProjectionResponse(BaseModel):
     # both apply, see that function's own docstring for why they're kept as two mechanisms).
     role_boost_reason: str | None = None
     role_boost_severity: Decimal | None = None
+    # DEF/MID only -- this player's real historical rate of hitting FPL's 2025-26+ CBIT/CBIRT
+    # defensive-contribution bonus threshold across every defensive_contribution-carrying gameweek
+    # strictly before this projection's own target gameweek (see app.modeling.cold_start_validation
+    # .defensive_contribution_hit_rate_prior_seasons). None for GKP/FWD, or when this player has no
+    # such gameweek at all. PURELY INFORMATIONAL -- NOT used anywhere in projected_points; there is
+    # currently no real, leakage-safe evidence to justify wiring it into the formula (see that
+    # function's own docstring for the honest reason). Surfaced so a reader can see the same real
+    # signal directly instead of hand-querying player_gameweek_stats.defensive_contribution.
+    defensive_contribution_hit_rate_prior_seasons: float | None = None
+    defensive_contribution_hit_rate_prior_games: int | None = None
     explanation: str
 
 
