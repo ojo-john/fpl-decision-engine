@@ -21,6 +21,18 @@ sweep, plus computes and persists the LIVE price-comparable-bucket lookup table
 job's main three sweeps if the true-rookie population happens to be empty for the currently-usable
 seasons (a real, legitimate state, not an error) -- see the ``run`` method's own handling.
 
+A fifth, also structurally independent piece: ``build_dc_reliability_observations`` (DEF/MID only)
+and its own coefficient sweep, validating whether a player's real historical rate of hitting FPL's
+2025-26+ defensive-contribution bonus threshold should adjust how much their aggregate career_avg
+is trusted. Same never-fails-the-main-sweeps discipline as the true-rookie population -- and, as of
+this writing, this sweep ALWAYS evaluates zero observations for a real, honest, documented reason
+(``defensive_contribution`` has only one real season of data; leakage-safe validation needs a
+strictly-prior season's own DC data, which doesn't exist for any real season yet) -- see
+``app.modeling.cold_start_validation.build_dc_reliability_observations``'s own docstring. This
+signal is NOT wired into ``_cold_start_projection`` in production as a result; it's exposed as a
+purely informational field on ``GET /players/{id}/projection`` instead (see
+``app.modeling.cold_start_validation.defensive_contribution_hit_rate_prior_seasons``).
+
 Persistence: "build fully in memory, insert once" (mirrors ``BACKTEST``'s own precedent exactly --
 pure computation over already-persisted, read-only historical data, no other side-effecting steps to
 sequence).
@@ -28,8 +40,9 @@ sequence).
 ``ctx.parameters`` is entirely optional -- unlike ``BACKTEST`` (which requires a
 ``model_version_id``; "which model" has no sensible default), this job's own default candidate sets
 (``app.modeling.cold_start_validation``'s own module-level constants) ARE the sensible default: an
-optional ``half_life_candidates``/``difficulty_coefficient_candidates``/``blend_ratio_candidates``
-list of floats overrides the corresponding sweep for ad-hoc re-checks without a code change.
+optional ``half_life_candidates``/``difficulty_coefficient_candidates``/``blend_ratio_candidates``/
+``dc_reliability_coefficient_candidates`` list of floats overrides the corresponding sweep for
+ad-hoc re-checks without a code change.
 """
 
 import uuid
@@ -42,16 +55,20 @@ from app.jobs.registry import register_handler
 from app.jobs.runner import JobContext, JobResult, JobRunner
 from app.modeling.cold_start_validation import (
     BLEND_RATIO_SWEEP_CANDIDATES,
+    DC_RELIABILITY_COEFFICIENT_SWEEP_CANDIDATES,
     DIFFICULTY_COEFFICIENT_SWEEP_CANDIDATES,
     EARLY_SEASON_HALF_LIFE_SWEEP_CANDIDATES,
     PRICE_PRIOR_BLEND_WEIGHT_SWEEP_CANDIDATES,
     BlendRatioSweepResult,
+    DcReliabilityCoefficientSweepResult,
     HalfLifeSweepResult,
     PricePriorSweepResult,
+    build_dc_reliability_observations,
     build_player_season_observations,
     build_true_rookie_observations,
     compute_price_comparable_buckets,
     sweep_blend_ratio_candidates,
+    sweep_dc_reliability_coefficient_candidates,
     sweep_difficulty_coefficient_candidates,
     sweep_half_life_candidates,
     sweep_price_prior_blend_weight_candidates,
@@ -87,6 +104,26 @@ _PRICE_PRIOR_CAVEAT = (
     "favoring the price prior is strong, conservative evidence; a result favoring ep_next alone "
     "should be treated with skepticism given this bias."
 )
+
+# Real, honest caveat (see build_dc_reliability_observations's own docstring for the full reason):
+# defensive_contribution only has one real season of data (2025-26), so leakage-safe validation
+# currently, always, has zero observations to score any candidate against -- this sweep cannot
+# currently determine even the SIGN of a real effect, and this signal is NOT wired into
+# app.optimization.projection._cold_start_projection at all as a result.
+_DC_RELIABILITY_CAVEAT = (
+    "defensive_contribution (FPL's real 2025-26+ CBIT/CBIRT bonus stat) only has one real season of "
+    "data -- leakage-safe validation needs a STRICTLY PRIOR season's own DC data to predict a later, "
+    "already-known season's outcome, which does not exist for any real season yet. This sweep "
+    "currently, honestly, always evaluates zero observations and is NOT wired into production. Real "
+    "evidence will first become possible once 2026-27 gameweeks are ingested with their own real "
+    "defensive_contribution values -- re-run this job at that point."
+)
+
+# Matches app.optimization.projection's actual current behavior: the DC-reliability adjustment
+# isn't applied at all (coefficient 0.0 is a pure no-op in sweep_dc_reliability_coefficient_candidates's
+# own formula) -- there is no named production constant for this the way COLD_START_BLEND_CAREER_AVG_WEIGHT
+# etc. exist, precisely because this signal has never had real evidence to justify adding one.
+_DC_RELIABILITY_PRODUCTION_DEFAULT = 0.0
 
 # Sort key sentinel for min(..., key=...) below: a candidate with an undefined MAE (see each sweep
 # dataclass's own "None means genuinely undefined, not 0" contract) must never be picked as
@@ -129,6 +166,11 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
                 if "price_prior_weight_candidates" in parameters
                 else list(PRICE_PRIOR_BLEND_WEIGHT_SWEEP_CANDIDATES)
             )
+            dc_reliability_candidates = (
+                [float(c) for c in parameters["dc_reliability_coefficient_candidates"]]
+                if "dc_reliability_coefficient_candidates" in parameters
+                else list(DC_RELIABILITY_COEFFICIENT_SWEEP_CANDIDATES)
+            )
 
             observations, usable_seasons = build_player_season_observations(session)
             if len(usable_seasons) < 2:
@@ -170,6 +212,15 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
                 else []
             )
             price_comparable_buckets, _ = compute_price_comparable_buckets(session)
+
+            # Fifth, structurally different, DEF/MID-only population -- never allowed to fail this
+            # job's main sweeps even though it currently, honestly, always evaluates zero real
+            # observations (see build_dc_reliability_observations's own docstring for the real
+            # reason: defensive_contribution has only one real season of data so far).
+            dc_reliability_observations, _ = build_dc_reliability_observations(session)
+            dc_reliability_results = sweep_dc_reliability_coefficient_candidates(
+                dc_reliability_observations, dc_reliability_candidates
+            )
             completed_at = datetime.now(UTC)
 
             # half_life_results is guaranteed >=1 defined-MAE entry whenever observations is
@@ -225,6 +276,21 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
                 price_prior_results, COLD_START_PRICE_PRIOR_BLEND_WEIGHT
             )
 
+            # Same "can legitimately be empty" handling -- currently ALWAYS empty (n=0), see
+            # _DC_RELIABILITY_CAVEAT above.
+            scored_dc_reliability = [r for r in dc_reliability_results if r.mae is not None]
+            best_dc_reliability = (
+                min(
+                    scored_dc_reliability,
+                    key=lambda r: r.mae if r.mae is not None else _UNDEFINED_MAE_SORT_VALUE,
+                )
+                if scored_dc_reliability
+                else None
+            )
+            default_dc_reliability = self._match_dc_reliability(
+                dc_reliability_results, _DC_RELIABILITY_PRODUCTION_DEFAULT
+            )
+
             row = ColdStartValidationRun(
                 job_id=uuid.UUID(ctx.job_id),
                 run_status=ColdStartValidationRunStatus.SUCCEEDED,
@@ -268,6 +334,19 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
                 best_price_prior_weight_mae=_to_decimal(best_price_prior.mae) if best_price_prior else None,
                 price_prior_caveat=_PRICE_PRIOR_CAVEAT,
                 price_comparable_buckets_json=[asdict(b) for b in price_comparable_buckets] or None,
+                n_dc_reliability_observations=len(dc_reliability_observations),
+                dc_reliability_sweep_json=[asdict(r) for r in dc_reliability_results] or None,
+                default_dc_reliability_coefficient=_to_decimal(_DC_RELIABILITY_PRODUCTION_DEFAULT),
+                default_dc_reliability_coefficient_mae=_to_decimal(default_dc_reliability.mae)
+                if default_dc_reliability
+                else None,
+                best_dc_reliability_coefficient=_to_decimal(best_dc_reliability.coefficient)
+                if best_dc_reliability
+                else None,
+                best_dc_reliability_coefficient_mae=_to_decimal(best_dc_reliability.mae)
+                if best_dc_reliability
+                else None,
+                dc_reliability_caveat=_DC_RELIABILITY_CAVEAT,
                 started_at=started_at,
                 completed_at=completed_at,
             )
@@ -299,6 +378,15 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
                     "best_price_prior_weight_mae": best_price_prior.mae if best_price_prior else None,
                     "price_prior_caveat": _PRICE_PRIOR_CAVEAT,
                     "n_price_comparable_buckets": len(price_comparable_buckets),
+                    "n_dc_reliability_observations": len(dc_reliability_observations),
+                    "dc_reliability_sweep": [asdict(r) for r in dc_reliability_results],
+                    "best_dc_reliability_coefficient": best_dc_reliability.coefficient
+                    if best_dc_reliability
+                    else None,
+                    "best_dc_reliability_coefficient_mae": best_dc_reliability.mae
+                    if best_dc_reliability
+                    else None,
+                    "dc_reliability_caveat": _DC_RELIABILITY_CAVEAT,
                 },
                 error_code=None,
                 error_message=None,
@@ -327,3 +415,9 @@ class ColdStartProjectionValidationJobRunner(JobRunner):
         results: list[PricePriorSweepResult], value: float
     ) -> PricePriorSweepResult | None:
         return next((r for r in results if r.price_prior_weight == value), None)
+
+    @staticmethod
+    def _match_dc_reliability(
+        results: list[DcReliabilityCoefficientSweepResult], value: float
+    ) -> DcReliabilityCoefficientSweepResult | None:
+        return next((r for r in results if r.coefficient == value), None)

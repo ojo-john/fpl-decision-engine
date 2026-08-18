@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.features.service import compute_features_for_player_gameweek
+from app.modeling.cold_start_validation import defensive_contribution_hit_rate_prior_seasons
 from app.optimization.champion_loader import load_current_champion
 from app.optimization.gameweek_resolution import resolve_target_gameweek
 from app.optimization.projection import (
@@ -474,6 +475,14 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
     attribution (no SHAP, no per-feature contribution breakdown) -- these are
     the same few numbers the projection formula itself already computes, just
     surfaced rather than recomputed or approximated.
+
+    Also surfaces ``defensive_contribution_hit_rate_prior_seasons``/``..._games`` (DEF/MID only):
+    this player's real historical rate of hitting FPL's 2025-26+ defensive-contribution bonus
+    threshold, via ``app.modeling.cold_start_validation
+    .defensive_contribution_hit_rate_prior_seasons``. PURELY INFORMATIONAL -- unlike every other
+    field here, this one is NOT an input ``_cold_start_projection`` actually used; there is
+    currently no real, leakage-safe evidence to justify wiring it into the formula (see that
+    function's own docstring). Surfaced anyway so a reader can see the same real signal directly.
     """
     player = db.get(Player, player_id)
     if player is None:
@@ -497,6 +506,8 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
     career_avg_points_prior_seasons = None
     career_avg_early_season_points_prior_seasons = None
     next_fixture_difficulty = None
+    dc_hit_rate = None
+    dc_hit_rate_games = None
     if target_gameweek_id is not None:
         try:
             feature_row = compute_features_for_player_gameweek(db, player.id, target_gameweek_id)
@@ -505,6 +516,12 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
                 feature_row.career_avg_early_season_points_prior_seasons
             )
             next_fixture_difficulty = feature_row.next_fixture_difficulty
+            if player.fpl_code is not None and feature_row.position_short_name is not None:
+                dc_result = defensive_contribution_hit_rate_prior_seasons(
+                    db, player.fpl_code, feature_row.position_short_name, feature_row.cutoff_timestamp
+                )
+                if dc_result is not None:
+                    dc_hit_rate, dc_hit_rate_games = dc_result
         except Exception:  # noqa: BLE001 - this breakdown must never fail the endpoint
             logger.warning(
                 "Could not compute feature row for projection breakdown "
@@ -571,6 +588,8 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
         availability_risk_severity=active_risk_note.severity if active_risk_note is not None else None,
         role_boost_reason=active_role_note.reason if active_role_note is not None else None,
         role_boost_severity=active_role_note.severity if active_role_note is not None else None,
+        defensive_contribution_hit_rate_prior_seasons=dc_hit_rate,
+        defensive_contribution_hit_rate_prior_games=dc_hit_rate_games,
         explanation=explanation,
     )
 

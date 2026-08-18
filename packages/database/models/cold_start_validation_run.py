@@ -21,6 +21,16 @@ and the LIVE price-comparable lookup table itself (``price_comparable_buckets_js
 ``price_comparable_buckets_json`` directly, mirroring ``app.optimization.champion_loader
 .load_current_champion``'s "load the most recent real artifact" precedent.
 
+A fifth piece of validation, also structurally different: a DEF/MID-only "defensive-contribution
+reliability" adjustment sweep (``n_dc_reliability_observations``/``dc_reliability_sweep_json``/etc.
+-- see ``app.modeling.cold_start_validation.build_dc_reliability_observations``). Unlike every
+other sweep here, this one is NOT wired into production at all -- it currently, honestly, always
+evaluates zero observations (``defensive_contribution`` has only one real season of data,
+2025-26 -- see that function's own docstring for why leakage-safe validation needs a strictly
+prior season's own DC data, which doesn't exist for any real season yet). Persisted anyway so the
+real "n=0, nothing to conclude yet" state is itself a documented, checkable fact, not silently
+omitted.
+
 Same "build fully in memory, insert once" persistence discipline as ``backtest_runs`` (see that
 model's own docstring for the full rationale) -- this is pure computation over already-persisted,
 read-only historical data with no other side-effecting steps to sequence.
@@ -110,6 +120,25 @@ class ColdStartValidationRun(Base):
     # for why this is NOT leakage-scoped the way the sweep above is (it pools every usable season,
     # since it predicts a future, not-yet-played one).
     price_comparable_buckets_json: Mapped[list | None] = mapped_column(JSONB)
+
+    # --- DC-reliability adjustment (DEF/MID only -- see app.modeling.cold_start_validation's own
+    # "DC_RELIABILITY_COEFFICIENT_SWEEP_CANDIDATES" section and
+    # app.modeling.cold_start_validation.build_dc_reliability_observations). A structurally
+    # different, fifth piece of validation: does a player's real historical rate of hitting FPL's
+    # 2025-26+ defensive-contribution bonus threshold (10 CBIT for defenders, 12 CBIRT for
+    # midfielders) mean their aggregate career_avg should be trusted more or less. Nullable for the
+    # same reason the price-prior columns are: this currently, honestly, always evaluates to zero
+    # observations (defensive_contribution has only one real season of data, 2025-26, and leakage-
+    # safe validation needs a STRICTLY PRIOR season's own DC data -- see that function's own
+    # docstring for the full, real reason) -- a schema-compatible row with a well-defined
+    # non-DC-reliability result set above.
+    n_dc_reliability_observations: Mapped[int | None] = mapped_column(Integer)
+    dc_reliability_sweep_json: Mapped[list | None] = mapped_column(JSONB)
+    default_dc_reliability_coefficient: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    default_dc_reliability_coefficient_mae: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    best_dc_reliability_coefficient: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    best_dc_reliability_coefficient_mae: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    dc_reliability_caveat: Mapped[str | None] = mapped_column(String(700))
 
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
