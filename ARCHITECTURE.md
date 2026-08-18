@@ -55,6 +55,7 @@ migrations/             Hand-written Alembic migrations
 scripts/run_job.py      CLI to execute one job synchronously (prints JSON result)
 scripts/export_notes_snapshot.py  CLI to regenerate .github/state/known-notes-snapshot.json from the live API (see scout-watch.yml section)
 scripts/post_deadline_smoke_test.py  CLI to verify real-data preconditions for manager_sync/chip inventory/league_sync/rival profiles/differentials/price calibration (see "Post-deadline real-data verification" section below and docs/operations.md)
+scripts/scheduler.py     Local background loop: real LEAGUE_SYNC/GAMEWEEK_REVIEW/DATA_INGESTION automation against the real database (see "Local scheduler" section below)
 tests/unit/ (44 files)  No DB
 tests/integration/ (46) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
@@ -1301,6 +1302,55 @@ independent check needs either a persistent hosted database this app's
 local stack doesn't have, or — for read-only checks against a public API
 that don't need this app's own database at all — a standalone workflow
 like League Watch).
+
+## Local scheduler (`scripts/scheduler.py`, `docker-compose.yml`'s `scheduler` service)
+
+Real gap this closes, found 2026-08-18: `scheduled-dispatcher.yml`/`ingest.yml` (the two
+GitHub Actions workflows that could theoretically automate `DATA_INGESTION`) each spin up their
+OWN throwaway, empty Postgres service container inside the GitHub Actions runner — they have
+NEVER touched the real local database this repo's own `docker-compose.yml` `postgres` service
+serves, and structurally CANNOT (GitHub's runners have no network path to a user's own machine).
+Before this, every real job run against the real database, this whole project long, happened
+because a human manually ran `scripts/run_job.py` or hit an API endpoint — there was no automation
+at all for the real thing, only for CI self-tests against ephemeral databases. `league-watch.yml`/
+`scout-watch.yml` (below) are the only genuinely-automated things that existed before this, and
+they deliberately avoid the problem by never touching the database at all.
+
+`scripts/scheduler.py` is the real fix: a long-running loop, started as its own `scheduler`
+service in `docker-compose.yml` (reuses the `api` service's own image/Dockerfile — nothing extra
+to build), that wakes up every 15 minutes and, using pure/testable decision functions
+(`gameweeks_needing_review`, `is_interval_due` — see `tests/unit/test_scheduler.py`) checked
+against real state pulled from the database each tick, triggers:
+
+- **`GAMEWEEK_REVIEW`** — the moment a gameweek is both `Gameweek.finished=True` and has no
+  `learning_reports` row yet (checked via a real join, not guessed) — exactly once per gameweek,
+  never re-fired once a report exists (`learning_reports` is insert-only per run, so a naive
+  "run every tick" would silently create a duplicate report forever).
+- **`LEAGUE_SYNC`** — every 6 hours (real rival picks only change post-deadline and don't shift
+  intra-week once known, so this is more than sufficient cadence without wastefully re-hitting
+  FPL's public league API every 15-minute tick).
+- **`DATA_INGESTION`** — every 4 hours, mirroring `scheduled-dispatcher.yml`'s own reasoned
+  cadence for its CI self-test of the same job, applied here to the real thing.
+
+Deliberately does NOT trigger `MODEL_TRAINING`/anything promotion-adjacent directly —
+`GAMEWEEK_REVIEW` already has its own internal trigger for that on a sustained MAE breach; a
+second path here would just double-fire it. Calls `app.jobs.service.execute_job` directly
+(`TriggerType.LOCAL`, `requested_by="scheduler"` — NOT `TriggerType.GITHUB_SCHEDULE`, since this
+genuinely never runs via GitHub Actions, and using that value would misleadingly imply the
+opposite of the whole point of this component), same pattern as `scripts/run_job.py`, rather than
+looping HTTP calls to its own API — avoids an unnecessary network hop and avoids managing/rotating
+an auth token inside the container. Each job run is wrapped so a failure (a transient FPL API
+blip, a genuine bug) is logged and never crashes the loop or blocks the next tick's other checks
+(mirrors `GameweekReviewJobRunner._maybe_recalibrate_price_signal`'s own established
+failure-isolation precedent).
+
+**Complements, does not replace**, the existing manual "sync"/"review" buttons already in
+`apps/web` (`rivals/page.tsx` → `POST /leagues/sync`, `learning/page.tsx` →
+`POST /jobs/review-gameweek`) — those stay for on-demand, right-now triggering; the scheduler is
+the automatic path for when nobody's watching. Starts by default with a plain `docker compose up`
+(`docker compose stop scheduler` opts out); only runs while the host machine/Docker stack is
+actually up — a deliberate, zero-hosting-decision local substitute, not a replacement for real
+hosting (see `docs/operations.md` for that tradeoff spelled out for whoever operates this next).
 
 ## League Watch (`.github/workflows/league-watch.yml`)
 
