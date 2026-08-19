@@ -1580,10 +1580,31 @@ documents it directly.
   exhibits this bug. Fixed via migration `0041` (widens all three `jobs` columns to `VARCHAR(50)`)
   plus a new regression test (`tests/unit/test_job_enums.py`) asserting every enum member fits
   the real column width — fails loudly in CI the moment a future addition would exceed it, rather
-  than silently succeeding in tests while failing in production. This is a real, systemic risk
-  class shared by ~25+ other `native_enum=False` columns across this schema (every other
-  `SAEnum(...)` call without an explicit `length=` in `packages/database/models/*.py`) — this fix
-  covers the two tables confirmed broken tonight, not a full schema-wide audit.
+  than silently succeeding in tests while failing in production.
+- **Resolved, full schema-wide audit (2026-08-18) of the same risk class.** The `jobs`-table fix
+  above was explicitly left as "not a full schema-wide audit" — this closes that gap for real.
+  Audited every `native_enum=False` `SAEnum(...)` column across `packages/database/models/*.py`
+  (46 total) against the REAL dev database's actual `information_schema.columns` widths (not
+  recomputed from the current Python enum state alone, which only reflects what a FRESH database
+  would create). **39 of 46 had ZERO real headroom** — their real column width exactly equalled
+  their enum's current longest member, the identical "just got lucky so far" state
+  `jobs.job_type` was silently sitting in before it actually broke. Fixed via migration `0043`
+  (widens all 39 to `VARCHAR(64)`; the remaining 7 — `chip_type` x2, `ingestion_runs.run_type`,
+  `optimization_runs.recommendation_type`, and the 3 `jobs` columns already widened by `0041` —
+  already carried real headroom and were left untouched). Applied to both `.env.test` and the
+  real dev database.
+
+  The permanent fix is a new, fully generalized regression test
+  (`tests/unit/test_enum_column_widths.py`) that supersedes `test_job_enums.py`'s narrower,
+  `jobs`-specific version (kept as-is, not removed): it dynamically discovers EVERY
+  `native_enum=False` column across the whole ORM metadata (so it automatically covers any
+  future new table/column, not just today's 46) and requires each one to have an explicit,
+  consciously-chosen width recorded in a maintained registry — a column found without one fails
+  the test immediately, forcing whoever adds a new enum-backed column to pick and record a real
+  width rather than silently trusting Alembic's auto-computed default. This is the actual,
+  durable resolution to a bug class that has now surfaced three separate times
+  (`ingestion_runs.run_type` in `0006`, `jobs.*` in `0041`, these 39 in `0043`) — always invisible
+  in CI (fresh test database every run), always real against the persistent dev database.
 `FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and
 the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`
 targets are now real, individual targets (previously combined into one
