@@ -7,7 +7,12 @@ independently testable, not buried inside an untestable infinite loop).
 
 from datetime import UTC, datetime, timedelta
 
-from scripts.scheduler import GameweekState, gameweeks_needing_review, is_interval_due
+from scripts.scheduler import (
+    GameweekState,
+    event_ids_missing_authoritative_recommendation,
+    gameweeks_needing_review,
+    is_interval_due,
+)
 
 # --- gameweeks_needing_review -------------------------------------------------------------------
 
@@ -73,3 +78,34 @@ def test_is_interval_due_exactly_at_boundary_is_due():
     now = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
     last_run = now - timedelta(hours=4)
     assert is_interval_due(last_run, now, timedelta(hours=4)) is True
+
+
+# --- event_ids_missing_authoritative_recommendation ----------------------------------------------
+# Real gap this closes: GAMEWEEK_REVIEW hard-refuses (NO_AUTHORITATIVE_RECOMMENDATION) without an
+# existing is_authoritative=True recommendation_audits row for the target gameweek, and nothing
+# previously created one automatically -- these prove the scheduler correctly identifies which due
+# gameweeks need RECOMMENDATION_GENERATION run first, and which don't.
+
+
+def test_due_event_without_authoritative_recommendation_needs_one():
+    assert event_ids_missing_authoritative_recommendation([1], has_authoritative_ids=set()) == [1]
+
+
+def test_due_event_with_existing_authoritative_recommendation_does_not_need_one():
+    assert event_ids_missing_authoritative_recommendation([1], has_authoritative_ids={1}) == []
+
+
+def test_multiple_due_events_only_the_missing_ones_are_returned():
+    assert event_ids_missing_authoritative_recommendation(
+        [1, 2, 3], has_authoritative_ids={2}
+    ) == [1, 3]
+
+
+def test_event_ids_missing_authoritative_recommendation_results_sorted_ascending():
+    assert event_ids_missing_authoritative_recommendation(
+        [5, 2, 3], has_authoritative_ids=set()
+    ) == [2, 3, 5]
+
+
+def test_event_ids_missing_authoritative_recommendation_empty_input_returns_empty():
+    assert event_ids_missing_authoritative_recommendation([], has_authoritative_ids=set()) == []

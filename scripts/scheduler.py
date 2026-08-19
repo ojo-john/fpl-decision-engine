@@ -16,7 +16,19 @@ This script is the real fix, scoped to what's actually safe to automate unattend
 - `LEAGUE_SYNC` -- real rival picks only change post-deadline; safe to poll periodically.
 - `GAMEWEEK_REVIEW` -- triggered once, automatically, the moment a gameweek is both `finished`
   and not already reviewed (checked via a real `learning_reports` row, not guessed) -- never
-  re-run for a gameweek that already has one.
+  re-run for a gameweek that already has one. `GAMEWEEK_REVIEW` itself hard-refuses
+  (`NO_AUTHORITATIVE_RECOMMENDATION`) without an existing `is_authoritative=True`
+  `recommendation_audits` row for that gameweek, and nothing previously created one automatically
+  -- this scheduler now checks for that first and calls `RECOMMENDATION_GENERATION` (with an
+  explicit `target_fpl_event_id`, so it needs no manager-squad-snapshot/current-season resolution
+  of its own) to produce one before attempting the review. `RECOMMENDATION_GENERATION` is a pure,
+  best-effort correlator, not a hard-precondition gate -- it degrades to a real but LOW-confidence
+  audit (see its own module docstring's `compute_confidence`) when the 4 optimizer/simulation
+  components it looks for don't have a run for this gameweek (e.g. pre-deadline, no manager squad
+  ever synced for it -- an expected state this whole project has hit repeatedly), rather than
+  failing outright. If it still fails for some other real reason, `GAMEWEEK_REVIEW` will simply
+  fail its own `NO_AUTHORITATIVE_RECOMMENDATION` check right after (logged, not fatal to the
+  loop) and both are retried next tick, since the gameweek is correctly still "not reviewed yet".
 - `DATA_INGESTION` -- keeps live player/price/status data current, mirroring the cadence
   `scheduled-dispatcher.yml`'s own CI self-test already reasoned about (every 4 hours) for the
   real thing this time.
@@ -42,6 +54,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -56,6 +69,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 from app.jobs.service import execute_job  # noqa: E402
 from packages.database.models.gameweek import Gameweek  # noqa: E402
 from packages.database.models.learning_report import LearningReport  # noqa: E402
+from packages.database.models.recommendation_audit import RecommendationAudit  # noqa: E402
 from packages.database.models.season import Season  # noqa: E402
 from packages.database.session import SessionLocal  # noqa: E402
 from packages.domain.jobs import JobStatus, JobType, TriggerType  # noqa: E402
@@ -116,11 +130,26 @@ def is_interval_due(last_run_at: datetime | None, now: datetime, interval: timed
     return now - last_run_at >= interval
 
 
-def _fetch_gameweek_review_state(session: Session) -> list[int]:
-    """Real fpl_event_ids needing GAMEWEEK_REVIEW right now, resolved from the real database."""
+def event_ids_missing_authoritative_recommendation(
+    due_event_ids: list[int], has_authoritative_ids: set[int]
+) -> list[int]:
+    """Real fpl_event_ids that need `RECOMMENDATION_GENERATION` before `GAMEWEEK_REVIEW` can run.
+
+    Pure function, no DB/HTTP -- mirrors `gameweeks_needing_review`'s own shape exactly. Scoped to
+    `due_event_ids` (already known to be finished-and-unreviewed) rather than every gameweek, since
+    an event that's already reviewed or not yet finished has no reason to need one generated here.
+    """
+    return sorted(event_id for event_id in due_event_ids if event_id not in has_authoritative_ids)
+
+
+def _fetch_gameweek_review_state(session: Session) -> tuple[uuid.UUID | None, list[int]]:
+    """`(season_id, real fpl_event_ids needing GAMEWEEK_REVIEW right now)`, resolved from the real
+    database. `season_id` is also returned (not just the event ids) since the caller needs it
+    again for `_fetch_authoritative_recommendation_event_ids` -- `None` whenever no current season
+    exists yet (mirrors the empty-list short-circuit this function already had)."""
     season_id = session.execute(select(Season.id).where(Season.is_current.is_(True))).scalar_one_or_none()
     if season_id is None:
-        return []
+        return None, []
 
     gameweeks = [
         GameweekState(fpl_event_id=fpl_event_id, finished=finished)
@@ -136,7 +165,29 @@ def _fetch_gameweek_review_state(session: Session) -> list[int]:
             .where(Gameweek.season_id == season_id)
         )
     }
-    return gameweeks_needing_review(gameweeks, already_reviewed)
+    return season_id, gameweeks_needing_review(gameweeks, already_reviewed)
+
+
+def _fetch_authoritative_recommendation_event_ids(
+    session: Session, season_id: uuid.UUID, event_ids: list[int]
+) -> set[int]:
+    """Real fpl_event_ids (scoped to `event_ids`) that already have an authoritative recommendation.
+
+    `RecommendationAudit.target_fpl_event_id` is a direct column (see that model) -- no join to
+    `Gameweek` needed, unlike `_fetch_gameweek_review_state` above.
+    """
+    if not event_ids:
+        return set()
+    return {
+        fpl_event_id
+        for (fpl_event_id,) in session.execute(
+            select(RecommendationAudit.target_fpl_event_id).where(
+                RecommendationAudit.season_id == season_id,
+                RecommendationAudit.target_fpl_event_id.in_(event_ids),
+                RecommendationAudit.is_authoritative.is_(True),
+            )
+        )
+    }
 
 
 def _run_job_safely(job_type: JobType, parameters: dict | None, requested_by: str) -> None:
@@ -190,12 +241,31 @@ def run_tick(state: dict[str, datetime | None]) -> None:
 
     session = SessionLocal()
     try:
-        due_event_ids = _fetch_gameweek_review_state(session)
+        season_id, due_event_ids = _fetch_gameweek_review_state(session)
+        has_authoritative_recommendation_event_ids = (
+            _fetch_authoritative_recommendation_event_ids(session, season_id, due_event_ids)
+            if season_id is not None
+            else set()
+        )
     except Exception as exc:  # noqa: BLE001 - a failed check must not stop other checks this tick
         logger.warning("scheduler.gameweek_review_check_failed", extra={"error": str(exc)})
         due_event_ids = []
+        has_authoritative_recommendation_event_ids = set()
     finally:
         session.close()
+
+    needs_recommendation = event_ids_missing_authoritative_recommendation(
+        due_event_ids, has_authoritative_recommendation_event_ids
+    )
+    for fpl_event_id in needs_recommendation:
+        logger.info(
+            "scheduler.triggering_recommendation_generation", extra={"target_fpl_event_id": fpl_event_id}
+        )
+        _run_job_safely(
+            JobType.RECOMMENDATION_GENERATION,
+            {"target_fpl_event_id": fpl_event_id},
+            requested_by="scheduler",
+        )
 
     for fpl_event_id in due_event_ids:
         logger.info("scheduler.triggering_gameweek_review", extra={"target_fpl_event_id": fpl_event_id})
