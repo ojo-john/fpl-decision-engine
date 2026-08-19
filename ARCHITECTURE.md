@@ -1319,13 +1319,31 @@ they deliberately avoid the problem by never touching the database at all.
 `scripts/scheduler.py` is the real fix: a long-running loop, started as its own `scheduler`
 service in `docker-compose.yml` (reuses the `api` service's own image/Dockerfile — nothing extra
 to build), that wakes up every 15 minutes and, using pure/testable decision functions
-(`gameweeks_needing_review`, `is_interval_due` — see `tests/unit/test_scheduler.py`) checked
-against real state pulled from the database each tick, triggers:
+(`gameweeks_needing_review`, `is_interval_due`, `event_ids_missing_authoritative_recommendation` —
+see `tests/unit/test_scheduler.py`) checked against real state pulled from the database each tick,
+triggers:
 
-- **`GAMEWEEK_REVIEW`** — the moment a gameweek is both `Gameweek.finished=True` and has no
-  `learning_reports` row yet (checked via a real join, not guessed) — exactly once per gameweek,
-  never re-fired once a report exists (`learning_reports` is insert-only per run, so a naive
-  "run every tick" would silently create a duplicate report forever).
+- **`RECOMMENDATION_GENERATION` → `GAMEWEEK_REVIEW`** — the moment a gameweek is both
+  `Gameweek.finished=True` and has no `learning_reports` row yet (checked via a real join, not
+  guessed), exactly once per gameweek, never re-fired once a report exists (`learning_reports` is
+  insert-only per run, so a naive "run every tick" would silently create a duplicate report
+  forever). Real gap found and closed 2026-08-18: `GAMEWEEK_REVIEW` hard-refuses
+  (`NO_AUTHORITATIVE_RECOMMENDATION`) without an existing `is_authoritative=True`
+  `recommendation_audits` row for the target gameweek, and nothing previously created one
+  automatically — this scheduler now checks for that first (`_fetch_authoritative_recommendation_event_ids`)
+  and calls `RECOMMENDATION_GENERATION` with an explicit `target_fpl_event_id` (so it needs no
+  manager-squad-snapshot/current-season resolution of its own) before attempting the review.
+  `RECOMMENDATION_GENERATION` is a pure, best-effort correlator, not a hard-precondition gate — it
+  degrades to a real but LOW-confidence audit (see its own module docstring's `compute_confidence`)
+  when the 4 optimizer/simulation components it looks for have no run for this gameweek (e.g.
+  pre-deadline, no manager squad ever synced for it — an expected state this whole project has hit
+  repeatedly), rather than failing outright, so it still produces a real, reviewable row. If it
+  somehow still fails, `GAMEWEEK_REVIEW` simply fails its own `NO_AUTHORITATIVE_RECOMMENDATION`
+  check right after (logged, not fatal to the loop) and both are retried next tick, since the
+  gameweek correctly remains "not reviewed yet". Verified end-to-end against an isolated scratch
+  database: a seeded finished-but-unreviewed gameweek correctly triggered
+  `RECOMMENDATION_GENERATION` then `GAMEWEEK_REVIEW` (both `SUCCEEDED`) on the first tick, and a
+  second tick correctly fired neither again.
 - **`LEAGUE_SYNC`** — every 6 hours (real rival picks only change post-deadline and don't shift
   intra-week once known, so this is more than sufficient cadence without wastefully re-hitting
   FPL's public league API every 15-minute tick).
