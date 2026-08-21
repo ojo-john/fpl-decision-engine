@@ -73,10 +73,13 @@ URL) produced by the step before it.
      -- you'll come back and set the real value after step 3 (Vercel) gives you a real URL.
    - `FPL_MANAGER_ID` / `FPL_H2H_LEAGUE_ID` -- your own real, numeric FPL manager and H2H league
      ids.
-4. Deploy. Render will build the real Dockerfile, run `alembic upgrade head` is NOT automatic in
-   the base Dockerfile's own `CMD` -- add a **Pre-Deploy Command** in Render's dashboard
-   (Settings -> Build & Deploy) of `uv run alembic upgrade head` so every deploy migrates your real
-   Supabase database first.
+4. Deploy. `render.yaml` sets `preDeployCommand: uv run alembic upgrade head`, so every deploy
+   migrates your real Supabase database automatically before the new version goes live -- no
+   manual dashboard step needed. **If a deploy's log shows this step failing or being skipped**
+   (free-tier availability of `preDeployCommand` wasn't conclusively documented at the time this
+   was written), run it manually instead: open the service's **Shell** tab in Render's dashboard
+   and run `uv run alembic upgrade head` directly -- it already has the real `DATABASE_URL` set,
+   so this creates every real table in your Supabase database the same way.
 5. Once deployed, Render gives you a real URL (e.g. `https://fpl-decision-engine-api.onrender.com`).
    Confirm it's real and working: `curl https://<your-real-render-url>/health` should return
    `{"status":"ok"}` (allow up to a minute for the free tier's cold start on the very first hit).
