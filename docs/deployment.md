@@ -88,10 +88,16 @@ URL) produced by the step before it.
 
 1. Create a free account at [vercel.com](https://vercel.com), connect GitHub, import this repo as
    a new project.
-2. **Root Directory**: in the project's own setup screen (or later under Settings -> General),
-   set this to `apps/web` -- this repo is a monorepo, and Vercel needs to know the actual Next.js
-   app lives in a subdirectory, not the repo root. (Verified against Vercel's own real, current
-   docs -- this is a dashboard setting, not something encoded in a committed config file.)
+2. **Root Directory**: in the project's own setup screen (or later under Settings -> Build and
+   Deployment), set this to `apps/web` -- this repo is a monorepo, and Vercel needs to know the
+   actual Next.js app lives in a subdirectory, not the repo root. Changing this mid-import
+   correctly re-detects the Framework Preset as Next.js in the dashboard, but a real deploy
+   (2026-08-21) still failed with `Error: No Output Directory named "public" found` despite the
+   dashboard showing Next.js correctly -- a known real issue with Next.js 16 + Turbopack in
+   monorepos where auto-detection after a Root Directory change doesn't reliably carry through to
+   the actual build worker. `apps/web/vercel.json` (`{"framework": "nextjs"}`) fixes this by
+   declaring the framework explicitly in a committed file, which takes precedence over the
+   dashboard-inferred value -- no dashboard action needed for this part, it's already committed.
 3. Set two real environment variables in Vercel's dashboard (Settings -> Environment Variables):
    - `API_BASE_URL` -- your real Render URL from step 2 (e.g.
      `https://fpl-decision-engine-api.onrender.com`).
