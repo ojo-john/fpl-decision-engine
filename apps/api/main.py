@@ -10,6 +10,7 @@ from apps.api.routers import (
     gameweeks,
     h2h,
     health,
+    internal,
     leagues,
     learning,
     managers,
@@ -57,6 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(leagues.router, dependencies=[protected])
     app.include_router(models.router, dependencies=[protected])
     app.include_router(data.router, dependencies=[protected])
+    app.include_router(internal.router, dependencies=[protected])
     return app
 
 

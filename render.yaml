@@ -1,0 +1,49 @@
+# Render Blueprint (Infrastructure-as-Code) for the FastAPI backend -- deploys the exact same
+# real Dockerfile this repo's own docker-compose.yml `api` service already uses, so there is no
+# separate deployment-specific build path to keep in sync.
+#
+# Real, deliberate choice: this does NOT declare a Render-managed Postgres database here. This
+# project's own real free-tier research (see docs/deployment.md) found Supabase's free Postgres
+# more durable for a season-long tool than Render's own free Postgres, which expires 30 days after
+# creation (44 with the grace period) -- incompatible with an FPL season running many months.
+# `DATABASE_URL` below is therefore a real secret you set by hand in Render's dashboard (your real
+# Supabase connection string), not something this Blueprint provisions.
+#
+# See docs/deployment.md for the full, ordered setup checklist (Supabase -> Render -> Vercel ->
+# cron-job.org) -- this file covers only the Render half.
+#
+# Verified against Render's real, current Blueprint spec (render.com/docs/blueprint-spec) before
+# writing this -- `env: docker` + `dockerfilePath` is the real, current way to deploy an existing
+# Dockerfile as-is (not Render's own native Python buildpack, which this project doesn't use
+# locally either).
+
+services:
+  - type: web
+    name: fpl-decision-engine-api
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      # --- Real secrets: set these by hand in Render's dashboard (Environment tab). Never
+      # committed here -- `sync: false` means Render expects you to fill each one in manually and
+      # will not overwrite it on future Blueprint syncs. See docs/deployment.md for what each
+      # one's real value should be. ---
+      - key: DATABASE_URL
+        sync: false # Your real Supabase Postgres connection string.
+      - key: APPLICATION_SECRET_KEY
+        sync: false # Any real, random secret string -- generate your own, don't reuse the local dev default.
+      - key: APP_SHARED_TOKEN
+        sync: false # The single shared bearer token this API/the web frontend/cron-job.org all use. Generate your own.
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false # Your real Vercel deployment URL (e.g. https://your-app.vercel.app), set once known (Vercel comes after Render in the deploy order -- see docs/deployment.md).
+      - key: FPL_MANAGER_ID
+        sync: false # Your real FPL manager id (public, not a secret, but still set here so it's real -- not the placeholder committed in .env.example).
+      - key: FPL_H2H_LEAGUE_ID
+        sync: false # Your real FPL H2H league id, same reasoning as FPL_MANAGER_ID above.
+      # --- Real, non-secret values, safe to commit as-is (match this repo's own local .env defaults). ---
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ENVIRONMENT
+        value: production

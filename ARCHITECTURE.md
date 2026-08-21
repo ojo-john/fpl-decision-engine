@@ -47,6 +47,7 @@ app/transfers/         Transfer scenario search, selling-price/free-transfer rul
 app/chips/             Chip window resolution, user chip inventory, chip scenario evaluation
 app/h2h/                Rival-state derivation, H2H matchup Monte Carlo simulation, strategy comparison
 app/learning/           Recursive learning: outcome ingestion, counterfactuals, failure attribution, signals
+app/scheduling/         Real, stateless scheduling logic (run_tick) -- called by both scripts/scheduler.py's local loop and POST /internal/scheduler-tick (see "Local scheduler"/"Cloud deployment" sections below)
 packages/domain/        Framework-agnostic enums shared everywhere (JobType, ModelFamily, RulesStatus, ...)
 packages/database/      Base, engine/session, all 48 ORM models
 packages/fpl_client/    Resilient adapter over the LIVE public FPL API
@@ -55,9 +56,11 @@ migrations/             Hand-written Alembic migrations
 scripts/run_job.py      CLI to execute one job synchronously (prints JSON result)
 scripts/export_notes_snapshot.py  CLI to regenerate .github/state/known-notes-snapshot.json from the live API (see scout-watch.yml section)
 scripts/post_deadline_smoke_test.py  CLI to verify real-data preconditions for manager_sync/chip inventory/league_sync/rival profiles/differentials/price calibration (see "Post-deadline real-data verification" section below and docs/operations.md)
-scripts/scheduler.py     Local background loop: real LEAGUE_SYNC/GAMEWEEK_REVIEW/DATA_INGESTION automation against the real database (see "Local scheduler" section below)
-tests/unit/ (44 files)  No DB
-tests/integration/ (46) Real Postgres, monkeypatched FPL client(s)
+scripts/scheduler.py     Local background loop: thin wrapper around app.scheduling.tick.run_tick (see "Local scheduler" section below)
+render.yaml              Render Blueprint for the backend API's real cloud deployment (see "Cloud deployment" section below, docs/deployment.md)
+docs/deployment.md       Real, ordered free-tier cloud hosting setup checklist (Supabase/Render/Vercel/cron-job.org)
+tests/unit/ (60 files)  No DB
+tests/integration/ (60) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
 tests/fixtures/          Committed FPL API samples (fpl_api/) + a small real historical CSV set (historical/2023-24/)
 .github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml, historical-ingest.yml, feature-generation.yml, train.yml, league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
@@ -1316,12 +1319,14 @@ at all for the real thing, only for CI self-tests against ephemeral databases. `
 `scout-watch.yml` (below) are the only genuinely-automated things that existed before this, and
 they deliberately avoid the problem by never touching the database at all.
 
-`scripts/scheduler.py` is the real fix: a long-running loop, started as its own `scheduler`
-service in `docker-compose.yml` (reuses the `api` service's own image/Dockerfile — nothing extra
-to build), that wakes up every 15 minutes and, using pure/testable decision functions
-(`gameweeks_needing_review`, `is_interval_due`, `event_ids_missing_authoritative_recommendation` —
-see `tests/unit/test_scheduler.py`) checked against real state pulled from the database each tick,
-triggers:
+The real scheduling logic lives in `app.scheduling.tick` (`run_tick`, plus its pure/testable
+decision functions — `gameweeks_needing_review`, `is_interval_due`,
+`event_ids_missing_authoritative_recommendation` — see `tests/unit/test_scheduling_tick.py`),
+deliberately kept importable (not buried in a script) since it now has TWO real callers — see
+"Cloud deployment" below for the second one. `scripts/scheduler.py` is a thin wrapper around it: a
+long-running loop, started as its own `scheduler` service in `docker-compose.yml` (reuses the
+`api` service's own image/Dockerfile — nothing extra to build), that wakes up every 15 minutes and
+calls `run_tick()`. Each real tick, checked against real state pulled from the database, triggers:
 
 - **`RECOMMENDATION_GENERATION` → `GAMEWEEK_REVIEW`** — the moment a gameweek is both
   `Gameweek.finished=True` and has no `learning_reports` row yet (checked via a real join, not
@@ -1367,8 +1372,46 @@ failure-isolation precedent).
 `POST /jobs/review-gameweek`) — those stay for on-demand, right-now triggering; the scheduler is
 the automatic path for when nobody's watching. Starts by default with a plain `docker compose up`
 (`docker compose stop scheduler` opts out); only runs while the host machine/Docker stack is
-actually up — a deliberate, zero-hosting-decision local substitute, not a replacement for real
-hosting (see `docs/operations.md` for that tradeoff spelled out for whoever operates this next).
+actually up (see `docs/operations.md` for that tradeoff) — **as of 2026-08-21, no longer the only
+option**: see "Cloud deployment" immediately below for a real, free-tier alternative that works
+even when the local machine is off.
+
+### Cloud deployment (`POST /internal/scheduler-tick`, `render.yaml`, `docs/deployment.md`)
+
+Real gap this closes: the local scheduler above only runs while the user's own machine is on --
+useful for local development, not for reaching a live dashboard from a phone with the laptop
+closed. Real research into free-tier cloud hosting (see `docs/deployment.md`'s own "why this
+specific combination" section for the concrete providers/tradeoffs found) surfaced a real
+constraint: none of the realistic free options offer a persistent background-worker process the
+way `docker compose`'s own `scheduler` service does -- a free web service only runs in response to
+real HTTP traffic.
+
+`apps/api/routers/internal.py` adds `POST /internal/scheduler-tick` specifically for this: an
+authenticated (same `dependencies=[protected]` wiring every other router gets in `apps.api.main`)
+endpoint that runs exactly one real tick, synchronously, by calling `app.scheduling.tick.run_tick`
+directly -- the EXACT same function `scripts/scheduler.py`'s own local loop calls, not a
+duplicated reimplementation. A free external cron service (cron-job.org, see `docs/deployment.md`
+for the concrete setup) hits this endpoint every 15 minutes once deployed, functionally replacing
+the local loop.
+
+This only works correctly because `run_tick` was already designed to be fully stateless between
+calls -- see `app.scheduling.tick`'s own module docstring: every "was it time yet" check derives
+fresh from the real `jobs` table's own existing audit trail (`_fetch_last_successful_run_at`), not
+an in-memory dict. An HTTP request/response cycle has no memory of the previous one, so this
+statelessness (originally just a "don't duplicate derivable state" design choice) turned out to be
+exactly what made the HTTP-triggered path correct with zero extra work -- verified end-to-end with
+a real, temporary local server: a first real tick fired `DATA_INGESTION` (real success against
+FPL's live API), and a second, fully independent HTTP call five seconds later correctly did NOT
+re-fire it, proving the real database-derived state persisted correctly across two separate
+requests with no shared process memory between them.
+
+`render.yaml` (repo root) is a real Render Blueprint deploying the existing `Dockerfile` as-is (no
+separate deployment-specific build). Deliberately does NOT provision a Render-managed Postgres --
+real research found Render's own free Postgres expires 30+14 days after creation, incompatible
+with a season-long tool; Supabase's free Postgres (auto-pauses after 7 days of inactivity, data
+retained, resumes on next request) is the real, more durable choice instead. `docs/deployment.md`
+has the full, real, ordered setup checklist (Supabase → Render → Vercel → cron-job.org) with every
+real environment variable each service needs.
 
 ## League Watch (`.github/workflows/league-watch.yml`)
 
