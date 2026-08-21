@@ -1,13 +1,15 @@
-"""Unit tests for scripts/scheduler.py's pure decision functions.
+"""Unit tests for app.scheduling.tick's pure decision functions.
 
 No DB, no HTTP -- these take already-resolved plain state as arguments (see that module's own
 docstring for why: a top-level scheduling boundary needs its "should this run now" logic to be
-independently testable, not buried inside an untestable infinite loop).
+independently testable, not buried inside an untestable infinite loop). Covers the same real
+logic whether it's driven by scripts/scheduler.py's local loop or
+apps.api.routers.internal's HTTP tick endpoint -- both call app.scheduling.tick.run_tick directly.
 """
 
 from datetime import UTC, datetime, timedelta
 
-from scripts.scheduler import (
+from app.scheduling.tick import (
     GameweekState,
     event_ids_missing_authoritative_recommendation,
     gameweeks_needing_review,
