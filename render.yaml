@@ -25,12 +25,12 @@ services:
     dockerContext: .
     plan: free
     healthCheckPath: /health
-    # Runs after build, before the new version goes live -- ensures the real database schema is
-    # always current before any request can hit it. Free-tier availability wasn't conclusively
-    # documented at the time this was written; if it turns out unsupported on the free plan,
-    # Render's own deploy log will show a clear error, and migrations can still be run manually
-    # via the Shell tab (see docs/deployment.md) as a fallback.
-    preDeployCommand: uv run alembic upgrade head
+    # No preDeployCommand here -- confirmed (2026-08-21, real deploy) that Render's free plan
+    # does not run it (a fresh Supabase database was still schemaless after a deploy that should
+    # have migrated it), and the documented Shell-tab fallback also turned out to be a paid-tier
+    # feature ("Shell is not supported for free instance types"). Migrations instead run as part
+    # of the Dockerfile's own CMD on every container start -- see that file's comment -- which is
+    # the one mechanism guaranteed to run on the free plan.
     envVars:
       # --- Real secrets: set these by hand in Render's dashboard (Environment tab). Never
       # committed here -- `sync: false` means Render expects you to fill each one in manually and

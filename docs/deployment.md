@@ -73,13 +73,13 @@ URL) produced by the step before it.
      -- you'll come back and set the real value after step 3 (Vercel) gives you a real URL.
    - `FPL_MANAGER_ID` / `FPL_H2H_LEAGUE_ID` -- your own real, numeric FPL manager and H2H league
      ids.
-4. Deploy. `render.yaml` sets `preDeployCommand: uv run alembic upgrade head`, so every deploy
-   migrates your real Supabase database automatically before the new version goes live -- no
-   manual dashboard step needed. **If a deploy's log shows this step failing or being skipped**
-   (free-tier availability of `preDeployCommand` wasn't conclusively documented at the time this
-   was written), run it manually instead: open the service's **Shell** tab in Render's dashboard
-   and run `uv run alembic upgrade head` directly -- it already has the real `DATABASE_URL` set,
-   so this creates every real table in your Supabase database the same way.
+4. Deploy. The container's own startup command runs `uv run alembic upgrade head` before
+   starting the API (see the `Dockerfile`'s own comment) -- no manual dashboard step needed, and
+   no dependency on `preDeployCommand` or the Shell tab, both of which turned out to be
+   paid-tier-only on Render's free plan (confirmed 2026-08-21: `preDeployCommand` silently didn't
+   run, and free instances get "Shell is not supported for free instance types" instead of a
+   working Shell tab). Since this runs on every container start, not just the first one, it's
+   safe and idempotent -- including the free tier's cold-start wake-ups after 15 minutes idle.
 5. Once deployed, Render gives you a real URL (e.g. `https://fpl-decision-engine-api.onrender.com`).
    Confirm it's real and working: `curl https://<your-real-render-url>/health` should return
    `{"status":"ok"}` (allow up to a minute for the free tier's cold start on the very first hit).

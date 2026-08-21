@@ -1413,6 +1413,17 @@ retained, resumes on next request) is the real, more durable choice instead. `do
 has the full, real, ordered setup checklist (Supabase → Render → Vercel → cron-job.org) with every
 real environment variable each service needs.
 
+Database migrations against the real Supabase database run via the `Dockerfile`'s own `CMD`
+(`uv run alembic upgrade head && exec uv run uvicorn ...`), not Render's `preDeployCommand` --
+confirmed via a real deploy (2026-08-21) that `preDeployCommand` does not run on Render's free
+plan (a deployed API hit a live `psycopg.errors.UndefinedTable: relation "model_versions" does
+not exist` against a schemaless Supabase database), and the Shell tab documented as a fallback
+turned out to also be a paid-tier-only feature. Running the migration on every container start
+(idempotent, a no-op once the schema is current) is the one mechanism that's actually guaranteed
+on the free plan, including after free-tier cold-start wake-ups. Local `docker-compose.yml`
+overrides `command:` for the `api`/`scheduler` services, so this default `CMD` never runs there
+and local dev is unaffected.
+
 ## League Watch (`.github/workflows/league-watch.yml`)
 
 A standalone, deliberately non-generic scheduled workflow, distinct from
