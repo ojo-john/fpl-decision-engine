@@ -235,9 +235,7 @@ def get_chip_windows(db: Session = Depends(get_db)) -> list[ChipWindowOut] | JSO
         {
             row.fpl_event_id: row.deadline_time
             for row in db.execute(
-                select(Gameweek).where(
-                    Gameweek.season_id == season_id, Gameweek.fpl_event_id.in_(event_ids)
-                )
+                select(Gameweek).where(Gameweek.season_id == season_id, Gameweek.fpl_event_id.in_(event_ids))
             ).scalars()
         }
         if event_ids

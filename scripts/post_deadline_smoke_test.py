@@ -183,9 +183,7 @@ def check_league_sync(
             f"error_code={job.error_code}, error_message={job.error_message}. "
             "Standings/matches sync is NOT deadline-gated -- this should always succeed.",
         )
-    league_row = session.execute(
-        select(League.id).where(League.fpl_league_id == fpl_league_id)
-    ).first()
+    league_row = session.execute(select(League.id).where(League.fpl_league_id == fpl_league_id)).first()
     if league_row is None:
         return CheckResult(
             "league_sync",
@@ -280,14 +278,18 @@ def check_rival_differentials(session: Session, season: Season, fpl_manager_id: 
             "until a gameweek's own deadline passes (see app/jobs/handlers/league_sync.py).",
         )
 
-    available_rival = session.execute(
-        select(RivalGameweekSnapshot)
-        .where(
-            RivalGameweekSnapshot.fpl_event_id == fpl_event_id,
-            RivalGameweekSnapshot.picks_availability == PicksAvailability.AVAILABLE,
+    available_rival = (
+        session.execute(
+            select(RivalGameweekSnapshot)
+            .where(
+                RivalGameweekSnapshot.fpl_event_id == fpl_event_id,
+                RivalGameweekSnapshot.picks_availability == PicksAvailability.AVAILABLE,
+            )
+            .order_by(RivalGameweekSnapshot.created_at.desc())
         )
-        .order_by(RivalGameweekSnapshot.created_at.desc())
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if available_rival is None:
         return CheckResult(
             "rival_differentials",

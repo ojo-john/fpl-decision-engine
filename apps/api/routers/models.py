@@ -44,9 +44,7 @@ _MAX_RESULTS = 50
 
 @router.get("/champion", response_model=ChampionModelOut)
 def get_champion_model(db: Session = Depends(get_db)) -> ChampionModelOut | JSONResponse:
-    version = db.execute(
-        select(ModelVersion).where(ModelVersion.is_champion.is_(True))
-    ).scalar_one_or_none()
+    version = db.execute(select(ModelVersion).where(ModelVersion.is_champion.is_(True))).scalar_one_or_none()
     if version is None:
         return JSONResponse(
             status_code=404,
@@ -109,7 +107,11 @@ def run_start_probability_training(
 @router.get("/start-probability", response_model=list[StartProbabilityModelOut])
 def list_start_probability_models(db: Session = Depends(get_db)) -> list[StartProbabilityModelOut]:
     rows = (
-        db.execute(select(StartProbabilityModel).order_by(StartProbabilityModel.trained_at.desc()).limit(_MAX_RESULTS))
+        db.execute(
+            select(StartProbabilityModel)
+            .order_by(StartProbabilityModel.trained_at.desc())
+            .limit(_MAX_RESULTS)
+        )
         .scalars()
         .all()
     )

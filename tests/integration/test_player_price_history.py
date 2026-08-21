@@ -78,9 +78,7 @@ def test_real_price_change_creates_exactly_one_row(db_session, patched_fpl_clien
     assert history[0].season_id == season_id
 
 
-def test_two_real_changes_across_three_runs_creates_two_rows_in_order(
-    db_session, patched_fpl_client
-):
+def test_two_real_changes_across_three_runs_creates_two_rows_in_order(db_session, patched_fpl_client):
     first = execute_job(db_session, job_type=JobType.DATA_INGESTION, trigger_type=TriggerType.LOCAL)
     assert first.status == JobStatus.SUCCEEDED
     season_id = db_session.execute(

@@ -52,6 +52,7 @@ def _error_response(job) -> JSONResponse:
         },
     )
 
+
 # Same "capped read, not full pagination" convention as apps.api.routers.learning --
 # a real H2H league's rival/standings row count never approaches a size where
 # offset/limit paging is actually needed.
@@ -107,14 +108,11 @@ def _resolve_player_lookup(
     in the response, not one query per rival) -- see list_league_rivals's own call site."""
     if not player_ids:
         return {}
-    rows = (
-        db.execute(
-            select(Player, Position)
-            .outerjoin(Position, Player.position_id == Position.id)
-            .where(Player.id.in_(player_ids))
-        )
-        .all()
-    )
+    rows = db.execute(
+        select(Player, Position)
+        .outerjoin(Position, Player.position_id == Position.id)
+        .where(Player.id.in_(player_ids))
+    ).all()
     return {
         player.id: SquadDifferentialPlayerOut(
             player_id=player.id,
@@ -329,9 +327,7 @@ def list_league_standings(
         return _league_not_found_response(league_id)
 
     rows = (
-        db.execute(
-            select(LeagueEntry).where(LeagueEntry.league_id == league_id).order_by(LeagueEntry.rank)
-        )
+        db.execute(select(LeagueEntry).where(LeagueEntry.league_id == league_id).order_by(LeagueEntry.rank))
         .scalars()
         .all()
     )

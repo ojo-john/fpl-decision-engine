@@ -90,9 +90,7 @@ def test_team_strength_sync_partial_match_leaves_unmatched_teams_untouched(
     """A real-world scenario: ClubElo hasn't rated a promoted/newly-added club yet. The sync must
     still succeed for every OTHER team, and must not silently invent a rating for the missing one."""
     _seed_teams(db_session)
-    csv_missing_wolves = _FULL_ELO_SNAPSHOT_CSV.replace(
-        "20,Wolves,ENG,1,1740.0,2026-05-31,2026-08-22\n", ""
-    )
+    csv_missing_wolves = _FULL_ELO_SNAPSHOT_CSV.replace("20,Wolves,ENG,1,1740.0,2026-05-31,2026-08-22\n", "")
     monkeypatch.setattr(
         ClubEloClient,
         "fetch_ratings_snapshot",

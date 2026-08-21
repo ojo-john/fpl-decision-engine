@@ -79,12 +79,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_note_effectiveness_evaluations_player_id", table_name="note_effectiveness_evaluations"
-    )
-    op.drop_index(
-        "ix_note_effectiveness_evaluations_outcome_id", table_name="note_effectiveness_evaluations"
-    )
+    op.drop_index("ix_note_effectiveness_evaluations_player_id", table_name="note_effectiveness_evaluations")
+    op.drop_index("ix_note_effectiveness_evaluations_outcome_id", table_name="note_effectiveness_evaluations")
     op.drop_constraint(
         "uq_note_effectiveness_evaluations_outcome_player_type",
         "note_effectiveness_evaluations",

@@ -178,9 +178,7 @@ def _resolve_relevant_fpl_event_id(db: Session, season_id: uuid.UUID) -> int | N
     return gameweek.fpl_event_id if gameweek is not None else None
 
 
-def _is_note_active(
-    fpl_event_id: int, valid_from: int | None, valid_until: int | None
-) -> bool:
+def _is_note_active(fpl_event_id: int, valid_from: int | None, valid_until: int | None) -> bool:
     """Same inclusive-window check as ``app.optimization.projection``'s own
     ``get_active_availability_risk_note``/``get_active_role_boost_note`` -- kept as a tiny,
     duplicated pure function here rather than imported, since those two are scoped to a single
@@ -432,9 +430,7 @@ def _explain_projection(
     )
     has_risk_note = source_without_role.endswith(AVAILABILITY_RISK_NOTED_SUFFIX)
     base_source = (
-        source_without_role[: -len(AVAILABILITY_RISK_NOTED_SUFFIX)]
-        if has_risk_note
-        else source_without_role
+        source_without_role[: -len(AVAILABILITY_RISK_NOTED_SUFFIX)] if has_risk_note else source_without_role
     )
     base_projection = PlayerProjection(
         projection.player_id, projection.projected_points, base_source, projection.is_eligible
@@ -524,8 +520,7 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
                     dc_hit_rate, dc_hit_rate_games = dc_result
         except Exception:  # noqa: BLE001 - this breakdown must never fail the endpoint
             logger.warning(
-                "Could not compute feature row for projection breakdown "
-                "player_id=%s target_gameweek_id=%s.",
+                "Could not compute feature row for projection breakdown player_id=%s target_gameweek_id=%s.",
                 player.id,
                 target_gameweek_id,
                 exc_info=True,

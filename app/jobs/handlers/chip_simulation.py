@@ -302,8 +302,7 @@ def _derive_starting_and_bench_from_solver(
         return [], []
 
     players_by_id = {
-        p.id: p
-        for p in session.execute(select(Player).where(Player.id.in_(player_ids))).scalars()
+        p.id: p for p in session.execute(select(Player).where(Player.id.in_(player_ids))).scalars()
     }
 
     starters = [

@@ -230,9 +230,7 @@ def test_get_player_price_history_empty_when_no_change_yet(db_session, patched_f
     assert response.json() == []
 
 
-def test_get_player_price_history_returns_a_real_observed_change(
-    db_session, patched_fpl_client_optimization
-):
+def test_get_player_price_history_returns_a_real_observed_change(db_session, patched_fpl_client_optimization):
     _seed(db_session)
     client = authed_client()
     listed = client.get("/players", params={"page_size": 1}).json()["items"][0]

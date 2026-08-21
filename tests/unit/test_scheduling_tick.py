@@ -98,15 +98,11 @@ def test_due_event_with_existing_authoritative_recommendation_does_not_need_one(
 
 
 def test_multiple_due_events_only_the_missing_ones_are_returned():
-    assert event_ids_missing_authoritative_recommendation(
-        [1, 2, 3], has_authoritative_ids={2}
-    ) == [1, 3]
+    assert event_ids_missing_authoritative_recommendation([1, 2, 3], has_authoritative_ids={2}) == [1, 3]
 
 
 def test_event_ids_missing_authoritative_recommendation_results_sorted_ascending():
-    assert event_ids_missing_authoritative_recommendation(
-        [5, 2, 3], has_authoritative_ids=set()
-    ) == [2, 3, 5]
+    assert event_ids_missing_authoritative_recommendation([5, 2, 3], has_authoritative_ids=set()) == [2, 3, 5]
 
 
 def test_event_ids_missing_authoritative_recommendation_empty_input_returns_empty():

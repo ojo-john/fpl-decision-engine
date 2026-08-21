@@ -65,10 +65,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_player_availability_risk_notes_season_id", table_name="player_availability_risk_notes"
-    )
-    op.drop_index(
-        "ix_player_availability_risk_notes_player_id", table_name="player_availability_risk_notes"
-    )
+    op.drop_index("ix_player_availability_risk_notes_season_id", table_name="player_availability_risk_notes")
+    op.drop_index("ix_player_availability_risk_notes_player_id", table_name="player_availability_risk_notes")
     op.drop_table("player_availability_risk_notes")

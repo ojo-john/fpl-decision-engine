@@ -391,9 +391,7 @@ def test_run_backtest_invalid_request_body_returns_422(db_session):
 # --- GET /learning/backtests/{id}, GET /learning/backtests (Milestone 8) ----------------------------
 
 
-def test_get_backtest_run_returns_the_same_body_the_post_returned(
-    db_session, patched_historical_fpl_client
-):
+def test_get_backtest_run_returns_the_same_body_the_post_returned(db_session, patched_historical_fpl_client):
     model_version_id = _seed_trained_model_version_id(db_session, patched_historical_fpl_client)
     client = authed_client()
     created = client.post("/jobs/backtest", json={"model_version_id": str(model_version_id)}).json()

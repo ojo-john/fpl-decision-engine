@@ -191,13 +191,17 @@ def test_activated_start_probability_model_scales_a_real_live_projection_end_to_
         .order_by(Gameweek.fpl_event_id.desc())
         .limit(1)
     ).scalar_one()
-    feature_row = db_session.execute(
-        select(PlayerFeatures).where(
-            PlayerFeatures.season_id == season.id,
-            PlayerFeatures.gameweek_id == gameweek.id,
-            PlayerFeatures.rolling_avg_minutes_3gw.is_not(None),
+    feature_row = (
+        db_session.execute(
+            select(PlayerFeatures).where(
+                PlayerFeatures.season_id == season.id,
+                PlayerFeatures.gameweek_id == gameweek.id,
+                PlayerFeatures.rolling_avg_minutes_3gw.is_not(None),
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     assert feature_row is not None, "fixture must have at least one player with real prior minutes history"
     player = db_session.get(Player, feature_row.player_id)
 

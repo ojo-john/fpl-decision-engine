@@ -45,9 +45,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column("teams", sa.Column("elo_rating", sa.Numeric(precision=8, scale=3), nullable=True))
-    op.add_column(
-        "teams", sa.Column("elo_last_synced_at", sa.DateTime(timezone=True), nullable=True)
-    )
+    op.add_column("teams", sa.Column("elo_last_synced_at", sa.DateTime(timezone=True), nullable=True))
     op.add_column(
         "player_features",
         sa.Column("next_fixture_elo_differential", sa.Numeric(precision=8, scale=3), nullable=True),

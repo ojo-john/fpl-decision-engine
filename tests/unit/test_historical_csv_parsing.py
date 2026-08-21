@@ -148,7 +148,7 @@ def test_outfield_positions_are_unaffected_by_the_gk_alias():
 
 
 def test_manager_pick_position_labels_pass_through_unchanged():
-    """"AM"/"MNG" (2024-25 only) are real Assistant Manager/Manager fantasy picks, not a
+    """ "AM"/"MNG" (2024-25 only) are real Assistant Manager/Manager fantasy picks, not a
     mislabeled player position -- verified against real ingested names (Guardiola, Arteta, ...).
     Correctly excluded from KNOWN_POSITIONS; must NOT be aliased to anything."""
     for position in ("AM", "MNG"):

@@ -29,9 +29,7 @@ def test_parse_ratings_csv_returns_typed_rows():
 
 def test_parse_ratings_csv_skips_malformed_rows_without_raising():
     malformed = (
-        "Rank,Club,Country,Level,Elo,From,To\n"
-        "1,BrokenRow,ENG,1,not-a-number,,\n"
-        "2,Arsenal,ENG,1,2000,,\n"
+        "Rank,Club,Country,Level,Elo,From,To\n1,BrokenRow,ENG,1,not-a-number,,\n2,Arsenal,ENG,1,2000,,\n"
     )
 
     rows = parse_ratings_csv(malformed)

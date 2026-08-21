@@ -322,9 +322,7 @@ def compute_features_for_player_gameweek(
         next_fixture_was_home: bool | None = is_home
         target_fixture_kickoff_time = next_fixture.kickoff_time
         opponent_team_id = next_fixture.away_team_id if is_home else next_fixture.home_team_id
-        next_fixture_elo_differential = _resolve_elo_differential(
-            session, player.team_id, opponent_team_id
-        )
+        next_fixture_elo_differential = _resolve_elo_differential(session, player.team_id, opponent_team_id)
     else:
         next_fixture_difficulty = None
         next_fixture_was_home = None

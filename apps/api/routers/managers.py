@@ -81,14 +81,11 @@ def _not_found_response(snapshot_id: uuid.UUID) -> JSONResponse:
 
 def _squad_players(db: Session, squad_player_ids: list[str]) -> list[SquadPlayerOut]:
     ids = [uuid.UUID(pid) for pid in squad_player_ids]
-    rows = (
-        db.execute(
-            select(Player, Position)
-            .outerjoin(Position, Player.position_id == Position.id)
-            .where(Player.id.in_(ids))
-        )
-        .all()
-    )
+    rows = db.execute(
+        select(Player, Position)
+        .outerjoin(Position, Player.position_id == Position.id)
+        .where(Player.id.in_(ids))
+    ).all()
     by_id = {player.id: (player, position) for player, position in rows}
     # Preserve squad_player_ids's own order -- a plain `id IN (...)` query has
     # no obligation to return rows in that order.

@@ -56,9 +56,7 @@ def parse_ratings_csv(raw_csv: str) -> list[ClubEloRating]:
             level = int(row["Level"])
         except (KeyError, TypeError, ValueError, ArithmeticError):
             continue
-        ratings.append(
-            ClubEloRating(club=row["Club"], country=row["Country"], level=level, elo=elo)
-        )
+        ratings.append(ClubEloRating(club=row["Club"], country=row["Country"], level=level, elo=elo))
     return ratings
 
 

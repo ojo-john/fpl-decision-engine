@@ -131,9 +131,7 @@ def _per_position_gate_passes(
     """
     if not per_position_mae_gap_pct:
         return True
-    return all(
-        gap is None or gap < mae_improvement_margin for gap in per_position_mae_gap_pct.values()
-    )
+    return all(gap is None or gap < mae_improvement_margin for gap in per_position_mae_gap_pct.values())
 
 
 def _evaluate_gate(

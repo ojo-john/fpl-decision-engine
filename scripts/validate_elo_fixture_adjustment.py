@@ -143,9 +143,7 @@ def main() -> None:
             if result.raw_csv is None:
                 print(f"  {date_str}: FETCH FAILED ({result.error_message}) -- skipping this date")
                 continue
-            elo_by_date_and_club[date_str] = premier_league_ratings_by_club(
-                parse_ratings_csv(result.raw_csv)
-            )
+            elo_by_date_and_club[date_str] = premier_league_ratings_by_club(parse_ratings_csv(result.raw_csv))
     print(f"Fetched {len(elo_by_date_and_club)}/{len(distinct_dates)} snapshots successfully.\n")
 
     errors_no_adjustment: list[float] = []
@@ -189,8 +187,10 @@ def main() -> None:
     n_elo = len(next(iter(errors_elo_by_scale.values())))
     print(f"Real season validated: {_TARGET_SEASON_LABEL}, GW1-{DEFAULT_EARLY_SEASON_GAMEWEEK_CUTOFF}")
     print(f"n (no_adjustment / fpl_difficulty)  = {len(errors_no_adjustment)}")
-    print(f"n (elo_differential, resolvable)    = {n_elo}  "
-          f"({elo_skipped_unresolvable} skipped: unresolvable team/date)")
+    print(
+        f"n (elo_differential, resolvable)    = {n_elo}  "
+        f"({elo_skipped_unresolvable} skipped: unresolvable team/date)"
+    )
     print()
     print(f"MAE no_adjustment    = {_mae(errors_no_adjustment):.4f}")
     print(f"MAE fpl_difficulty   = {_mae(errors_fpl_difficulty):.4f}")

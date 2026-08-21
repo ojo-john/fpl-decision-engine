@@ -124,9 +124,7 @@ def test_squad_optimization_uses_champion_projection_when_present(
     ingestion_job = execute_job(db_session, job_type=JobType.DATA_INGESTION, trigger_type=TriggerType.LOCAL)
     assert ingestion_job.status == JobStatus.SUCCEEDED
     season_label = ingestion_job.output_json["season_label"]
-    current_season_id = db_session.execute(
-        select(Season.id).where(Season.label == season_label)
-    ).scalar_one()
+    current_season_id = db_session.execute(select(Season.id).where(Season.label == season_label)).scalar_one()
     _seed_one_gameweek_stat_row_per_player_so_this_is_not_a_cold_start(db_session, current_season_id)
 
     # Not strictly required by project_player_with_champion (it computes a
@@ -214,9 +212,7 @@ def test_project_player_with_champion_uses_cold_start_blend_for_a_player_with_no
     ingestion_job = execute_job(db_session, job_type=JobType.DATA_INGESTION, trigger_type=TriggerType.LOCAL)
     assert ingestion_job.status == JobStatus.SUCCEEDED
     season_label = ingestion_job.output_json["season_label"]
-    current_season_id = db_session.execute(
-        select(Season.id).where(Season.label == season_label)
-    ).scalar_one()
+    current_season_id = db_session.execute(select(Season.id).where(Season.label == season_label)).scalar_one()
 
     players = (
         db_session.execute(select(Player).where(Player.season_id == current_season_id).order_by(Player.id))

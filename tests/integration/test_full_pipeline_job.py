@@ -67,9 +67,7 @@ def test_full_pipeline_happy_path_runs_all_three_steps(
     assert len(feature_rows) > 0
 
     # model_training really ran and picked a winner -- exactly one champion exists.
-    champions = db_session.execute(
-        select(ModelVersion.id).where(ModelVersion.is_champion.is_(True))
-    ).all()
+    champions = db_session.execute(select(ModelVersion.id).where(ModelVersion.is_champion.is_(True))).all()
     assert len(champions) == 1
 
     # Delete this run's own player_features rows for the live-mocked "current" season immediately
@@ -96,9 +94,7 @@ def test_full_pipeline_stops_at_the_first_failing_step(
     def _boom(*args, **kwargs):
         raise ValueError("simulated feature-computation failure")
 
-    monkeypatch.setattr(
-        "app.jobs.handlers.feature_generation.generate_features_for_season", _boom
-    )
+    monkeypatch.setattr("app.jobs.handlers.feature_generation.generate_features_for_season", _boom)
 
     job = _run_full_pipeline_job(db_session)
 

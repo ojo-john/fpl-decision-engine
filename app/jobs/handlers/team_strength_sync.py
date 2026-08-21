@@ -104,16 +104,13 @@ class TeamStrengthSyncJobRunner(JobRunner):
                     output=None,
                     error_code="CLUBELO_FETCH_FAILED",
                     error_message=(
-                        f"Could not fetch ClubElo ratings for {as_of_date}: "
-                        f"{fetch_result.error_message}"
+                        f"Could not fetch ClubElo ratings for {as_of_date}: {fetch_result.error_message}"
                     ),
                 )
 
             ratings_by_club = premier_league_ratings_by_club(parse_ratings_csv(fetch_result.raw_csv))
 
-            teams = (
-                session.execute(select(Team).where(Team.season_id == season.id)).scalars().all()
-            )
+            teams = session.execute(select(Team).where(Team.season_id == season.id)).scalars().all()
             matched, unmatched = _upsert_team_elo_ratings(session, list(teams), ratings_by_club)
             session.commit()
 

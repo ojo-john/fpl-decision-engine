@@ -484,9 +484,7 @@ def test_get_transfer_optimization_run_returns_the_same_body_the_post_returned(
     season_id = _seed_with_active_gameweek(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id)
     client = authed_client()
-    created = client.post(
-        "/optimize/transfers", json={"manager_squad_snapshot_id": str(snapshot.id)}
-    ).json()
+    created = client.post("/optimize/transfers", json={"manager_squad_snapshot_id": str(snapshot.id)}).json()
 
     response = client.get(f"/optimize/transfers/{created['transfer_optimization_run_id']}")
 
