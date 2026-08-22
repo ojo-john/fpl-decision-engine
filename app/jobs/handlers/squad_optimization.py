@@ -167,7 +167,9 @@ class SquadOptimizationJobRunner(JobRunner):
                 started_at = datetime.now(UTC)
                 constraints = load_optimization_constraints(session, season_id)
                 captain_multiplier = get_captain_multiplier(session, constraints.rules_config_id)
-                target_gameweek_id, target_gameweek_status = resolve_target_gameweek(session, season_id)
+                target_gameweek_id, target_gameweek_status = resolve_target_gameweek(
+                    session, season_id, started_at
+                )
 
                 run_row = OptimizationRun(
                     job_id=uuid.UUID(ctx.job_id),
@@ -194,7 +196,7 @@ class SquadOptimizationJobRunner(JobRunner):
                 # app.optimization.champion_loader's own docstring.
                 champion = load_current_champion(session)
                 horizon_gameweek_ids = resolve_horizon_gameweeks(
-                    session, season_id, SQUAD_BUILD_HORIZON_LENGTH
+                    session, season_id, SQUAD_BUILD_HORIZON_LENGTH, started_at
                 )
                 candidates = _build_candidates(session, season_id, horizon_gameweek_ids, champion)
                 solution = solve_joint_squad_and_xi(candidates, constraints, captain_multiplier)

@@ -8,6 +8,7 @@ pattern, not a new one.
 """
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
@@ -191,13 +192,15 @@ def preview_squad(
             status_code=404, content={"error_code": "NO_CURRENT_SEASON", "detail": "No current season found."}
         )
 
-    target_gameweek_id, status = resolve_target_gameweek(db, season_id)
+    now = datetime.now(UTC)
+    target_gameweek_id, status = resolve_target_gameweek(db, season_id, now)
     if status == TargetGameweekStatus.NO_ACTIVE_GAMEWEEK:
         return JSONResponse(
             status_code=409,
             content={
                 "error_code": "NO_ACTIVE_GAMEWEEK",
-                "detail": "No unfinished gameweek exists to preview a squad against (off-season).",
+                "detail": "No actionable gameweek (deadline not yet passed) exists to preview a squad "
+                "against (off-season).",
             },
         )
     assert target_gameweek_id is not None
@@ -220,7 +223,7 @@ def preview_squad(
 
     champion = load_current_champion(db)
     captain_multiplier = get_captain_multiplier(db, constraints.rules_config_id)
-    horizon_gameweek_ids = resolve_horizon_gameweeks(db, season_id, SQUAD_BUILD_HORIZON_LENGTH)
+    horizon_gameweek_ids = resolve_horizon_gameweeks(db, season_id, SQUAD_BUILD_HORIZON_LENGTH, now)
     candidates = _build_candidates(db, season_id, horizon_gameweek_ids, champion)
 
     excluded_ids = set(body.exclude_player_ids)

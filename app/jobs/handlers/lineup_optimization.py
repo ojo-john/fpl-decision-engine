@@ -220,7 +220,9 @@ class LineupOptimizationJobRunner(JobRunner):
             try:
                 started_at = datetime.now(UTC)
                 constraints = load_optimization_constraints(session, season_id)
-                target_gameweek_id, target_gameweek_status = resolve_target_gameweek(session, season_id)
+                target_gameweek_id, target_gameweek_status = resolve_target_gameweek(
+                    session, season_id, started_at
+                )
 
                 run_row = OptimizationRun(
                     job_id=uuid.UUID(ctx.job_id),

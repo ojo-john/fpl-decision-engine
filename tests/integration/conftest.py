@@ -14,7 +14,7 @@ import csv
 import itertools
 import json
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -113,6 +113,39 @@ def unique_bootstrap_json(base: dict | None = None) -> dict:
     for event in bootstrap["events"]:
         event["deadline_time"] = f"{year}{event['deadline_time'][4:]}"
     return bootstrap
+
+
+# Disjoint from both real season labels (2020-21 .. 2026-27) and _season_year_counter's own
+# future pool (2100-9999) -- a dedicated YEAR counter, not a day-offset one: derive_season_label
+# only reads the EARLIEST event's year, so uniqueness must be guaranteed at the year granularity,
+# exactly like _season_year_counter itself. A day-offset counter (the first version of this) only
+# rarely crosses a year boundary between consecutive draws, so most test runs derived the SAME
+# season label and silently merged their rival/optimization data via get-or-create semantics --
+# a real bug caught by a "profile_count == 8" instead of "== 3" failure in test_rival_profile.py.
+_past_deadline_year_counter = itertools.count(1500 + secrets.randbelow(499))  # 1500-1998
+
+
+def _shift_events_to_real_past_deadlines(bootstrap: dict) -> None:
+    """Rewrite every event's ``deadline_time`` (mutates in place) to a REAL, definitely-past
+    timestamp relative to actual wall-clock time, ascending in ``fpl_event_id`` order.
+
+    ``unique_bootstrap_json``/``build_optimization_bootstrap_json`` shift every event's deadline
+    to the SAME synthetic year for season-label collision-avoidance only -- since that year is
+    always far in the future (2100+), it's correct for fixtures representing "still actionable"
+    gameweeks, but wrong for ones meant to represent "already finished, off-season" gameweeks:
+    ``app.optimization.gameweek_resolution`` now resolves the target gameweek by
+    ``deadline_time > now``, not ``finished=False`` (see that module's own docstring for why
+    ``finished`` alone stopped being the right check -- it only flips once a gameweek's matches
+    are actually played, days after its deadline). A fixture whose "finished" events still carry
+    a year-2100+ deadline would incorrectly resolve as actionable regardless of the ``finished``
+    flag. Draws its own per-test-run-unique year (see ``_past_deadline_year_counter`` above) for
+    the same reason ``_season_year_counter`` exists: repeated suite runs against the same
+    non-truncated Postgres must not collide on the same derived season label.
+    """
+    year = next(_past_deadline_year_counter)
+    anchor = datetime(year, 8, 1, tzinfo=UTC)  # August 1st: matches the real FPL season start month
+    for offset, event in enumerate(sorted(bootstrap["events"], key=lambda e: e["id"])):
+        event["deadline_time"] = (anchor + timedelta(days=offset)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 _OPTIMIZATION_POSITION_ELEMENT_TYPE = {"GKP": 1, "DEF": 2, "MID": 3, "FWD": 4}
@@ -326,9 +359,17 @@ def patched_fpl_client_optimization(monkeypatch):
     comfortably-solvable candidate pool (see
     ``build_optimization_bootstrap_json``) instead of the 10-row, mostly
     intentionally-quarantined default sample.
+
+    Every event's deadline is shifted to a REAL past timestamp (see
+    ``_shift_events_to_real_past_deadlines``) -- this fixture represents a
+    realistic close-season snapshot (every gameweek already finished AND
+    actionable-deadline-wise), which is exactly why its own tests assert
+    ``NO_ACTIVE_GAMEWEEK``.
     """
+    bootstrap = build_optimization_bootstrap_json()
+    _shift_events_to_real_past_deadlines(bootstrap)
     state = {
-        "bootstrap": build_optimization_bootstrap_json(),
+        "bootstrap": bootstrap,
         "fixtures": load_fixtures_json(),
         "event_status": {"leagues": "updated"},
         "live_stats_by_event": {},
@@ -534,16 +575,23 @@ def patched_fpl_client_optimization_with_active_gameweek(monkeypatch):
     once the optimizer resolves a concrete target gameweek (see
     app.optimization.gameweek_resolution) -- the plain
     patched_fpl_client_optimization fixture's bootstrap sample has every
-    gameweek finished (a realistic close-season snapshot, which is exactly
-    why its own tests assert NO_ACTIVE_GAMEWEEK). This variant marks the last
-    event unfinished so champion-aware optimizer integration tests can
-    exercise the live projection path end-to-end.
+    gameweek finished AND deadline-passed (a realistic close-season
+    snapshot, which is exactly why its own tests assert NO_ACTIVE_GAMEWEEK).
+    This variant marks the last event unfinished, WITH a real future
+    deadline (see ``_shift_events_to_real_past_deadlines`` -- every other
+    event still gets a real past deadline first, same as the plain fixture)
+    so champion-aware optimizer integration tests can exercise the live
+    projection path end-to-end against exactly one actionable gameweek.
     """
     bootstrap = build_optimization_bootstrap_json()
+    _shift_events_to_real_past_deadlines(bootstrap)
     for event in bootstrap["events"]:
         event["is_current"] = False
     bootstrap["events"][-1]["finished"] = False
     bootstrap["events"][-1]["is_current"] = True
+    bootstrap["events"][-1]["deadline_time"] = (datetime.now(UTC) + timedelta(days=7)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
     state = {
         "bootstrap": bootstrap,

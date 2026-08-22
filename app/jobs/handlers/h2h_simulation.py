@@ -28,18 +28,18 @@ created immediately after, before the actual simulation work, so a crash
 mid-simulation still leaves a terminal (FAILED) row via ``_finalize_failed``.
 
 Off-season handling deliberately differs from ``TRANSFER_OPTIMIZATION``:
-that job hard-refuses when there is no unfinished gameweek to plan a
-transfer horizon against (there is no meaningful *forward* transfer plan
-with zero target gameweeks). A matchup SIMULATION has no such problem — it
-is still meaningfully answerable off-season using each side's last-known
-squad, which is exactly what a past-completed-gameweek plausibility check
-needs (see ``app.h2h.simulate``'s own module docstring for why this is a
-useful verification tool, not just a real-time one). So this handler never
-hard-blocks on off-season: it resolves the next unfinished gameweek if one
-exists, falls back to the most recently FINISHED gameweek otherwise, and
-only refuses (``NO_TARGET_GAMEWEEK``) if literally no gameweek has ever
-finished this season. An explicit ``parameters.target_fpl_event_id`` always
-takes precedence over both.
+that job hard-refuses when there is no gameweek with a still-open deadline
+to plan a transfer horizon against (there is no meaningful *forward*
+transfer plan with zero target gameweeks). A matchup SIMULATION has no such
+problem — it is still meaningfully answerable off-season using each side's
+last-known squad, which is exactly what a past-completed-gameweek
+plausibility check needs (see ``app.h2h.simulate``'s own module docstring
+for why this is a useful verification tool, not just a real-time one). So
+this handler never hard-blocks on off-season: it resolves the next gameweek
+whose deadline hasn't passed if one exists, falls back to the most recently
+FINISHED gameweek otherwise, and only refuses (``NO_TARGET_GAMEWEEK``) if
+literally no gameweek has ever finished this season. An explicit
+``parameters.target_fpl_event_id`` always takes precedence over both.
 
 Starting-XI resolution: neither ``ManagerSquadSnapshot.squad_player_ids`` nor
 ``RivalGameweekSnapshot.squad_player_ids`` preserve FPL's own pick ORDER
@@ -687,10 +687,11 @@ def _resolve_target_event(
 
     An explicit ``parameters.target_fpl_event_id`` always wins (this is what
     a past-completed-gameweek plausibility check supplies). Otherwise prefers
-    the next unfinished gameweek; falls back to the most recently FINISHED
-    one off-season (see module docstring for why this is a deliberate,
-    documented departure from TRANSFER_OPTIMIZATION's hard off-season
-    refusal). Raises ``_InputResolutionError`` if neither can be resolved.
+    the next gameweek whose deadline hasn't passed; falls back to the most
+    recently FINISHED one off-season (see module docstring for why this is a
+    deliberate, documented departure from TRANSFER_OPTIMIZATION's hard
+    off-season refusal). Raises ``_InputResolutionError`` if neither can be
+    resolved.
     """
     if explicit_event_id is not None:
         gameweek_id = session.execute(
@@ -704,7 +705,8 @@ def _resolve_target_event(
             )
         return gameweek_id, explicit_event_id
 
-    gameweek_id, status = resolve_target_gameweek(session, season_id)
+    now = datetime.now(UTC)
+    gameweek_id, status = resolve_target_gameweek(session, season_id, now)
     if status == TargetGameweekStatus.RESOLVED:
         assert gameweek_id is not None
         gameweek = session.get(Gameweek, gameweek_id)
@@ -714,7 +716,7 @@ def _resolve_target_event(
     fallback_event_id = resolve_most_recent_finished_gameweek_event(session, season_id)
     if fallback_event_id is None:
         raise _InputResolutionError(
-            "NO_TARGET_GAMEWEEK", "No unfinished or finished gameweek exists yet for this season."
+            "NO_TARGET_GAMEWEEK", "No actionable or finished gameweek exists yet for this season."
         )
     fallback_gameweek_id = session.execute(
         select(Gameweek.id).where(Gameweek.season_id == season_id, Gameweek.fpl_event_id == fallback_event_id)

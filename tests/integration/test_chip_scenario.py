@@ -15,6 +15,7 @@ FWD) since Wildcard/Free Hit need a starting XI + captain, not just a squad.
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select, update
@@ -65,9 +66,12 @@ def _seed_season_with_several_unfinished_gameweeks(
     db_session, patched_fpl_client_optimization_with_active_gameweek
 ) -> tuple[uuid.UUID, int]:
     """Ingest the ~60-player optimization pool, then mark the trailing
-    ``_TRAILING_UNFINISHED_GAMEWEEKS`` gameweeks unfinished (the fixture itself only marks the very
-    last one) -- so the Wildcard/Free Hit candidate-gameweek CAP is actually exercised by a real
-    multi-gameweek window, not a trivially single-candidate one.
+    ``_TRAILING_UNFINISHED_GAMEWEEKS`` gameweeks unfinished with real, ascending future deadlines
+    (the fixture itself only marks the very last one, with a real future deadline -- every other
+    event has a real PAST deadline, see ``_shift_events_to_real_past_deadlines`` in conftest.py)
+    -- so the Wildcard/Free Hit candidate-gameweek CAP is actually exercised by a real
+    multi-gameweek window (``app.optimization.gameweek_resolution`` resolves by ``deadline_time >
+    now``, not ``finished=False`` alone), not a trivially single-candidate one.
 
     Returns ``(season_id, stop_event)`` where ``stop_event`` is this season's final ``fpl_event_id``.
     """
@@ -84,8 +88,14 @@ def _seed_season_with_several_unfinished_gameweeks(
         .limit(_TRAILING_UNFINISHED_GAMEWEEKS)
     ).all()
     assert len(trailing) == _TRAILING_UNFINISHED_GAMEWEEKS
-    for gameweek_id, _ in trailing:
-        db_session.execute(update(Gameweek).where(Gameweek.id == gameweek_id).values(finished=False))
+    now = datetime.now(UTC)
+    # Ascending deadlines matching ascending fpl_event_id (trailing is currently DESC-ordered).
+    for offset, (gameweek_id, _) in enumerate(reversed(trailing)):
+        db_session.execute(
+            update(Gameweek)
+            .where(Gameweek.id == gameweek_id)
+            .values(finished=False, deadline_time=now + timedelta(days=7 * (offset + 1)))
+        )
     db_session.commit()
 
     stop_event = max(fpl_event_id for _, fpl_event_id in trailing)
@@ -123,7 +133,9 @@ def test_evaluate_wildcard_respects_the_candidate_gameweek_cap(
     season_id, stop_event = _seed_season_with_several_unfinished_gameweeks(
         db_session, patched_fpl_client_optimization_with_active_gameweek
     )
-    window_gameweek_ids = resolve_gameweeks_within_window(db_session, season_id, stop_event)
+    window_gameweek_ids = resolve_gameweeks_within_window(
+        db_session, season_id, stop_event, datetime.now(UTC)
+    )
     assert len(window_gameweek_ids) > _WILDCARD_MAX_CANDIDATE_GAMEWEEKS  # the cap is actually exercised
 
     constraints = load_optimization_constraints(db_session, season_id)
@@ -155,7 +167,9 @@ def test_evaluate_free_hit_also_respects_the_candidate_gameweek_cap(
     season_id, stop_event = _seed_season_with_several_unfinished_gameweeks(
         db_session, patched_fpl_client_optimization_with_active_gameweek
     )
-    window_gameweek_ids = resolve_gameweeks_within_window(db_session, season_id, stop_event)
+    window_gameweek_ids = resolve_gameweeks_within_window(
+        db_session, season_id, stop_event, datetime.now(UTC)
+    )
 
     constraints = load_optimization_constraints(db_session, season_id)
     captain_multiplier = get_captain_multiplier(db_session, constraints.rules_config_id)
@@ -187,7 +201,9 @@ def test_evaluate_wildcard_candidate_returns_none_when_budget_is_far_too_small(
     season_id, stop_event = _seed_season_with_several_unfinished_gameweeks(
         db_session, patched_fpl_client_optimization_with_active_gameweek
     )
-    window_gameweek_ids = resolve_gameweeks_within_window(db_session, season_id, stop_event)
+    window_gameweek_ids = resolve_gameweeks_within_window(
+        db_session, season_id, stop_event, datetime.now(UTC)
+    )
     target_gameweek_id = window_gameweek_ids[0]
     fpl_event_id = db_session.execute(
         select(Gameweek.fpl_event_id).where(Gameweek.id == target_gameweek_id)
@@ -226,7 +242,9 @@ def test_wildcard_sums_horizon_points_while_free_hit_uses_only_the_single_target
     season_id, stop_event = _seed_season_with_several_unfinished_gameweeks(
         db_session, patched_fpl_client_optimization_with_active_gameweek
     )
-    window_gameweek_ids = resolve_gameweeks_within_window(db_session, season_id, stop_event)
+    window_gameweek_ids = resolve_gameweeks_within_window(
+        db_session, season_id, stop_event, datetime.now(UTC)
+    )
     assert len(window_gameweek_ids) >= 2
     gw1, gw2 = window_gameweek_ids[0], window_gameweek_ids[1]
     fpl_event_1 = db_session.execute(select(Gameweek.fpl_event_id).where(Gameweek.id == gw1)).scalar_one()
@@ -298,7 +316,9 @@ def test_evaluate_wildcard_and_free_hit_candidates_expose_their_winning_solution
     season_id, stop_event = _seed_season_with_several_unfinished_gameweeks(
         db_session, patched_fpl_client_optimization_with_active_gameweek
     )
-    window_gameweek_ids = resolve_gameweeks_within_window(db_session, season_id, stop_event)
+    window_gameweek_ids = resolve_gameweeks_within_window(
+        db_session, season_id, stop_event, datetime.now(UTC)
+    )
     gw1 = window_gameweek_ids[0]
     fpl_event_1 = db_session.execute(select(Gameweek.fpl_event_id).where(Gameweek.id == gw1)).scalar_one()
 

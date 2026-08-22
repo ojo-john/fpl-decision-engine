@@ -28,9 +28,9 @@ its own lookup is always by ``target_gameweek_id`` alone.
 
 Target gameweek resolution: an explicit ``parameters.target_fpl_event_id``
 always wins (a caller re-generating a summary for a specific, possibly past,
-gameweek). Otherwise resolves the next unfinished gameweek via
-``resolve_target_gameweek`` and HARD REFUSES (``NO_ACTIVE_GAMEWEEK``, no row
-created) if none exists — mirrors ``TRANSFER_OPTIMIZATION``/``CHIP_SIMULATION``'s
+gameweek). Otherwise resolves the next gameweek whose deadline hasn't passed
+via ``resolve_target_gameweek`` and HARD REFUSES (``NO_ACTIVE_GAMEWEEK``, no
+row created) if none exists — mirrors ``TRANSFER_OPTIMIZATION``/``CHIP_SIMULATION``'s
 off-season precedent (not ``H2H_SIMULATION``'s softer fallback), since a
 recommendation summary for a gameweek that doesn't exist has nothing left to
 aggregate.
@@ -319,7 +319,7 @@ class _TargetGameweek:
 
 
 def _resolve_target_gameweek_for_recommendation(
-    session: Session, season_id: uuid.UUID, explicit_event_id: int | None
+    session: Session, season_id: uuid.UUID, explicit_event_id: int | None, now: datetime
 ) -> _TargetGameweek:
     """An explicit ``parameters.target_fpl_event_id`` always wins. Otherwise HARD REFUSES
     (``NO_ACTIVE_GAMEWEEK``) off-season -- see module docstring for why this mirrors
@@ -337,11 +337,12 @@ def _resolve_target_gameweek_for_recommendation(
             )
         return _TargetGameweek(gameweek_id=gameweek_id, fpl_event_id=explicit_event_id)
 
-    gameweek_id, status = resolve_target_gameweek(session, season_id)
+    gameweek_id, status = resolve_target_gameweek(session, season_id, now)
     if status == TargetGameweekStatus.NO_ACTIVE_GAMEWEEK:
         raise _InputResolutionError(
             "NO_ACTIVE_GAMEWEEK",
-            "No unfinished gameweek exists to generate a recommendation summary for (off-season).",
+            "No actionable gameweek (deadline not yet passed) exists to generate a recommendation "
+            "summary for (off-season).",
         )
     assert gameweek_id is not None
     gameweek = session.get(Gameweek, gameweek_id)
@@ -383,7 +384,10 @@ class RecommendationGenerationJobRunner(JobRunner):
 
                 raw_target_event = (ctx.parameters or {}).get("target_fpl_event_id")
                 explicit_event_id = int(raw_target_event) if raw_target_event is not None else None
-                target = _resolve_target_gameweek_for_recommendation(session, season_id, explicit_event_id)
+                now = datetime.now(UTC)
+                target = _resolve_target_gameweek_for_recommendation(
+                    session, season_id, explicit_event_id, now
+                )
             except _InputResolutionError as exc:
                 return JobResult(
                     status=JobStatus.FAILED, output=None, error_code=exc.error_code, error_message=str(exc)

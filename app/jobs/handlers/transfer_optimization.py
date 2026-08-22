@@ -208,13 +208,18 @@ class TransferOptimizationJobRunner(JobRunner):
                 started_at = datetime.now(UTC)
                 constraints = load_optimization_constraints(session, season_id)
                 transfer_rules = load_transfer_rules(session, constraints.rules_config_id)
-                horizon_gameweek_ids = resolve_horizon_gameweeks(session, season_id, horizon_length)
+                horizon_gameweek_ids = resolve_horizon_gameweeks(
+                    session, season_id, horizon_length, started_at
+                )
                 if not horizon_gameweek_ids:
                     return JobResult(
                         status=JobStatus.FAILED,
                         output=None,
                         error_code="NO_ACTIVE_GAMEWEEK",
-                        error_message="No unfinished gameweek found to build a transfer horizon against.",
+                        error_message=(
+                            "No actionable gameweek (deadline not yet passed) found to build a "
+                            "transfer horizon against."
+                        ),
                     )
 
                 transfer_hit_cost_magnitude = abs(transfer_rules.transfer_hit_cost)

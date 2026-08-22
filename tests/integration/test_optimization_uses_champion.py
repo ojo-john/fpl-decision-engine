@@ -33,6 +33,7 @@ run).
 """
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, select, update
 
@@ -265,7 +266,7 @@ def test_project_player_with_champion_uses_cold_start_blend_for_a_player_with_no
 
     champion = load_current_champion(db_session)
     assert champion is not None
-    target_gameweek_id, status = resolve_target_gameweek(db_session, current_season_id)
+    target_gameweek_id, status = resolve_target_gameweek(db_session, current_season_id, datetime.now(UTC))
     assert status == TargetGameweekStatus.RESOLVED
 
     cold_result = project_player_with_champion(db_session, cold_player, target_gameweek_id, champion)

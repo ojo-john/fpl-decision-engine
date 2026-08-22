@@ -77,7 +77,8 @@ module's own docstring) — ``sample_count`` is always ``NULL`` for those.
 
 League-context refinement (Milestone 6 Layer 4 -- the final piece of this
 milestone): for the IMMEDIATE candidate only (the very first entry in a
-chip's evaluated ``results`` list -- the next unfinished gameweek), if the
+chip's evaluated ``results`` list -- the next gameweek whose deadline hasn't
+passed), if the
 user has a REAL, resolvable FPL manager identity and a real, scheduled H2H
 opponent for that exact gameweek, ``_compute_league_context_h2h_probabilities``
 runs a paired Monte Carlo win-probability comparison (with vs. without this
@@ -541,6 +542,10 @@ class _ChipEvaluationContext:
     # snapshot, straight off ManagerSquadSnapshot.fpl_manager_id -- None for a MANUAL_ENTRY
     # snapshot (no real manager behind it, see module docstring's resolution-chain step 1).
     fpl_manager_id: int | None
+    # Single "as of" timestamp for this whole job run -- reused for
+    # resolve_gameweeks_within_window's deadline-based filter rather than taking a second,
+    # subtly different snapshot of "now" partway through evaluation.
+    now: datetime
 
 
 def _evaluate_chip_candidates(
@@ -1072,7 +1077,9 @@ def _process_chip(
         )
         return
 
-    window_gameweek_ids = resolve_gameweeks_within_window(session, ctx.season_id, current.window.stop_event)
+    window_gameweek_ids = resolve_gameweeks_within_window(
+        session, ctx.season_id, current.window.stop_event, ctx.now
+    )
     if not window_gameweek_ids:
         session.add(
             ChipRecommendation(
@@ -1080,7 +1087,7 @@ def _process_chip(
                 chip_type=chip_type,
                 verdict=ChipVerdict.NO_VIABLE_WINDOW,
                 recommended_candidate_id=None,
-                rationale=f"No unfinished gameweek remains in window {current.window.window_number}.",
+                rationale=f"No actionable gameweek remains in window {current.window.window_number}.",
             )
         )
         return
@@ -1134,6 +1141,7 @@ class ChipSimulationJobRunner(JobRunner):
     def run(self, ctx: JobContext) -> JobResult:
         session = SessionLocal()
         run_row: ChipOptimizationRun | None = None
+        now = datetime.now(UTC)
         try:
             try:
                 manager_squad_snapshot_id = _parse_uuid_parameter(ctx.parameters, "manager_squad_snapshot_id")
@@ -1166,11 +1174,12 @@ class ChipSimulationJobRunner(JobRunner):
                 rules_config = session.get(RulesConfig, constraints.rules_config_id)
                 assert rules_config is not None  # rules_config_id was just resolved from a real row
 
-                target_gameweek_id, status = resolve_target_gameweek(session, season_id)
+                target_gameweek_id, status = resolve_target_gameweek(session, season_id, now)
                 if status == TargetGameweekStatus.NO_ACTIVE_GAMEWEEK:
                     raise _InputResolutionError(
                         "NO_ACTIVE_GAMEWEEK",
-                        "No unfinished gameweek exists to evaluate chip timing against (off-season).",
+                        "No actionable gameweek (deadline not yet passed) exists to evaluate chip timing "
+                        "against (off-season).",
                     )
                 assert target_gameweek_id is not None
                 target_gameweek = session.get(Gameweek, target_gameweek_id)
@@ -1182,7 +1191,7 @@ class ChipSimulationJobRunner(JobRunner):
                 )
 
             try:
-                started_at = datetime.now(UTC)
+                started_at = now
                 run_row = ChipOptimizationRun(
                     job_id=uuid.UUID(ctx.job_id),
                     manager_squad_snapshot_id=snapshot.id,
@@ -1256,6 +1265,7 @@ class ChipSimulationJobRunner(JobRunner):
                     selling_prices=selling_prices,
                     rng=random.Random(),
                     fpl_manager_id=snapshot.fpl_manager_id,
+                    now=now,
                 )
 
                 for chip_type in requested_chip_types:

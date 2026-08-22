@@ -20,7 +20,7 @@ one and only unfinished gameweek) while still exercising a real, live
 
 import secrets
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select, update
@@ -509,11 +509,13 @@ def _rival_raw_picks_json() -> dict:
 
 
 def _mark_trailing_gameweeks_unfinished(db_session, season_id, count: int) -> list[int]:
-    """Mark the trailing ``count`` gameweeks (by ``fpl_event_id``) unfinished, returning their
-    ``fpl_event_id``s ascending -- mirrors ``test_chip_scenario.py``'s own
-    ``_seed_season_with_several_unfinished_gameweeks`` trick, so a chip's window genuinely contains
-    several candidate gameweeks instead of the fixture's usual single trailing one (needed here to
-    exercise "the immediate candidate gets populated, a LATER one stays NULL").
+    """Mark the trailing ``count`` gameweeks (by ``fpl_event_id``) unfinished WITH real ascending
+    future deadlines, returning their ``fpl_event_id``s ascending -- mirrors ``test_chip_scenario.py``'s
+    own ``_seed_season_with_several_unfinished_gameweeks`` trick, so a chip's window genuinely
+    contains several candidate gameweeks instead of the fixture's usual single trailing one (needed
+    here to exercise "the immediate candidate gets populated, a LATER one stays NULL"). Real
+    deadlines matter here, not just ``finished=False``: ``app.optimization.gameweek_resolution``
+    resolves candidates by ``deadline_time > now``.
     """
     trailing = db_session.execute(
         select(Gameweek.id, Gameweek.fpl_event_id)
@@ -522,8 +524,14 @@ def _mark_trailing_gameweeks_unfinished(db_session, season_id, count: int) -> li
         .limit(count)
     ).all()
     assert len(trailing) == count
-    for gameweek_id, _fpl_event_id in trailing:
-        db_session.execute(update(Gameweek).where(Gameweek.id == gameweek_id).values(finished=False))
+    now = datetime.now(UTC)
+    # Ascending deadlines matching ascending fpl_event_id (trailing is currently DESC-ordered).
+    for offset, (gameweek_id, _fpl_event_id) in enumerate(reversed(trailing)):
+        db_session.execute(
+            update(Gameweek)
+            .where(Gameweek.id == gameweek_id)
+            .values(finished=False, deadline_time=now + timedelta(days=7 * (offset + 1)))
+        )
     db_session.commit()
     return sorted(fpl_event_id for _gameweek_id, fpl_event_id in trailing)
 

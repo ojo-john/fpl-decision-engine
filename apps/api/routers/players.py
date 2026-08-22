@@ -2,6 +2,7 @@
 
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -165,16 +166,14 @@ def list_players(
 
 
 def _resolve_relevant_fpl_event_id(db: Session, season_id: uuid.UUID) -> int | None:
-    """The gameweek number "active" note-window checks are evaluated against -- the next
-    unfinished gameweek, mirroring ``apps.api.routers.gameweeks.get_next_deadline``'s own
+    """The gameweek number "active" note-window checks are evaluated against -- the next gameweek
+    whose deadline hasn't passed, mirroring ``apps.api.routers.gameweeks.get_next_deadline``'s own
     resolution exactly (the real squad-selection deadline is what matters, independent of the
-    optimization gate). ``None`` off-season (every gameweek already finished)."""
-    gameweek = db.execute(
-        select(Gameweek)
-        .where(Gameweek.season_id == season_id, Gameweek.finished.is_(False))
-        .order_by(Gameweek.fpl_event_id)
-        .limit(1)
-    ).scalar_one_or_none()
+    optimization gate). ``None`` off-season (every gameweek's deadline already passed)."""
+    gameweek_id, _ = resolve_target_gameweek(db, season_id, datetime.now(UTC))
+    if gameweek_id is None:
+        return None
+    gameweek = db.get(Gameweek, gameweek_id)
     return gameweek.fpl_event_id if gameweek is not None else None
 
 
@@ -192,15 +191,15 @@ def _is_note_active(fpl_event_id: int, valid_from: int | None, valid_until: int 
 @router.get("/notes/active", response_model=list[ActiveNoteOut])
 def list_active_notes(db: Session = Depends(get_db)) -> list[ActiveNoteOut]:
     """Every currently-active availability-risk and role-boost note across every player, for the
-    current/next unfinished gameweek -- NOT player-scoped, unlike every other note endpoint on
-    this router. Built for external, read-only consumers that can't reach this app's database
-    directly (see ``.github/workflows/scout-watch.yml``'s dedup step) to know what's already
-    known before proposing something as new. Registered before ``/{player_id}`` so ``notes`` can
-    never be misread as a player id (same defensive route-ordering discipline as
+    current/next gameweek whose deadline hasn't passed -- NOT player-scoped, unlike every other
+    note endpoint on this router. Built for external, read-only consumers that can't reach this
+    app's database directly (see ``.github/workflows/scout-watch.yml``'s dedup step) to know what's
+    already known before proposing something as new. Registered before ``/{player_id}`` so
+    ``notes`` can never be misread as a player id (same defensive route-ordering discipline as
     ``apps.api.routers.optimization``'s own chips-vs-catch-all precedent -- see that router's own
     comment -- even though these two paths don't actually collide in segment count).
 
-    Returns an empty list (not 404) when there's no current season or no unfinished gameweek to
+    Returns an empty list (not 404) when there's no current season or no actionable gameweek to
     evaluate against (off-season) -- there's nothing "active" to report in either case, and a
     consuming script shouldn't need special-case 404 handling for what is, for its purposes, the
     same as "nothing found".
@@ -484,7 +483,7 @@ def get_player_projection(player_id: uuid.UUID, db: Session = Depends(get_db)) -
     if player is None:
         raise HTTPException(status_code=404, detail=f"Player {player_id} not found.")
 
-    target_gameweek_id, _ = resolve_target_gameweek(db, player.season_id)
+    target_gameweek_id, _ = resolve_target_gameweek(db, player.season_id, datetime.now(UTC))
     champion = None
     cold_start_season = False
     cold_start_player = False

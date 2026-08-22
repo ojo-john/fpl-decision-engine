@@ -497,7 +497,7 @@ so a manager can see the same real historical reliability signal directly rather
 `projected_points`.
 
 Both `SQUAD_OPTIMIZATION` and `/optimize/preview` rank candidates by
-points summed across the next `SQUAD_BUILD_HORIZON_LENGTH` (6) unfinished
+points summed across the next `SQUAD_BUILD_HORIZON_LENGTH` (6) still-actionable
 gameweeks (`app.optimization.gameweek_resolution.resolve_horizon_gameweeks`
 + `app.transfers.horizon_projection.compute_horizon_points` — the same
 horizon machinery `TRANSFER_OPTIMIZATION` already used), not just the
@@ -1677,6 +1677,42 @@ documents it directly.
   durable resolution to a bug class that has now surfaced three separate times
   (`ingestion_runs.run_type` in `0006`, `jobs.*` in `0041`, these 39 in `0043`) — always invisible
   in CI (fresh test database every run), always real against the persistent dev database.
+- **Resolved, real bug (found and fixed 2026-08-22): the entire recommendation engine targeted
+  the wrong gameweek for hours after every real deadline, on the just-deployed cloud dashboard.**
+  `app.optimization.gameweek_resolution`'s private helper (then named
+  `_unfinished_gameweek_ids_ordered`) resolved "what gameweek should I plan for" by filtering on
+  `Gameweek.finished.is_(False)` — but `finished` only flips to `True` once every match in that
+  gameweek has actually been *played*, days after its deadline. Confirmed live: GW1's real
+  deadline passed (`2026-08-21 17:30 UTC`) while `finished` was still `False` (matches still being
+  played that weekend), and the dashboard generated a "GW1 recommendation" the manager could no
+  longer act on. The bug was systemic, not a one-off: `resolve_target_gameweek` and
+  `resolve_horizon_gameweeks` (both built on that one helper, plus `resolve_gameweeks_within_window`
+  for chip scheduling) feed squad optimization, lineup optimization, transfer optimization, chip
+  simulation, H2H simulation, recommendation generation, `GET /gameweeks/next-deadline`, and the
+  `/players/notes/active`/live-projection-preview endpoints — every one of which independently
+  duplicated the same `finished=False` inline query in two of those API routes rather than sharing
+  the resolver at all. Fixed by renaming the helper to `_actionable_gameweek_ids_ordered` and
+  changing its filter to `Gameweek.deadline_time > now` (a gameweek's deadline always precedes it
+  finishing, so this is sufficient on its own — no separate `finished` check needed), with an
+  explicit `now: datetime` parameter threaded through every public function (no default — forces
+  every caller to be deliberate; mirrors `app.scheduling.tick.is_interval_due`'s existing
+  testable-time-based-logic precedent, since this codebase has no Clock/time-provider abstraction).
+  `resolve_most_recent_finished_gameweek_event` (used by `LEAGUE_SYNC` to fetch rivals'
+  already-played picks, and as `H2H_SIMULATION`'s documented off-season fallback) was deliberately
+  left unchanged — it's genuinely asking a retrospective "what already happened" question, not
+  part of this bug. The two duplicated inline queries (`gameweeks.py`'s `next-deadline` endpoint
+  and `players.py`'s `_resolve_relevant_fpl_event_id`) were refactored to call the shared resolver
+  instead of hand-rolling the same query a third and fourth time. Uncovered a second, real bug
+  while fixing test fixtures: `tests/integration/conftest.py`'s `unique_bootstrap_json` shifts
+  every event's deadline to the SAME synthetic year for season-label collision-avoidance — correct
+  for "still actionable" fixtures, but any fixture meant to represent "already finished, off-season"
+  gameweeks needs a genuinely PAST deadline now, not just `finished=True`. The fix's own first
+  attempt (a day-offset counter) introduced a THIRD real bug — consecutive draws rarely cross a
+  year boundary, so different tests silently derived the same season label and merged their data
+  via get-or-create semantics (caught by `test_rival_profile.py` asserting `profile_count == 3`
+  and getting `8`) — replaced with a dedicated year counter (`_past_deadline_year_counter`,
+  disjoint from both real season labels and the existing future-synthetic pool), mirroring
+  `_season_year_counter`'s own exact collision-avoidance guarantee.
 `FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and
 the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`
 targets are now real, individual targets (previously combined into one
