@@ -85,6 +85,14 @@ def _resolve_fk(id_map: dict[int, uuid.UUID], fpl_id: int | None) -> uuid.UUID |
 # INSERT — so every batch must be chunked to stay safely under that limit.
 _MAX_BIND_PARAMS = 65535
 
+# A DIFFERENT constraint from _MAX_BIND_PARAMS above: a real, live DATA_INGESTION failure
+# (2026-08-23) hit a Postgres statement_timeout inserting a single ~600-row
+# player_price_signal_observations batch against Supabase's free-tier database, every single
+# scheduler run -- 600 rows * 8 columns (4800 params) is nowhere near the bind-parameter cap, so
+# that math doesn't help here. This is a real-world execution-time limit, not a protocol limit;
+# kept deliberately small and independent of column count.
+_PRICE_SIGNAL_INSERT_CHUNK_SIZE = 100
+
 
 def _bulk_upsert(
     session: Session,
@@ -406,7 +414,13 @@ def record_price_signal_observations(
         }
         for player_id, transfers_in_event, transfers_out_event, selected_by_percent in rows
     ]
-    session.execute(insert(PlayerPriceSignalObservation).values(values))
+    # Chunked, not one single multi-hundred-row INSERT: a real, live DATA_INGESTION failure
+    # (2026-08-23, ~600 players in one statement) hit Supabase's statement_timeout every single
+    # scheduler run. Each chunk is its own INSERT so no single statement is large enough to risk
+    # the same timeout, regardless of how large this season's real player pool grows.
+    for chunk_start in range(0, len(values), _PRICE_SIGNAL_INSERT_CHUNK_SIZE):
+        chunk = values[chunk_start : chunk_start + _PRICE_SIGNAL_INSERT_CHUNK_SIZE]
+        session.execute(insert(PlayerPriceSignalObservation).values(chunk))
     return len(values)
 
 

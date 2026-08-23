@@ -1733,6 +1733,21 @@ documents it directly.
   `PicksAvailability.UNAVAILABLE_PRIVATE_OR_NOT_RELEASED` handling for the case picks genuinely
   aren't out yet, so there was never a real reason to gate the attempt on `finished` at all — the
   outer gate was pure, needless delay on data that was often already sitting there.
+- **Resolved, real bug (found and fixed 2026-08-23): the scheduled `DATA_INGESTION` job failed
+  every single real cloud-scheduler run.** Caught by the manager questioning whether the scheduler
+  actually worked — real evidence: the `jobs` table showed the scheduler genuinely firing on
+  schedule (trigger timestamps matched the cron interval), but every `DATA_INGESTION` attempt
+  failed with `psycopg.errors.QueryCanceled: canceling statement due to statement timeout`, and
+  cron-job.org's own execution history showed the `/internal/scheduler-tick` endpoint alternating
+  between client-side timeouts and "output too large" (almost certainly a large HTML error page
+  from Render/Cloudflare's edge on a slow request, not the endpoint's real tiny JSON body).
+  Root cause: `app.ingestion.normalization.record_price_signal_observations` inserted one
+  ~600-row batch (one row per current-season player) as a SINGLE multi-row `INSERT`, which
+  Supabase's free-tier database timed out on every real run. Fixed by chunking the insert into
+  `_PRICE_SIGNAL_INSERT_CHUNK_SIZE = 100`-row batches — a deliberately different, smaller
+  constant from `_MAX_BIND_PARAMS`-based chunking used elsewhere in the same file (that limit is
+  Postgres' protocol-level bound-parameter cap, ~8000+ rows before it would even trigger for an
+  8-column row; this is a real-world execution-time limit, unrelated to parameter count).
 `FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and
 the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`
 targets are now real, individual targets (previously combined into one
