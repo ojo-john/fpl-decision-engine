@@ -127,9 +127,13 @@ def unique_bootstrap_json(base: dict | None = None) -> dict:
 # (the first version used 1500-1998) can overflow past it well before the run finishes, making
 # a "definitely past" fixture's deadline silently drift into real/future territory again -- a
 # second real instance of the exact same bug class, caught by test_squad_optimization_job.py
-# expecting NO_ACTIVE_GAMEWEEK and getting a resolved one instead. 100-999 leaves 1000+ years of
-# headroom, comfortably absorbing however large this suite grows.
-_past_deadline_year_counter = itertools.count(100 + secrets.randbelow(900))  # 100-999
+# expecting NO_ACTIVE_GAMEWEEK and getting a resolved one instead. Kept >= 1000 (not lower, e.g.
+# a naive 100-999 range): %Y zero-padding for sub-1000 years is a real, documented platform
+# difference in strftime's underlying C library (glibc on Linux vs. macOS/BSD) -- passed clean
+# locally (macOS) but broke DATA_INGESTION suite-wide on CI's Linux runner, most likely via a
+# malformed non-4-digit deadline_time string. 1000-1499 avoids that class of risk entirely while
+# still leaving 500+ years of headroom, comfortably absorbing however large this suite grows.
+_past_deadline_year_counter = itertools.count(1000 + secrets.randbelow(500))  # 1000-1499
 
 
 def _shift_events_to_real_past_deadlines(bootstrap: dict) -> None:
