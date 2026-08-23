@@ -90,8 +90,10 @@ _MAX_BIND_PARAMS = 65535
 # player_price_signal_observations batch against Supabase's free-tier database, every single
 # scheduler run -- 600 rows * 8 columns (4800 params) is nowhere near the bind-parameter cap, so
 # that math doesn't help here. This is a real-world execution-time limit, not a protocol limit;
-# kept deliberately small and independent of column count.
-_PRICE_SIGNAL_INSERT_CHUNK_SIZE = 100
+# kept deliberately small and independent of column count. First attempt used 100 -- confirmed
+# live (same day) that even a 100-row chunk still timed out against Supabase's free-tier pooler
+# under real contention, so this is kept smaller still for real headroom.
+_PRICE_SIGNAL_INSERT_CHUNK_SIZE = 25
 
 
 def _bulk_upsert(
