@@ -122,7 +122,14 @@ def unique_bootstrap_json(base: dict | None = None) -> dict:
 # rarely crosses a year boundary between consecutive draws, so most test runs derived the SAME
 # season label and silently merged their rival/optimization data via get-or-create semantics --
 # a real bug caught by a "profile_count == 8" instead of "== 3" failure in test_rival_profile.py.
-_past_deadline_year_counter = itertools.count(1500 + secrets.randbelow(499))  # 1500-1998
+# Starting range kept LOW (not just "before 2020"): this counter increments once per fixture
+# instantiation across the WHOLE suite (277 call sites and counting), so a start close to 2020
+# (the first version used 1500-1998) can overflow past it well before the run finishes, making
+# a "definitely past" fixture's deadline silently drift into real/future territory again -- a
+# second real instance of the exact same bug class, caught by test_squad_optimization_job.py
+# expecting NO_ACTIVE_GAMEWEEK and getting a resolved one instead. 100-999 leaves 1000+ years of
+# headroom, comfortably absorbing however large this suite grows.
+_past_deadline_year_counter = itertools.count(100 + secrets.randbelow(900))  # 100-999
 
 
 def _shift_events_to_real_past_deadlines(bootstrap: dict) -> None:

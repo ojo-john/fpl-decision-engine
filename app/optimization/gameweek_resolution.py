@@ -24,11 +24,23 @@ deadline passed, for every one of the functions below except
 why ``finished`` genuinely is the right filter there, not a bug).
 
 ``resolve_most_recent_finished_gameweek_event`` (Milestone 5 Layer 1) is the
-deliberate mirror image of that query: LEAGUE_SYNC needs the most recent
-*finished* gameweek (to fetch rivals' already-played picks), not the next
-*actionable* one — the two queries share nothing but the same table, so it
-is not built by reusing ``_actionable_gameweek_ids_ordered`` with inverted
-filters.
+deliberate mirror image of the actionable-gameweek queries above: it wants
+the most recent *fully settled* gameweek (final scores, not still changing)
+for retrospective use — the two queries share nothing but the same table,
+so it is not built by reusing ``_actionable_gameweek_ids_ordered`` with
+inverted filters. Only genuinely retrospective callers should use it
+(``H2H_SIMULATION``'s off-season past-completed-gameweek plausibility
+check).
+
+``resolve_most_recent_deadline_passed_gameweek_event`` is a THIRD, separate
+query some callers need instead: the most recent gameweek whose deadline has
+passed, regardless of whether it's finished. ``LEAGUE_SYNC`` uses this one
+(not the ``finished``-based query above) to fetch rivals' picks — confirmed
+live (2026-08-23) that FPL releases a manager's picks for a gameweek as soon
+as its deadline passes, not once every match in it has been played, so
+gating on ``finished`` was needlessly conservative and delayed real,
+already-available rival data by hours to days every single gameweek. See
+that function's own docstring for the full story.
 
 ``resolve_gameweeks_within_window`` (Milestone 6 Layer 2: Chip Scenario
 Ranking) is a trivial extra filter on the SAME actionable-gameweek ordering
@@ -121,21 +133,51 @@ def resolve_horizon_gameweeks(
 
 
 def resolve_most_recent_finished_gameweek_event(session: Session, season_id: uuid.UUID) -> int | None:
-    """Return the raw FPL ``event`` number of the most recently finished gameweek, if any.
+    """Return the raw FPL ``event`` number of the most recently FINISHED (fully settled) gameweek.
 
-    Ordered by ``deadline_time`` descending among ``finished=True`` rows only.
-    Returns the raw ``fpl_event_id`` (not the internal UUID) because callers
-    (``LEAGUE_SYNC``) hand this straight to
-    ``FPLClient.fetch_manager_picks(manager_id, event)``, which speaks FPL's
-    raw event numbering.
+    Ordered by ``deadline_time`` descending among ``finished=True`` rows only. Returns the raw
+    ``fpl_event_id`` (not the internal UUID). Genuinely retrospective use only — a gameweek whose
+    matches are still being played has scores that can still change, so this is the right filter
+    specifically for callers that need a settled, final result (``H2H_SIMULATION``'s off-season
+    past-completed-gameweek plausibility check). For "fetch a rival's current picks" instead, see
+    ``resolve_most_recent_deadline_passed_gameweek_event`` below — a different, deadline-based
+    query, not "finished" gated at all, since picks release well before a gameweek finishes.
 
-    Returns ``None`` if no gameweek has finished yet this season (e.g. the
-    season hasn't kicked off) — callers must treat this as "no rival picks
-    history exists yet", not an error.
+    Returns ``None`` if no gameweek has finished yet this season (e.g. the season hasn't kicked
+    off) — callers must treat this as "no settled gameweek exists yet", not an error.
     """
     return session.execute(
         select(Gameweek.fpl_event_id)
         .where(Gameweek.season_id == season_id, Gameweek.finished.is_(True))
+        .order_by(Gameweek.deadline_time.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def resolve_most_recent_deadline_passed_gameweek_event(
+    session: Session, season_id: uuid.UUID, now: datetime
+) -> int | None:
+    """Return the raw FPL ``event`` number of the most recent gameweek whose deadline has passed.
+
+    Ordered by ``deadline_time`` descending among ``deadline_time <= now`` rows only. Returns the
+    raw ``fpl_event_id`` (not the internal UUID) because the caller (``LEAGUE_SYNC``) hands this
+    straight to ``FPLClient.fetch_manager_picks(manager_id, event)``, which speaks FPL's raw event
+    numbering.
+
+    Deliberately NOT gated on ``finished=True`` — confirmed live (2026-08-23) via a direct real
+    FPL API call that a manager's picks for a gameweek are visible as soon as its deadline passes,
+    not once every match in it has been played (which can lag the deadline by days). Gating rival
+    picks sync on ``finished`` meant ``LEAGUE_SYNC`` never even attempted a real, already-available
+    fetch for hours after every deadline, all season — the per-rival fetch already has graceful
+    ``PicksAvailability.UNAVAILABLE_PRIVATE_OR_NOT_RELEASED`` handling for the case picks genuinely
+    aren't out yet, so there is no downside to trying as soon as the deadline passes.
+
+    Returns ``None`` if no gameweek's deadline has passed yet this season (e.g. pre-season) —
+    callers must treat this as "no rival picks history exists yet", not an error.
+    """
+    return session.execute(
+        select(Gameweek.fpl_event_id)
+        .where(Gameweek.season_id == season_id, Gameweek.deadline_time <= now)
         .order_by(Gameweek.deadline_time.desc())
         .limit(1)
     ).scalar_one_or_none()

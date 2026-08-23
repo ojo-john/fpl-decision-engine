@@ -7,9 +7,13 @@ each until ``has_next`` is false, and upserts ``League``/``LeagueEntry``/
 ``H2HMatch`` rows (current-state, upsert-in-place — see each model's own
 docstring). For every standings entry except ``exclude_fpl_manager_id`` (the
 calling user's own manager id, if provided — see the "self exclusion" note
-below), fetches that rival's picks for the most recent *finished* gameweek
-and persists one insert-only ``RivalGameweekSnapshot`` audit row per rival,
-regardless of outcome.
+below), fetches that rival's picks for the most recent gameweek whose
+DEADLINE has passed (not "finished" — confirmed live 2026-08-23 that FPL
+releases picks as soon as the deadline passes, well before every match in
+that gameweek has been played; see
+``app.optimization.gameweek_resolution.resolve_most_recent_deadline_passed_gameweek_event``'s
+own docstring) and persists one insert-only ``RivalGameweekSnapshot`` audit
+row per rival, regardless of outcome.
 
 Self-exclusion is optional, not required: if ``exclude_fpl_manager_id`` is
 omitted, every entry in the league is synced as a "rival", including the
@@ -94,7 +98,7 @@ from app.ingestion.normalization import _bulk_upsert
 from app.jobs.handlers.manager_sync import _resolve_players
 from app.jobs.registry import register_handler
 from app.jobs.runner import JobContext, JobResult, JobRunner
-from app.optimization.gameweek_resolution import resolve_most_recent_finished_gameweek_event
+from app.optimization.gameweek_resolution import resolve_most_recent_deadline_passed_gameweek_event
 from app.optimization.projection import project_player
 from app.transfers.rules import load_current_rules_config_id, load_transfer_rules
 from packages.database.models.h2h_match import H2HMatch
@@ -805,7 +809,7 @@ class LeagueSyncJobRunner(JobRunner):
                 _upsert_matches(session, league.id, matches, now)
                 session.commit()
 
-                fpl_event_id = resolve_most_recent_finished_gameweek_event(session, season.id)
+                fpl_event_id = resolve_most_recent_deadline_passed_gameweek_event(session, season.id, now)
 
                 rivals_synced = 0
                 rivals_unavailable = 0

@@ -1697,10 +1697,11 @@ documents it directly.
   explicit `now: datetime` parameter threaded through every public function (no default — forces
   every caller to be deliberate; mirrors `app.scheduling.tick.is_interval_due`'s existing
   testable-time-based-logic precedent, since this codebase has no Clock/time-provider abstraction).
-  `resolve_most_recent_finished_gameweek_event` (used by `LEAGUE_SYNC` to fetch rivals'
-  already-played picks, and as `H2H_SIMULATION`'s documented off-season fallback) was deliberately
-  left unchanged — it's genuinely asking a retrospective "what already happened" question, not
-  part of this bug. The two duplicated inline queries (`gameweeks.py`'s `next-deadline` endpoint
+  `resolve_most_recent_finished_gameweek_event` (used by `H2H_SIMULATION`'s documented off-season
+  fallback — see the SEPARATE entry below for why `LEAGUE_SYNC` stopped using it the very next day)
+  was deliberately left unchanged here — it's genuinely asking a retrospective "what already
+  happened" question, not part of this bug. The two duplicated inline queries (`gameweeks.py`'s
+  `next-deadline` endpoint
   and `players.py`'s `_resolve_relevant_fpl_event_id`) were refactored to call the shared resolver
   instead of hand-rolling the same query a third and fourth time. Uncovered a second, real bug
   while fixing test fixtures: `tests/integration/conftest.py`'s `unique_bootstrap_json` shifts
@@ -1713,6 +1714,25 @@ documents it directly.
   and getting `8`) — replaced with a dedicated year counter (`_past_deadline_year_counter`,
   disjoint from both real season labels and the existing future-synthetic pool), mirroring
   `_season_year_counter`'s own exact collision-avoidance guarantee.
+- **Resolved, real bug (found and fixed 2026-08-23): `LEAGUE_SYNC` never attempted to fetch a
+  rival's real picks for hours-to-days after every real deadline, even though they were already
+  available.** Caught live by the manager directly: told the app "the matches are out, check" for
+  their real GW1 opponent (Samazing B2B), and a direct curl against FPL's own
+  `entry/{id}/event/1/picks/` confirmed real, full picks data (points, captain, full squad)
+  already existed — while `LEAGUE_SYNC` had synced zero rival snapshots. Root cause:
+  `_sync_one_rival` resolved which gameweek's picks to fetch via
+  `resolve_most_recent_finished_gameweek_event` (`finished=True`-gated), the exact same
+  finished-vs-deadline conflation the previous day's fix (above) had already found and fixed
+  everywhere else — this one call site was missed because it's a genuinely different, third query
+  shape (`LEAGUE_SYNC` wants the most recent gameweek whose deadline has passed, not the next
+  actionable one and not the most recent settled one). Fixed by adding
+  `resolve_most_recent_deadline_passed_gameweek_event` (deadline-based, alongside — not replacing —
+  `resolve_most_recent_finished_gameweek_event`, which stays correct for `H2H_SIMULATION`'s
+  genuinely retrospective past-completed-gameweek fallback) and switching `LEAGUE_SYNC` to it. Safe
+  by construction: `_sync_one_rival` already had graceful
+  `PicksAvailability.UNAVAILABLE_PRIVATE_OR_NOT_RELEASED` handling for the case picks genuinely
+  aren't out yet, so there was never a real reason to gate the attempt on `finished` at all — the
+  outer gate was pure, needless delay on data that was often already sitting there.
 `FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and
 the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`
 targets are now real, individual targets (previously combined into one
