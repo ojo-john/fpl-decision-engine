@@ -31,7 +31,21 @@ function subscriptionPayload(subscription: PushSubscription): {
   return { endpoint: json.endpoint, keys: { p256dh: json.keys.p256dh, auth: json.keys.auth } };
 }
 
-type Status = "unsupported" | "checking" | "subscribed" | "unsubscribed" | "denied";
+type Status = "unsupported" | "ios-needs-install" | "checking" | "subscribed" | "unsubscribed" | "denied";
+
+/** iOS Safari genuinely has no `PushManager` in a regular browser tab -- Web Push there only
+ * exists once the page has been "Added to Home Screen" and is running standalone (iOS 16.4+).
+ * Feature detection alone can't tell "not installed yet" apart from "truly unsupported" (both
+ * just lack `PushManager`), so this checks the one thing that can: is this iOS Safari, and is it
+ * NOT already running standalone. Used only to decide whether to show install guidance instead of
+ * silently hiding the control -- never used to gate any other behavior. */
+function isIOSSafariNotInstalled(): boolean {
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isStandalone =
+    window.matchMedia("(display-mode: standalone)").matches ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true;
+  return isIOS && !isStandalone;
+}
 
 /** Small nav control: subscribes/unsubscribes this browser to real Web Push alerts (job
  * failures, deadline reminders, price/injury changes -- see app.notifications.push_sender). No
@@ -48,7 +62,7 @@ export function PushNotificationToggle() {
 
     async function detectStatus(): Promise<Status> {
       if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-        return "unsupported";
+        return isIOSSafariNotInstalled() ? "ios-needs-install" : "unsupported";
       }
       if (Notification.permission === "denied") {
         return "denied";
@@ -125,6 +139,14 @@ export function PushNotificationToggle() {
 
   if (status === "unsupported" || status === "checking") {
     return null;
+  }
+
+  if (status === "ios-needs-install") {
+    return (
+      <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+        Add to Home Screen (Safari share icon) to enable notifications
+      </span>
+    );
   }
 
   return (
