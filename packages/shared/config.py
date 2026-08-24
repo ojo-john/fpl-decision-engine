@@ -43,22 +43,14 @@ class Settings(BaseSettings):
     # local dev. vapid_public_key is genuinely public by design (the browser embeds it directly in
     # its subscribe() call) but still not build-time-baked into the frontend, since Render env vars
     # are the real source of truth -- the frontend fetches it from GET /push/vapid-public-key.
-    # Unlike app_shared_token's placeholder-string default, this default must itself be a real,
-    # valid EC P-256 PEM keypair -- Vapid02.from_pem() parses it eagerly (unit tests and any
-    # environment without a configured real key construct a Vapid02 from whatever's here), so an
-    # obviously-fake string like "dev-vapid-private-key-change-me" would crash every caller, not
-    # just leave them insecure. This keypair is committed on purpose: it is a shared, public dev
-    # fixture, never used for a real deployment (Render always sets a real one via env var).
-    vapid_private_key: str = (
-        "-----BEGIN PRIVATE KEY-----\n"
-        "REDACTED-DEV-KEY\n"
-        "REDACTED-DEV-KEY\n"
-        "REDACTED-DEV-KEY\n"
-        "-----END PRIVATE KEY-----\n"
-    )
-    vapid_public_key: str = (
-        "BBv1f_y1TzCXNk7JhY3IReT_5GYY-d-PiW0Nm0t62NNGa4UJrPMxJnyJPDVHy-f5Iqi_WLRKz2R7_PQMXfxW0hw"
-    )
+    # Deliberately an invalid placeholder, not a usable dev keypair like app_shared_token's default:
+    # a real PEM private key (even a throwaway one) must never be committed to source -- gitleaks
+    # correctly flags that pattern regardless of intent. VAPID push therefore fails closed (a clear
+    # ValueError from Vapid02.from_pem, not a silent wrong-looking success) until a real key is
+    # configured via env var. Tests mock py_vapid's PEM parsing at the boundary instead of relying
+    # on any configured key -- see tests/integration/test_api_push.py.
+    vapid_private_key: str = "dev-vapid-private-key-change-me"
+    vapid_public_key: str = "dev-vapid-public-key-change-me"
     # Web Push spec requires a contact URI (mailto: or https:) in the VAPID JWT so a push service
     # can reach the sender about a misbehaving application server.
     vapid_subject: str = "mailto:dev@example.com"

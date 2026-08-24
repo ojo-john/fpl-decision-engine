@@ -23,6 +23,22 @@ def _unique_endpoint() -> str:
     return f"https://push.example.com/v1/{uuid.uuid4().hex}"
 
 
+class _StubVapid:
+    """Stands in for py_vapid.Vapid02 in tests. Parsing a real PEM keypair is py_vapid's own
+    concern, not this codebase's business logic -- and the configured VAPID_PRIVATE_KEY is
+    deliberately an invalid placeholder outside a real deployment (see config.py's own docstring),
+    so tests must not depend on a real key being configured. Only the per-subscription
+    webpush()-calling/error-handling logic below is actually under test here."""
+
+    @staticmethod
+    def from_pem(pem: bytes) -> object:
+        return object()
+
+
+def _patch_vapid(monkeypatch) -> None:
+    monkeypatch.setattr("app.notifications.push_sender.Vapid02", _StubVapid)
+
+
 def test_subscribe_creates_a_row(db_session):
     endpoint = _unique_endpoint()
     client = authed_client()
@@ -89,6 +105,7 @@ def test_get_vapid_public_key_returns_the_configured_value(db_session):
 
 
 def test_send_test_push_calls_webpush_once_per_subscription(db_session, monkeypatch):
+    _patch_vapid(monkeypatch)
     client = authed_client()
     first_endpoint = _unique_endpoint()
     second_endpoint = _unique_endpoint()
@@ -122,6 +139,7 @@ def test_send_push_to_all_deletes_subscription_on_410_gone(db_session, monkeypat
 
     from app.notifications.push_sender import send_push_to_all
 
+    _patch_vapid(monkeypatch)
     endpoint = _unique_endpoint()
     db_session.add(PushSubscription(endpoint=endpoint, p256dh_key=_KEYS["p256dh"], auth_key=_KEYS["auth"]))
     db_session.commit()
@@ -149,6 +167,7 @@ def test_send_push_to_all_keeps_subscription_on_a_non_gone_failure(db_session, m
 
     from app.notifications.push_sender import send_push_to_all
 
+    _patch_vapid(monkeypatch)
     endpoint = _unique_endpoint()
     db_session.add(PushSubscription(endpoint=endpoint, p256dh_key=_KEYS["p256dh"], auth_key=_KEYS["auth"]))
     db_session.commit()
