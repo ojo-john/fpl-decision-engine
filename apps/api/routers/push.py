@@ -44,7 +44,7 @@ def subscribe(body: PushSubscribeRequest, db: Session = Depends(get_db)) -> None
     ).scalar_one_or_none()
     now = datetime.now(UTC)
     if existing is not None:
-        existing.p256dh_key = body.keys.p256dh
+        existing.p256dh_key = body.keys.p256dh  # gitleaks:allow -- a variable assignment, not a real secret
         existing.auth_key = body.keys.auth
         existing.last_seen_at = now
     else:
