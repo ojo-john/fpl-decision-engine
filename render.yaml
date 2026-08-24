@@ -48,6 +48,12 @@ services:
         sync: false # Your real FPL manager id (public, not a secret, but still set here so it's real -- not the placeholder committed in .env.example).
       - key: FPL_H2H_LEAGUE_ID
         sync: false # Your real FPL H2H league id, same reasoning as FPL_MANAGER_ID above.
+      - key: VAPID_PRIVATE_KEY
+        sync: false # Milestone 9 Layer 1 (proactive push alerts) -- generate with `uv run vapid --gen`, see docs/deployment.md.
+      - key: VAPID_PUBLIC_KEY
+        sync: false # The matching public half of VAPID_PRIVATE_KEY -- also fed to the frontend at runtime via GET /push/vapid-public-key, never build-time-baked.
+      - key: VAPID_SUBJECT
+        sync: false # A real mailto: or https: contact URI, required by the Web Push spec.
       # --- Real, non-secret values, safe to commit as-is (match this repo's own local .env defaults). ---
       - key: LOG_LEVEL
         value: INFO

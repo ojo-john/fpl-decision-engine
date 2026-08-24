@@ -17,6 +17,7 @@ from apps.api.routers import (
     models,
     optimization,
     players,
+    push,
     recommendations,
 )
 from packages.shared.config import get_settings
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router, dependencies=[protected])
     app.include_router(data.router, dependencies=[protected])
     app.include_router(internal.router, dependencies=[protected])
+    app.include_router(push.router, dependencies=[protected])
     return app
 
 

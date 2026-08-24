@@ -75,15 +75,15 @@ export interface paths {
         /**
          * List Active Notes
          * @description Every currently-active availability-risk and role-boost note across every player, for the
-         *     current/next unfinished gameweek -- NOT player-scoped, unlike every other note endpoint on
-         *     this router. Built for external, read-only consumers that can't reach this app's database
-         *     directly (see ``.github/workflows/scout-watch.yml``'s dedup step) to know what's already
-         *     known before proposing something as new. Registered before ``/{player_id}`` so ``notes`` can
-         *     never be misread as a player id (same defensive route-ordering discipline as
+         *     current/next gameweek whose deadline hasn't passed -- NOT player-scoped, unlike every other
+         *     note endpoint on this router. Built for external, read-only consumers that can't reach this
+         *     app's database directly (see ``.github/workflows/scout-watch.yml``'s dedup step) to know what's
+         *     already known before proposing something as new. Registered before ``/{player_id}`` so
+         *     ``notes`` can never be misread as a player id (same defensive route-ordering discipline as
          *     ``apps.api.routers.optimization``'s own chips-vs-catch-all precedent -- see that router's own
          *     comment -- even though these two paths don't actually collide in segment count).
          *
-         *     Returns an empty list (not 404) when there's no current season or no unfinished gameweek to
+         *     Returns an empty list (not 404) when there's no current season or no actionable gameweek to
          *     evaluate against (off-season) -- there's nothing "active" to report in either case, and a
          *     consuming script shouldn't need special-case 404 handling for what is, for its purposes, the
          *     same as "nothing found".
@@ -294,7 +294,7 @@ export interface paths {
         /**
          * Get Next Deadline
          * @description 404s (not a stale/fabricated date) when there's no current season, or every gameweek for
-         *     it is already finished (end of season).
+         *     it already has a passed deadline (end of season).
          */
         get: operations["get_next_deadline_gameweeks_next_deadline_get"];
         put?: never;
@@ -1104,6 +1104,101 @@ export interface paths {
         put?: never;
         /** Refresh Data */
         post: operations["refresh_data_data_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/scheduler-tick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trigger Scheduler Tick
+         * @description Run exactly one real scheduler tick, synchronously.
+         *
+         *     Never raises -- `run_tick` already isolates every real failure internally (see its own
+         *     docstring), so this always returns 200 once the tick completes, regardless of what happened
+         *     inside it; check server logs for the real per-job outcome (mirrors `run_tick`'s own
+         *     established resilience discipline: a scheduling boundary must never itself fail the caller).
+         */
+        post: operations["trigger_scheduler_tick_internal_scheduler_tick_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/push/vapid-public-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Vapid Public Key
+         * @description The VAPID public key is genuinely public by design (the browser embeds it directly in its
+         *     own ``pushManager.subscribe()`` call) -- not build-time-baked into the frontend since Render
+         *     env vars are the real source of truth, so the frontend fetches it here instead.
+         */
+        get: operations["get_vapid_public_key_push_vapid_public_key_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/push/subscribe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Subscribe
+         * @description Upsert by ``endpoint`` -- re-subscribing the same browser/device refreshes
+         *     ``last_seen_at`` rather than creating a duplicate row.
+         */
+        post: operations["subscribe_push_subscribe_post"];
+        /**
+         * Unsubscribe
+         * @description Idempotent: removing an endpoint that was never subscribed (or already removed) is not an
+         *     error -- the caller's own desired end state (not subscribed) is already true.
+         */
+        delete: operations["unsubscribe_push_subscribe_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/push/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send Test Push
+         * @description Sends a REAL push to every subscribed device right now -- the concrete end-to-end
+         *     verification step for this whole feature. Returns 200 with ``sent_count`` even if it's 0
+         *     (no subscriptions exist yet); that's a legitimate state, not an error.
+         */
+        post: operations["send_test_push_push_test_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2398,6 +2493,40 @@ export interface components {
          * @enum {string}
          */
         PriceMomentum: "likely_rise" | "likely_fall" | "stable" | "unknown";
+        /** PushSubscribeRequest */
+        PushSubscribeRequest: {
+            /** Endpoint */
+            endpoint: string;
+            keys: components["schemas"]["PushSubscriptionKeys"];
+        };
+        /**
+         * PushSubscriptionKeys
+         * @description Mirrors the real shape ``PushSubscription.toJSON().keys`` returns in the browser.
+         */
+        PushSubscriptionKeys: {
+            /** P256Dh */
+            p256dh: string;
+            /** Auth */
+            auth: string;
+        };
+        /** PushTestOut */
+        PushTestOut: {
+            /** Sent Count */
+            sent_count: number;
+        };
+        /** PushTestRequest */
+        PushTestRequest: {
+            /**
+             * Title
+             * @default FPL Decision Engine
+             */
+            title: string;
+            /**
+             * Body
+             * @default Test notification -- if you see this, push is working.
+             */
+            body: string;
+        };
         /** RecommendationAuditOut */
         RecommendationAuditOut: {
             /**
@@ -2892,6 +3021,11 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** VapidPublicKeyOut */
+        VapidPublicKeyOut: {
+            /** Vapid Public Key */
+            vapid_public_key: string;
         };
     };
     responses: never;
@@ -4806,6 +4940,169 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DataRefreshOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trigger_scheduler_tick_internal_scheduler_tick_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_vapid_public_key_push_vapid_public_key_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VapidPublicKeyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    subscribe_push_subscribe_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PushSubscribeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unsubscribe_push_subscribe_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PushSubscribeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_test_push_push_test_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PushTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushTestOut"];
                 };
             };
             /** @description Validation Error */

@@ -44,6 +44,7 @@ from packages.database.models.player_role_note import PlayerRoleNote
 from packages.database.models.position import Position
 from packages.database.models.position_segmentation_validation_run import PositionSegmentationValidationRun
 from packages.database.models.price_signal_calibration import PriceSignalCalibration
+from packages.database.models.push_subscription import PushSubscription
 from packages.database.models.raw_api_snapshot import RawApiSnapshot
 from packages.database.models.recommendation_audit import RecommendationAudit
 from packages.database.models.recommendation_outcome import RecommendationOutcome
@@ -97,6 +98,7 @@ __all__ = [
     "Position",
     "PositionSegmentationValidationRun",
     "PriceSignalCalibration",
+    "PushSubscription",
     "RawApiSnapshot",
     "RecommendationAudit",
     "RecommendationOutcome",

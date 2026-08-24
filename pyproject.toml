@@ -16,6 +16,7 @@ dependencies = [
     "joblib>=1.5.3",
     "pandas>=3.0.3",
     "numpy>=2.5.1",
+    "pywebpush>=2.4.0",
 ]
 
 [dependency-groups]

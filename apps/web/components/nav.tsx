@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { PushNotificationToggle } from "@/components/push-notification-toggle";
 
 const LINKS = [
   { href: "/", label: "Dashboard" },
@@ -51,20 +52,23 @@ export function Nav() {
           </Link>
         ))}
       </div>
-      <button
-        onClick={handleLogout}
-        style={{
-          background: "transparent",
-          border: "1px solid var(--border)",
-          borderRadius: "6px",
-          color: "var(--text-muted)",
-          padding: "0.4rem 0.75rem",
-          cursor: "pointer",
-          fontSize: "0.85rem",
-        }}
-      >
-        Log out
-      </button>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+        <PushNotificationToggle />
+        <button
+          onClick={handleLogout}
+          style={{
+            background: "transparent",
+            border: "1px solid var(--border)",
+            borderRadius: "6px",
+            color: "var(--text-muted)",
+            padding: "0.4rem 0.75rem",
+            cursor: "pointer",
+            fontSize: "0.85rem",
+          }}
+        >
+          Log out
+        </button>
+      </div>
     </nav>
   );
 }

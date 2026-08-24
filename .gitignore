@@ -2,6 +2,10 @@
 .env
 .env.test
 
+# Real VAPID keypairs (`uv run vapid --gen` output) -- copy the values into Render's dashboard,
+# never commit the actual key material.
+*.pem
+
 # Python
 .venv/
 __pycache__/

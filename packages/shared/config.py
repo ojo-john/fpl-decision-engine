@@ -38,6 +38,17 @@ class Settings(BaseSettings):
     # is explicitly configured (fail closed, not a wildcard).
     cors_allowed_origins: str = ""
 
+    # Proactive push notifications (Web Push + VAPID) -- generate a real keypair with
+    # `uv run vapid --gen` (from the py-vapid package, a pywebpush dependency) for anything beyond
+    # local dev. vapid_public_key is genuinely public by design (the browser embeds it directly in
+    # its subscribe() call) but still not build-time-baked into the frontend, since Render env vars
+    # are the real source of truth -- the frontend fetches it from GET /push/vapid-public-key.
+    vapid_private_key: str = "dev-vapid-private-key-change-me"
+    vapid_public_key: str = "dev-vapid-public-key-change-me"
+    # Web Push spec requires a contact URI (mailto: or https:) in the VAPID JWT so a push service
+    # can reach the sender about a misbehaving application server.
+    vapid_subject: str = "mailto:dev@example.com"
+
     @property
     def cors_allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]

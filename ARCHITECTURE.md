@@ -48,8 +48,9 @@ app/chips/             Chip window resolution, user chip inventory, chip scenari
 app/h2h/                Rival-state derivation, H2H matchup Monte Carlo simulation, strategy comparison
 app/learning/           Recursive learning: outcome ingestion, counterfactuals, failure attribution, signals
 app/scheduling/         Real, stateless scheduling logic (run_tick) -- called by both scripts/scheduler.py's local loop and POST /internal/scheduler-tick (see "Local scheduler"/"Cloud deployment" sections below)
+app/notifications/      Real Web Push sending (send_push_to_all) -- see "Proactive push alerting" section below
 packages/domain/        Framework-agnostic enums shared everywhere (JobType, ModelFamily, RulesStatus, ...)
-packages/database/      Base, engine/session, all 48 ORM models
+packages/database/      Base, engine/session, all 52 ORM models
 packages/fpl_client/    Resilient adapter over the LIVE public FPL API
 packages/shared/        pydantic-settings Settings + JSON logging setup
 migrations/             Hand-written Alembic migrations
@@ -1423,6 +1424,63 @@ turned out to also be a paid-tier-only feature. Running the migration on every c
 on the free plan, including after free-tier cold-start wake-ups. Local `docker-compose.yml`
 overrides `command:` for the `api`/`scheduler` services, so this default `CMD` never runs there
 and local dev is unaffected.
+
+## Proactive push alerting (Milestone 9 Layer 1: `push_subscriptions`, `app/notifications/`, `apps/api/routers/push.py`)
+
+Real gap this closes: nothing in this system ever proactively told the manager anything — every
+real event (a job failure, an approaching deadline, a price/injury change) was only visible if
+someone opened the dashboard and went looking. Caught live (2026-08-23): the real cloud
+`DATA_INGESTION` job had been silently failing on every scheduled run for hours before anyone
+noticed.
+
+Web Push via an installable PWA, not a native app or SMS — free, no phone number, works via "Add
+to Home Screen" on the existing dashboard. This is a single-shared-secret system with **no
+per-user or per-device identity** (see `apps/web/lib/session.ts`'s own docstring: every session
+cookie is interchangeable, no session store), so `push_subscriptions` is a flat list of this
+manager's own devices, keyed purely by each subscription's own `endpoint` URL — every real alert
+goes to every subscribed device via `app.notifications.push_sender.send_push_to_all`, there is no
+per-user routing to build.
+
+**Backend**: `pywebpush`/`py-vapid` (new dependencies). `Settings.vapid_private_key` is the
+**full real PEM text** of a real VAPID keypair (`uv run vapid --gen`, see `docs/deployment.md`) —
+`app.notifications.push_sender` reconstructs a `py_vapid.Vapid02` object via `Vapid02.from_pem(...)`
+explicitly at send time, deliberately not relying on `pywebpush.webpush()`'s own ambiguous
+string-format guessing (file path vs. raw vs. DER) for a real secret.
+`GET /push/vapid-public-key` / `POST /push/subscribe` (upsert by `endpoint`) /
+`DELETE /push/subscribe` (idempotent) / `POST /push/test` (sends a real push to every subscription
+right now — the concrete end-to-end verification step) live in `apps/api/routers/push.py`, same
+auth wiring as every other router. Per-subscription failure isolation in `send_push_to_all`
+(mirrors `LEAGUE_SYNC`'s own per-rival isolation): a subscription the push service reports `410
+Gone` is deleted; any other failure is logged and skipped, never blocking the rest of a batch.
+
+**Frontend**: `apps/web/public/manifest.json`/`sw.js`/`icons/` (a real, minimal service worker —
+`push` → `showNotification`, `notificationclick` → focus/open the app; no offline caching, this
+app reads live, frequently-changing data). `components/push-notification-toggle.tsx` (wired into
+`components/nav.tsx`) requests permission, subscribes via `pushManager.subscribe()`, and POSTs the
+subscription through the existing `/api/proxy` pattern — the raw VAPID public key is fetched at
+runtime via `GET /push/vapid-public-key`, never build-time-baked, matching `APP_SHARED_TOKEN`'s
+own "Render env vars are the real source of truth" precedent.
+
+Two real bugs found and fixed while building this:
+- **`apps/web/proxy.ts`'s auth-gate matcher blocked `/manifest.json`/`/sw.js`/`/icons/*`** —
+  caught live (2026-08-23) via a real browser check: both returned this middleware's `307`
+  redirect to `/login` instead of the real files, which would have made every service worker
+  registration fail outright (a service worker script must be served with the right content type,
+  not a login-page redirect). Fixed by adding them to the matcher's exclusion list, alongside the
+  existing `_next/static`/`_next/image`/`favicon.ico` exemptions.
+- **`apps/web/Dockerfile`'s `output: "standalone"` build never copied `public/` into the runner
+  stage** — a well-known Next.js standalone gotcha (unlike `.next/static`, `public/` isn't copied
+  automatically) that was invisible before this milestone since `apps/web/public/` didn't exist
+  yet. Fixed with an explicit `COPY --from=builder /app/public ./public`.
+
+Verified locally via a real Playwright-driven Chromium session (not just `next build`): real
+login, real service worker registration (confirmed `registered: true` via
+`navigator.serviceWorker.getRegistration()`), real `GET /push/vapid-public-key` fetch, and a real
+`pushManager.subscribe()` attempt that got as far as Chromium's actual push-service handshake
+before failing with `AbortError: Registration failed - permission denied` — a well-documented
+Headless Shell limitation (no real push-service backend reachable in that sandboxed environment),
+not a defect in this code. Full end-to-end delivery to a real device is verified via `POST
+/push/test` against the live Render deployment instead (see `docs/deployment.md`).
 
 ## League Watch (`.github/workflows/league-watch.yml`)
 

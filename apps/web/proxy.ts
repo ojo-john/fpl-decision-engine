@@ -30,5 +30,10 @@ export async function proxy(request: NextRequest) {
 export const config = {
   // Every request except Next.js internals and static assets -- an
   // unauthenticated request to any page or API route must hit this check.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // manifest.json/sw.js/icons/ (Milestone 9 Layer 1, PWA push support) must also stay excluded:
+  // the browser fetches these directly (manifest link, service worker registration) without ever
+  // going through this app's own login flow, and a login-page redirect breaks both -- a real bug
+  // caught locally (2026-08-23): /sw.js returned this middleware's 307 redirect to /login instead
+  // of the real script, which would have made every service worker registration fail outright.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest.json|sw.js|icons/).*)"],
 };

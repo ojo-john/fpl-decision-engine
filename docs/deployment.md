@@ -73,6 +73,22 @@ URL) produced by the step before it.
      -- you'll come back and set the real value after step 3 (Vercel) gives you a real URL.
    - `FPL_MANAGER_ID` / `FPL_H2H_LEAGUE_ID` -- your own real, numeric FPL manager and H2H league
      ids.
+   - `VAPID_PRIVATE_KEY` / `VAPID_PUBLIC_KEY` -- a real Web Push keypair (Milestone 9 Layer 1,
+     proactive alerts). Generate one with `uv run vapid --gen` (from this repo, `py-vapid` is
+     already a `pywebpush` dependency) -- it writes `private_key.pem`/`public_key.pem` in your
+     current directory.
+     - `VAPID_PRIVATE_KEY` is the **full real contents** of `private_key.pem`, including the
+       `-----BEGIN PRIVATE KEY-----`/`-----END PRIVATE KEY-----` lines (`app.notifications
+       .push_sender` parses this exact PEM text directly -- not a file path, not a bare base64
+       string).
+     - `VAPID_PUBLIC_KEY` is the applicationServerKey string, printed by running
+       `uv run vapid --applicationServerKey` afterward (a single base64url line) -- this is what
+       the frontend's own `pushManager.subscribe()` call needs, fetched at runtime via
+       `GET /push/vapid-public-key`, never build-time-baked.
+     - Delete both `.pem` files once you've copied the values into Render's dashboard -- they're
+       real secrets, don't commit them (already covered by this repo's `*.pem` gitignore entry).
+   - `VAPID_SUBJECT` -- a real contact URI (`mailto:you@example.com` is fine), required by the
+     Web Push spec so a push service can reach you about a misbehaving application server.
 4. Deploy. The container's own startup command runs `uv run alembic upgrade head` before
    starting the API (see the `Dockerfile`'s own comment) -- no manual dashboard step needed, and
    no dependency on `preDeployCommand` or the Shell tab, both of which turned out to be

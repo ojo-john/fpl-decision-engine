@@ -28,6 +28,10 @@ ENV PORT=3000
 # not the full node_modules tree from the builder stage.
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+# Standalone output does NOT automatically include public/ (a well-known Next.js gotcha) --
+# needed for real files (manifest.json/sw.js/icons/, Milestone 9 Layer 1's PWA push support) to
+# actually be served.
+COPY --from=builder /app/public ./public
 
 EXPOSE 3000
 CMD ["node", "server.js"]
