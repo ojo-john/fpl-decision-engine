@@ -81,6 +81,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.jobs.service import execute_job
+from app.notifications.push_sender import send_push_to_all
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.job import Job
 from packages.database.models.learning_report import LearningReport
@@ -209,6 +210,42 @@ def _fetch_last_successful_run_at(session: Session, job_type: JobType) -> dateti
     ).scalar_one_or_none()
 
 
+def _previous_job_of_type_failed(session: Session, job_type: JobType, current_job_id: uuid.UUID) -> bool:
+    """True if the single most recent OTHER job of this type (by `created_at`, excluding
+    `current_job_id` itself) also ended `FAILED`. Scoped by `job_type` only, not `requested_by` --
+    a human's own manual retry of the same job type is still the same real incident, and should
+    still suppress a duplicate alert exactly like a scheduler-triggered retry would."""
+    previous_status = session.execute(
+        select(Job.status)
+        .where(Job.job_type == job_type, Job.id != current_job_id)
+        .order_by(Job.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return previous_status == JobStatus.FAILED
+
+
+def _alert_on_job_failure(session: Session, job: Job) -> None:
+    """Sends exactly one push per NEW failure streak, not one every retry -- real tonight's incident
+    (DATA_INGESTION silently failing for hours, invisible until someone opened the dashboard) is
+    exactly what this closes. Best-effort and fully isolated from job outcome: no VAPID key
+    configured, the push service being down, or any other failure here is logged and swallowed,
+    never allowed to make an already-failed job look like it also broke the scheduler tick itself.
+    """
+    try:
+        if _previous_job_of_type_failed(session, job.job_type, job.id):
+            return
+        send_push_to_all(
+            session,
+            title=f"{job.job_type.value} failed",
+            body=job.error_message or job.error_code or "No error details recorded.",
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort notification, must never affect job outcome
+        logger.warning(
+            "scheduler.job_failure_alert_error",
+            extra={"job_type": job.job_type.value, "job_id": str(job.id), "error": str(exc)},
+        )
+
+
 def _run_job_safely(job_type: JobType, parameters: dict | None, requested_by: str) -> None:
     """Run one job against the real database, isolated so a failure never kills the scheduler loop.
 
@@ -245,6 +282,8 @@ def _run_job_safely(job_type: JobType, parameters: dict | None, requested_by: st
                 "error_code": job.error_code,
             },
         )
+        if job.status == JobStatus.FAILED:
+            _alert_on_job_failure(session, job)
     except Exception as exc:  # noqa: BLE001 - top-level scheduling boundary, must never propagate
         logger.warning(
             "scheduler.job_failed",

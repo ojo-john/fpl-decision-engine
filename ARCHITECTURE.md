@@ -1425,7 +1425,7 @@ on the free plan, including after free-tier cold-start wake-ups. Local `docker-c
 overrides `command:` for the `api`/`scheduler` services, so this default `CMD` never runs there
 and local dev is unaffected.
 
-## Proactive push alerting (Milestone 9 Layer 1: `push_subscriptions`, `app/notifications/`, `apps/api/routers/push.py`)
+## Proactive push alerting (Milestone 9 Layers 1-2: `push_subscriptions`, `app/notifications/`, `apps/api/routers/push.py`, `app.scheduling.tick`'s failure alerts)
 
 Real gap this closes: nothing in this system ever proactively told the manager anything — every
 real event (a job failure, an approaching deadline, a price/injury change) was only visible if
@@ -1445,7 +1445,14 @@ per-user routing to build.
 **full real PEM text** of a real VAPID keypair (`uv run vapid --gen`, see `docs/deployment.md`) —
 `app.notifications.push_sender` reconstructs a `py_vapid.Vapid02` object via `Vapid02.from_pem(...)`
 explicitly at send time, deliberately not relying on `pywebpush.webpush()`'s own ambiguous
-string-format guessing (file path vs. raw vs. DER) for a real secret.
+string-format guessing (file path vs. raw vs. DER) for a real secret. The config default is
+deliberately an **invalid placeholder**, not a usable dev keypair like `APP_SHARED_TOKEN`'s own
+default — a real PEM private key must never be committed to source regardless of how "throwaway"
+it is (gitleaks correctly flagged an earlier attempt at a committed dev keypair as a real leak), so
+push fails closed with a clear `ValueError` until a real key is configured via env var. Tests that
+need `send_push_to_all` to run without crashing mock `py_vapid.Vapid02` at the boundary instead
+(see `tests/integration/test_api_push.py`'s `_StubVapid`) — PEM parsing is `py_vapid`'s own concern,
+not this codebase's business logic to verify.
 `GET /push/vapid-public-key` / `POST /push/subscribe` (upsert by `endpoint`) /
 `DELETE /push/subscribe` (idempotent) / `POST /push/test` (sends a real push to every subscription
 right now — the concrete end-to-end verification step) live in `apps/api/routers/push.py`, same
@@ -1481,6 +1488,22 @@ before failing with `AbortError: Registration failed - permission denied` — a 
 Headless Shell limitation (no real push-service backend reachable in that sandboxed environment),
 not a defect in this code. Full end-to-end delivery to a real device is verified via `POST
 /push/test` against the live Render deployment instead (see `docs/deployment.md`).
+
+**Layer 2 — job-failure alerts**: `app.scheduling.tick._run_job_safely` calls
+`_alert_on_job_failure` right after any job reaches `JobStatus.FAILED`. `_previous_job_of_type_failed`
+looks at the single most recent OTHER job of the same `JobType` (by `created_at`, real `jobs` table,
+scoped by `job_type` only — not `requested_by`, so a human's own manual retry of the same job type
+still counts as the same incident) — a push fires only when that previous job did **not** also fail,
+so a real multi-hour failure streak (like the real `DATA_INGESTION` incident that motivated this
+whole milestone) sends exactly one notification, not one every tick. Fully isolated from job
+outcome: `_alert_on_job_failure` has its own internal `try/except` (no VAPID key configured, the
+push service being down, etc. is logged as `scheduler.job_failure_alert_error` and swallowed,
+never allowed to make an already-failed job look like it also broke the scheduler tick itself).
+Covered by `tests/integration/test_job_failure_alerts.py`, which mocks `send_push_to_all` at
+`app.scheduling.tick`'s own imported reference (not `py_vapid`/`pywebpush` — that boundary is
+`test_api_push.py`'s job) and deliberately seeds a controlled "previous job" row before each test,
+since the streak query's real, shared, never-truncated Postgres means leftover `DATA_INGESTION`
+history from other tests in the same suite run would otherwise make the test order-dependent.
 
 ## League Watch (`.github/workflows/league-watch.yml`)
 
