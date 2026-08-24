@@ -6,6 +6,7 @@ from app.jobs.handlers.backtest import BacktestJobRunner
 from app.jobs.handlers.chip_simulation import ChipSimulationJobRunner
 from app.jobs.handlers.cold_start_projection_validation import ColdStartProjectionValidationJobRunner
 from app.jobs.handlers.data_ingestion import DataIngestionJobRunner
+from app.jobs.handlers.deadline_reminder import DeadlineReminderJobRunner
 from app.jobs.handlers.feature_generation import FeatureGenerationJobRunner
 from app.jobs.handlers.full_pipeline import FullPipelineJobRunner
 from app.jobs.handlers.gameweek_review import GameweekReviewJobRunner
@@ -48,6 +49,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.COLD_START_PROJECTION_VALIDATION,
     JobType.POSITION_SEGMENTATION_VALIDATION,
     JobType.FULL_PIPELINE,
+    JobType.DEADLINE_REMINDER,
 }
 
 
@@ -133,6 +135,10 @@ def test_cold_start_projection_validation_resolves_to_its_runner():
 
 def test_position_segmentation_validation_resolves_to_its_runner():
     assert get_handler(JobType.POSITION_SEGMENTATION_VALIDATION) is PositionSegmentationValidationJobRunner
+
+
+def test_deadline_reminder_resolves_to_its_runner():
+    assert get_handler(JobType.DEADLINE_REMINDER) is DeadlineReminderJobRunner
 
 
 @pytest.mark.parametrize(

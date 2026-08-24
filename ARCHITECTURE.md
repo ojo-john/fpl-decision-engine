@@ -5,7 +5,7 @@ reading the actual code, not the existing docs — **README.md,
 docs/operations.md, docs/learning-loop.md, docs/architecture/README.md, and
 nearly every `app/*/__init__.py` docstring are stale**, frozen at
 "Milestone 0/1" language ("placeholder", "empty as of Milestone 0") while
-the real code has moved through roughly 8 milestones. Concretely: 18 of 19
+the real code has moved through roughly 9 milestones. Concretely: 19 of 20
 `JobType` values have real, tested handlers; only `PROJECTION_GENERATION`
 is genuinely unbuilt (deliberately -- no defined consumer/table to write
 to, see below). **Do not infer capability from a
@@ -103,6 +103,7 @@ the job types that have an HTTP trigger.
 | `COLD_START_PROJECTION_VALIDATION` | `cold_start_projection_validation.py` | ✅ | `POST /jobs/cold-start-validation` | CLI (`scripts/run_job.py --job-type cold_start_projection_validation`) |
 | `POSITION_SEGMENTATION_VALIDATION` | `position_segmentation_validation.py` | ✅ | — | CLI (`scripts/run_job.py`) only, no HTTP trigger yet |
 | `FULL_PIPELINE` | `full_pipeline.py` | ✅ | — | `make full-pipeline` |
+| `DEADLINE_REMINDER` | `deadline_reminder.py` | ✅ | — | `app.scheduling.tick.run_tick`, every scheduler tick (see "Proactive push alerting" below) |
 
 All optimization/simulation/recommendation jobs are **synchronous request/response** — `execute_job` blocks until done and the HTTP endpoint returns the full result in one call. No job-id polling exists anywhere in the API.
 
@@ -1425,7 +1426,7 @@ on the free plan, including after free-tier cold-start wake-ups. Local `docker-c
 overrides `command:` for the `api`/`scheduler` services, so this default `CMD` never runs there
 and local dev is unaffected.
 
-## Proactive push alerting (Milestone 9 Layers 1-2: `push_subscriptions`, `app/notifications/`, `apps/api/routers/push.py`, `app.scheduling.tick`'s failure alerts)
+## Proactive push alerting (Milestone 9 Layers 1-3: `push_subscriptions`, `app/notifications/`, `apps/api/routers/push.py`, `app.scheduling.tick`'s failure alerts, `DEADLINE_REMINDER`)
 
 Real gap this closes: nothing in this system ever proactively told the manager anything — every
 real event (a job failure, an approaching deadline, a price/injury change) was only visible if
@@ -1504,6 +1505,24 @@ Covered by `tests/integration/test_job_failure_alerts.py`, which mocks `send_pus
 `test_api_push.py`'s job) and deliberately seeds a controlled "previous job" row before each test,
 since the streak query's real, shared, never-truncated Postgres means leftover `DATA_INGESTION`
 history from other tests in the same suite run would otherwise make the test order-dependent.
+
+**Layer 3 — deadline reminders** (`app/jobs/handlers/deadline_reminder.py`, `JobType.DEADLINE_REMINDER`):
+sends at most one push per gameweek once its deadline is within `REMINDER_WINDOW` (6 hours) of now.
+Wired into `run_tick()` unconditionally every tick, not interval-gated like `LEAGUE_SYNC`/
+`DATA_INGESTION` — correctness comes entirely from the dedup check below, not from throttling how
+often the job itself runs. Resolves the target gameweek via the same `resolve_target_gameweek` used
+throughout `app/optimization/` (only ever returns gameweeks with a still-future deadline). No new
+state table: a `SUCCEEDED` `DEADLINE_REMINDER` job row whose `output_json` matches is this job's own
+dedup store, mirroring `app.scheduling.tick`'s `_fetch_last_successful_run_at` precedent — but
+scoped by **both** `target_season_id` and `target_fpl_event_id`, not `target_fpl_event_id` alone:
+FPL's own gameweek numbers (1-38) reset every season, and this system carries multiple `seasons`
+rows over time (past seasons stay archived with `is_current=False`), so a naive
+fpl_event_id-only check would let one season's GW1 reminder permanently suppress every future
+season's GW1 reminder too — caught before shipping, covered by
+`tests/integration/test_deadline_reminder_job.py::test_same_gameweek_number_in_a_different_season_is_not_suppressed`.
+A failed send (e.g. no VAPID key configured) is deliberately **not** caught inside the handler —
+it must reach `JobStatus.FAILED`, not a SUCCEEDED no-op, or the dedup check would permanently
+suppress a reminder that was never actually delivered.
 
 ## League Watch (`.github/workflows/league-watch.yml`)
 

@@ -5,6 +5,7 @@ from app.jobs.handlers import (
     chip_simulation,  # noqa: F401  (import registers the handler)
     cold_start_projection_validation,  # noqa: F401  (import registers the handler)
     data_ingestion,  # noqa: F401  (import registers the handler)
+    deadline_reminder,  # noqa: F401  (import registers the handler)
     feature_generation,  # noqa: F401  (import registers the handler)
     full_pipeline,  # noqa: F401  (import registers the handler)
     gameweek_review,  # noqa: F401  (import registers the handler)
@@ -29,6 +30,7 @@ __all__ = [
     "chip_simulation",
     "cold_start_projection_validation",
     "data_ingestion",
+    "deadline_reminder",
     "feature_generation",
     "full_pipeline",
     "gameweek_review",

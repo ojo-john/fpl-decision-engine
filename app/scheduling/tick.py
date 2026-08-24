@@ -355,3 +355,9 @@ def run_tick() -> None:
     if is_interval_due(last_data_ingestion_at, now, DATA_INGESTION_INTERVAL):
         logger.info("scheduler.triggering_data_ingestion")
         _run_job_safely(JobType.DATA_INGESTION, None, requested_by="scheduler")
+
+    # Checked every tick, not interval-gated -- correctness comes from DEADLINE_REMINDER's own
+    # dedup check (a SUCCEEDED row per gameweek), not from throttling how often this runs. See
+    # that handler's own module docstring.
+    logger.info("scheduler.triggering_deadline_reminder")
+    _run_job_safely(JobType.DEADLINE_REMINDER, None, requested_by="scheduler")

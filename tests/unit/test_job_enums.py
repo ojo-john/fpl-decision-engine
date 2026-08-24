@@ -29,6 +29,7 @@ EXPECTED_JOB_TYPE_VALUES = {
     "POSITION_SEGMENTATION_VALIDATION": "position_segmentation_validation",
     "FULL_PIPELINE": "full_pipeline",
     "SYSTEM_HEALTH": "system_health",
+    "DEADLINE_REMINDER": "deadline_reminder",
 }
 
 EXPECTED_JOB_STATUS_VALUES = {
