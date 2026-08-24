@@ -35,6 +35,7 @@ from packages.database.models.note_effectiveness_evaluation import NoteEffective
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
+from packages.database.models.player_alert_state import PlayerAlertState
 from packages.database.models.player_availability_risk_note import PlayerAvailabilityRiskNote
 from packages.database.models.player_features import PlayerFeatures
 from packages.database.models.player_gameweek_stats import PlayerGameweekStats
@@ -89,6 +90,7 @@ __all__ = [
     "OptimizationRun",
     "OptimizationRunPlayer",
     "Player",
+    "PlayerAlertState",
     "PlayerAvailabilityRiskNote",
     "PlayerFeatures",
     "PlayerGameweekStats",

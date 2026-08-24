@@ -246,7 +246,7 @@ def _alert_on_job_failure(session: Session, job: Job) -> None:
         )
 
 
-def _run_job_safely(job_type: JobType, parameters: dict | None, requested_by: str) -> None:
+def _run_job_safely(job_type: JobType, parameters: dict | None, requested_by: str) -> Job | None:
     """Run one job against the real database, isolated so a failure never kills the scheduler loop.
 
     Mirrors GameweekReviewJobRunner's own established failure-isolation precedent
@@ -256,6 +256,11 @@ def _run_job_safely(job_type: JobType, parameters: dict | None, requested_by: st
     never stop future ticks (or, for the HTTP-triggered path, the calling request) from continuing.
     Each `execute_job` call gets its own fresh session so one job's failure can't leave a poisoned
     session for the next.
+
+    Returns the completed `Job` row (status already loaded, safe to read after this function's own
+    `session.close()`) so a caller can chain a dependent job on success -- e.g. `PLAYER_ALERT_CHECK`
+    right after a SUCCEEDED `DATA_INGESTION` -- or `None` if `execute_job` itself raised before ever
+    producing one (the rare top-level failure this function's own broad `except` exists to catch).
     """
     session = SessionLocal()
     try:
@@ -284,11 +289,13 @@ def _run_job_safely(job_type: JobType, parameters: dict | None, requested_by: st
         )
         if job.status == JobStatus.FAILED:
             _alert_on_job_failure(session, job)
+        return job
     except Exception as exc:  # noqa: BLE001 - top-level scheduling boundary, must never propagate
         logger.warning(
             "scheduler.job_failed",
             extra={"job_type": job_type.value, "error": str(exc)},
         )
+        return None
     finally:
         session.close()
 
@@ -354,7 +361,13 @@ def run_tick() -> None:
 
     if is_interval_due(last_data_ingestion_at, now, DATA_INGESTION_INTERVAL):
         logger.info("scheduler.triggering_data_ingestion")
-        _run_job_safely(JobType.DATA_INGESTION, None, requested_by="scheduler")
+        data_ingestion_job = _run_job_safely(JobType.DATA_INGESTION, None, requested_by="scheduler")
+        # PLAYER_ALERT_CHECK needs THIS run's fresh status/transfer data to diff against -- only
+        # chained on a real SUCCEEDED DATA_INGESTION, not a FAILED one (nothing new to check) or a
+        # skipped one (not due this tick).
+        if data_ingestion_job is not None and data_ingestion_job.status == JobStatus.SUCCEEDED:
+            logger.info("scheduler.triggering_player_alert_check")
+            _run_job_safely(JobType.PLAYER_ALERT_CHECK, None, requested_by="scheduler")
 
     # Checked every tick, not interval-gated -- correctness comes from DEADLINE_REMINDER's own
     # dedup check (a SUCCEEDED row per gameweek), not from throttling how often this runs. See

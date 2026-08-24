@@ -43,6 +43,7 @@ class JobType(str, Enum):
     FULL_PIPELINE = "full_pipeline"
     SYSTEM_HEALTH = "system_health"
     DEADLINE_REMINDER = "deadline_reminder"
+    PLAYER_ALERT_CHECK = "player_alert_check"
 
 
 class JobStatus(str, Enum):

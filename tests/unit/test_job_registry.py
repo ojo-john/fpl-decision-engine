@@ -16,6 +16,7 @@ from app.jobs.handlers.league_sync import LeagueSyncJobRunner
 from app.jobs.handlers.lineup_optimization import LineupOptimizationJobRunner
 from app.jobs.handlers.manager_sync import ManagerSyncJobRunner
 from app.jobs.handlers.model_training import ModelTrainingJobRunner
+from app.jobs.handlers.player_alert_check import PlayerAlertCheckJobRunner
 from app.jobs.handlers.position_segmentation_validation import PositionSegmentationValidationJobRunner
 from app.jobs.handlers.recommendation_generation import RecommendationGenerationJobRunner
 from app.jobs.handlers.rules_sync import RulesSyncJobRunner
@@ -50,6 +51,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.POSITION_SEGMENTATION_VALIDATION,
     JobType.FULL_PIPELINE,
     JobType.DEADLINE_REMINDER,
+    JobType.PLAYER_ALERT_CHECK,
 }
 
 
@@ -139,6 +141,10 @@ def test_position_segmentation_validation_resolves_to_its_runner():
 
 def test_deadline_reminder_resolves_to_its_runner():
     assert get_handler(JobType.DEADLINE_REMINDER) is DeadlineReminderJobRunner
+
+
+def test_player_alert_check_resolves_to_its_runner():
+    assert get_handler(JobType.PLAYER_ALERT_CHECK) is PlayerAlertCheckJobRunner
 
 
 @pytest.mark.parametrize(

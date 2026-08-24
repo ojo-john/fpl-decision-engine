@@ -5,7 +5,7 @@ reading the actual code, not the existing docs — **README.md,
 docs/operations.md, docs/learning-loop.md, docs/architecture/README.md, and
 nearly every `app/*/__init__.py` docstring are stale**, frozen at
 "Milestone 0/1" language ("placeholder", "empty as of Milestone 0") while
-the real code has moved through roughly 9 milestones. Concretely: 19 of 20
+the real code has moved through roughly 9 milestones. Concretely: 20 of 21
 `JobType` values have real, tested handlers; only `PROJECTION_GENERATION`
 is genuinely unbuilt (deliberately -- no defined consumer/table to write
 to, see below). **Do not infer capability from a
@@ -50,7 +50,7 @@ app/learning/           Recursive learning: outcome ingestion, counterfactuals, 
 app/scheduling/         Real, stateless scheduling logic (run_tick) -- called by both scripts/scheduler.py's local loop and POST /internal/scheduler-tick (see "Local scheduler"/"Cloud deployment" sections below)
 app/notifications/      Real Web Push sending (send_push_to_all) -- see "Proactive push alerting" section below
 packages/domain/        Framework-agnostic enums shared everywhere (JobType, ModelFamily, RulesStatus, ...)
-packages/database/      Base, engine/session, all 52 ORM models
+packages/database/      Base, engine/session, all 53 ORM models
 packages/fpl_client/    Resilient adapter over the LIVE public FPL API
 packages/shared/        pydantic-settings Settings + JSON logging setup
 migrations/             Hand-written Alembic migrations
@@ -104,6 +104,7 @@ the job types that have an HTTP trigger.
 | `POSITION_SEGMENTATION_VALIDATION` | `position_segmentation_validation.py` | ✅ | — | CLI (`scripts/run_job.py`) only, no HTTP trigger yet |
 | `FULL_PIPELINE` | `full_pipeline.py` | ✅ | — | `make full-pipeline` |
 | `DEADLINE_REMINDER` | `deadline_reminder.py` | ✅ | — | `app.scheduling.tick.run_tick`, every scheduler tick (see "Proactive push alerting" below) |
+| `PLAYER_ALERT_CHECK` | `player_alert_check.py` | ✅ | — | `app.scheduling.tick.run_tick`, chained right after a SUCCEEDED `DATA_INGESTION` (see "Proactive push alerting" below) |
 
 All optimization/simulation/recommendation jobs are **synchronous request/response** — `execute_job` blocks until done and the HTTP endpoint returns the full result in one call. No job-id polling exists anywhere in the API.
 
@@ -1426,7 +1427,7 @@ on the free plan, including after free-tier cold-start wake-ups. Local `docker-c
 overrides `command:` for the `api`/`scheduler` services, so this default `CMD` never runs there
 and local dev is unaffected.
 
-## Proactive push alerting (Milestone 9 Layers 1-3: `push_subscriptions`, `app/notifications/`, `apps/api/routers/push.py`, `app.scheduling.tick`'s failure alerts, `DEADLINE_REMINDER`)
+## Proactive push alerting (Milestone 9, all 4 layers: `push_subscriptions`, `app/notifications/`, `apps/api/routers/push.py`, `app.scheduling.tick`'s failure alerts, `DEADLINE_REMINDER`, `PLAYER_ALERT_CHECK`)
 
 Real gap this closes: nothing in this system ever proactively told the manager anything — every
 real event (a job failure, an approaching deadline, a price/injury change) was only visible if
@@ -1523,6 +1524,37 @@ season's GW1 reminder too — caught before shipping, covered by
 A failed send (e.g. no VAPID key configured) is deliberately **not** caught inside the handler —
 it must reach `JobStatus.FAILED`, not a SUCCEEDED no-op, or the dedup check would permanently
 suppress a reminder that was never actually delivered.
+
+**Layer 4 — price/injury change alerts** (`app/jobs/handlers/player_alert_check.py`,
+`JobType.PLAYER_ALERT_CHECK`, `player_alert_states` table): one push per player whose `status` or
+price momentum materially changed since the last check. Chained in `run_tick()` right after a
+SUCCEEDED `DATA_INGESTION` (`_run_job_safely` now returns the completed `Job`, not `None`, so a
+caller can react to its outcome — the only reason that signature changed) rather than on its own
+interval, since it needs THIS run's fresh `transfers_in_event`/`transfers_out_event`/`status` to
+diff against; a FAILED or not-due `DATA_INGESTION` skips it. Reuses
+`app.players.price_signal.classify_price_momentum` (no new price logic — same active-calibration
+lookup `GET /players` already does) and `Player.status`/`chance_of_playing_next_round`, both
+already refreshed every `DATA_INGESTION` run.
+
+`PlayerAlertState` is one row per player, upserted every run regardless of whether anything
+material changed (unlike `player_price_signal_observations`, which is insert-only — see that
+model's own docstring on why) — "only the latest known value matters for diffing". A player with no
+prior state row (first ever check) never fires an alert on that run, only seeds the baseline. Two
+material-change triggers, both pure/unit-tested: `is_material_status_change` (a transition touching
+`{"i", "s", "u", "d"}` — mirrors `app.optimization.projection`'s own `_HARD_EXCLUDE_STATUSES`, plus
+`"d"` doubtful) and `is_material_momentum_change` (a transition touching `LIKELY_RISE`/
+`LIKELY_FALL`).
+
+Per-player failure isolation, a deliberate departure from `DEADLINE_REMINDER`'s own
+let-it-raise-and-fail-the-whole-job design: `DEADLINE_REMINDER` handles exactly one gameweek per
+run, so failing the whole job IS the correct "retry this one thing next tick" behavior, but
+`PLAYER_ALERT_CHECK` processes many independent players per run — the same underlying principle
+(never silently mark an undelivered alert as delivered) has to apply per-player instead, or one
+player's push failure would abort every other player's real, distinct alert in the same batch
+(this repo's standing "error granularity matches work granularity" principle). A failed send for
+one player leaves that player's state row un-upserted (retried next run); every other player in the
+same batch is still checked, alerted, and upserted normally — covered by
+`tests/integration/test_player_alert_check_job.py::test_other_players_are_unaffected_when_one_players_send_fails`.
 
 ## League Watch (`.github/workflows/league-watch.yml`)
 
