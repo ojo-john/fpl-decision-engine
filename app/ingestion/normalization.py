@@ -95,6 +95,15 @@ _MAX_BIND_PARAMS = 65535
 # under real contention, so this is kept smaller still for real headroom.
 _PRICE_SIGNAL_INSERT_CHUNK_SIZE = 25
 
+# Same real constraint as _PRICE_SIGNAL_INSERT_CHUNK_SIZE above, applied generally inside
+# _bulk_upsert itself rather than as a one-off wrapper around a single call site. Real incident
+# (2026-08-25): a real player_features upsert (~45 columns/row) -- chunked ONLY by _MAX_BIND_PARAMS
+# (~1456 rows/chunk at that width, nowhere near this cap) -- hit the same real statement_timeout
+# against the live database via .github/workflows/train-production.yml. Every _bulk_upsert caller
+# (player_features, player_gameweek_stats, rival_gameweek_snapshots, ...) now gets this same
+# execution-time protection automatically, not just whichever call site happened to hit it first.
+_BULK_UPSERT_EXECUTION_CHUNK_SIZE = 25
+
 
 def _bulk_upsert(
     session: Session,
@@ -110,9 +119,13 @@ def _bulk_upsert(
     the table *before* this call, used purely to classify each row as an
     insert or an update (Postgres' ``INSERT ... ON CONFLICT`` doesn't itself
     report which rows were new). Automatically chunks ``values`` into
-    multiple ``INSERT`` statements if a single one would exceed Postgres'
-    bound-parameter limit (see ``_MAX_BIND_PARAMS``) — transparent to every
-    caller, live or historical.
+    multiple ``INSERT`` statements, capped by whichever of two independent
+    constraints is smaller: Postgres' own bound-parameter protocol limit
+    (``_MAX_BIND_PARAMS``), or a real-world execution-time limit
+    (``_BULK_UPSERT_EXECUTION_CHUNK_SIZE`` — see its own docstring) — a wide
+    row (many columns) can stay safely under the bind-parameter cap while
+    still being far too slow per statement against a real, resource-limited
+    database. Transparent to every caller, live or historical.
     """
     if not values:
         return (0, 0)
@@ -127,7 +140,7 @@ def _bulk_upsert(
             inserted += 1
 
     columns_per_row = len(values[0])
-    chunk_size = max(1, _MAX_BIND_PARAMS // columns_per_row)
+    chunk_size = max(1, min(_MAX_BIND_PARAMS // columns_per_row, _BULK_UPSERT_EXECUTION_CHUNK_SIZE))
 
     for start in range(0, len(values), chunk_size):
         chunk = values[start : start + chunk_size]

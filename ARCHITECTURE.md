@@ -1990,10 +1990,22 @@ documents it directly.
   Root cause: `app.ingestion.normalization.record_price_signal_observations` inserted one
   ~600-row batch (one row per current-season player) as a SINGLE multi-row `INSERT`, which
   Supabase's free-tier database timed out on every real run. Fixed by chunking the insert into
-  `_PRICE_SIGNAL_INSERT_CHUNK_SIZE = 100`-row batches — a deliberately different, smaller
-  constant from `_MAX_BIND_PARAMS`-based chunking used elsewhere in the same file (that limit is
-  Postgres' protocol-level bound-parameter cap, ~8000+ rows before it would even trigger for an
-  8-column row; this is a real-world execution-time limit, unrelated to parameter count).
+  `_PRICE_SIGNAL_INSERT_CHUNK_SIZE`-row batches (100 initially, then 25 the same day once a
+  100-row chunk was confirmed to still time out live under real contention) — a deliberately
+  different, smaller constant from `_MAX_BIND_PARAMS`-based chunking used elsewhere in the same
+  file (that limit is Postgres' protocol-level bound-parameter cap, ~8000+ rows before it would
+  even trigger for an 8-column row; this is a real-world execution-time limit, unrelated to
+  parameter count).
+- **Resolved, real bug (found and fixed 2026-08-25, via the first real
+  `.github/workflows/train-production.yml` run against the live database): `_bulk_upsert` itself
+  had the identical execution-time-limit bug, at every one of its callers** (`player_features`,
+  `player_gameweek_stats`, `rival_gameweek_snapshots`, ...), not just the one call site fixed
+  above — it was chunked ONLY by `_MAX_BIND_PARAMS`, and a wide row (`player_features` has ~45
+  columns) stays well under that protocol cap (~1456 rows/chunk) while still being far too slow
+  per statement against a resource-limited real database. New `_BULK_UPSERT_EXECUTION_CHUNK_SIZE
+  = 25` constant, applied as `min()` against the bind-parameter-derived chunk size inside
+  `_bulk_upsert` itself — every caller gets this protection automatically now, not just whichever
+  one happened to hit it first.
 `FULL_PIPELINE` is no longer a gap (see the job-inventory table above) and
 the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`
 targets are now real, individual targets (previously combined into one
