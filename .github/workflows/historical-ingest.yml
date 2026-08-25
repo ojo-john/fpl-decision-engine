@@ -87,19 +87,24 @@ jobs:
                   trigger_type=TriggerType.GITHUB_MANUAL,
                   git_commit_sha="${{ github.sha }}",
               )
+              # Built while the session is still open, deliberately BEFORE `finally: session.close()`
+              # below -- real bug found and fixed in train-production.yml/train.yml (2026-08-25):
+              # building this payload after session.close() raises DetachedInstanceError, since
+              # SQLAlchemy expires every ORM instance attribute on commit by default and there's no
+              # session left to refresh from.
+              payload = {
+                  "job_id": str(job.id),
+                  "job_type": job.job_type.value if hasattr(job.job_type, "value") else job.job_type,
+                  "status": job.status.value if hasattr(job.status, "value") else job.status,
+                  "started_at": job.started_at.isoformat() if job.started_at else None,
+                  "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                  "error_code": job.error_code,
+                  "error_message": job.error_message,
+                  "output": job.output_json,
+              }
           finally:
               session.close()
 
-          payload = {
-              "job_id": str(job.id),
-              "job_type": job.job_type.value if hasattr(job.job_type, "value") else job.job_type,
-              "status": job.status.value if hasattr(job.status, "value") else job.status,
-              "started_at": job.started_at.isoformat() if job.started_at else None,
-              "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-              "error_code": job.error_code,
-              "error_message": job.error_message,
-              "output": job.output_json,
-          }
           print(json.dumps(payload))
           EOF
           cat job_summary.json

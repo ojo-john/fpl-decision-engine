@@ -1434,6 +1434,25 @@ motivation: `MODEL_TRAINING` run through Render's own `POST /models/train` OOM-c
 free-tier web service (512MB RAM) mid-training, twice — GitHub's `ubuntu-latest` runners have
 ~7GB RAM, comfortably enough for this specific workload with no model-quality tradeoff needed.
 
+**First real end-to-end success (2026-08-25), after a long chain of real infrastructure fixes
+this same session** (OOM → moved training off Render; statement timeouts on `player_features`
+bulk inserts/cross-season SELECTs → `_BULK_UPSERT_EXECUTION_CHUNK_SIZE`/
+`_CROSS_SEASON_PLAYER_ID_CHUNK_SIZE = 25`; IPv6-unreachable Direct connection → reverted to the
+Session Pooler; 30-minute workflow timeout killing a still-progressing run → raised to
+`timeout-minutes: 180`; Supabase's own 2-minute default `statement_timeout` → the user ran `ALTER
+ROLE postgres SET statement_timeout = '10min'` in the Supabase SQL Editor): a run against the real
+production database completed `FEATURE_GENERATION` and `MODEL_TRAINING` successfully in ~76
+minutes, promoting a new real `gradient_boosting` champion — confirmed via `GET /models/champion`
+showing a fresh `trained_at`. **The workflow itself still reported `failure`**, from one more real
+bug found immediately after: this and 3 sibling workflows (`train.yml`, `feature-generation.yml`,
+`historical-ingest.yml`) all built their final JSON summary payload (`job.id`/`job.status`/etc.)
+via a `_payload(job)` helper called AFTER `finally: session.close()` — SQLAlchemy expires every
+ORM instance's attributes on commit by default, so the first attribute access with no session left
+to refresh from raises `sqlalchemy.orm.exc.DetachedInstanceError`, reported as the whole job
+`Process completed with exit code 1` even though the real work had already fully succeeded
+minutes earlier. Fixed in all 4 workflows identically: build the payload dict INSIDE the `try`
+block, before `session.close()`, not after.
+
 The real scheduling logic lives in `app.scheduling.tick` (`run_tick`, plus its pure/testable
 decision functions — `gameweeks_needing_review`, `is_interval_due`,
 `event_ids_missing_authoritative_recommendation` — see `tests/unit/test_scheduling_tick.py`),

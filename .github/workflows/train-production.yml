@@ -86,6 +86,20 @@ jobs:
           from packages.database.session import SessionLocal
           from packages.domain.jobs import JobType, TriggerType
 
+          def _payload(job):
+              if job is None:
+                  return None
+              return {
+                  "job_id": str(job.id),
+                  "job_type": job.job_type.value if hasattr(job.job_type, "value") else job.job_type,
+                  "status": job.status.value if hasattr(job.status, "value") else job.status,
+                  "started_at": job.started_at.isoformat() if job.started_at else None,
+                  "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                  "error_code": job.error_code,
+                  "error_message": job.error_message,
+                  "output": job.output_json,
+              }
+
           session = SessionLocal()
           try:
               features_job = execute_job(
@@ -105,24 +119,17 @@ jobs:
                       trigger_type=TriggerType.GITHUB_MANUAL,
                       git_commit_sha="${{ github.sha }}",
                   )
+              # Built while the session is still open, deliberately BEFORE `finally: session.close()`
+              # below -- real incident (2026-08-25): a 78-minute real run against the live database
+              # completed both jobs successfully, then this whole workflow still reported `failure`
+              # because building this payload used to happen AFTER session.close(), and SQLAlchemy
+              # expires every ORM instance attribute on commit by default -- the next attribute
+              # access after the session closes has nothing left to refresh from, raising
+              # `DetachedInstanceError` on a job that had, in every real sense, already succeeded.
+              payload = {"features": _payload(features_job), "training": _payload(training_job)}
           finally:
               session.close()
 
-          def _payload(job):
-              if job is None:
-                  return None
-              return {
-                  "job_id": str(job.id),
-                  "job_type": job.job_type.value if hasattr(job.job_type, "value") else job.job_type,
-                  "status": job.status.value if hasattr(job.status, "value") else job.status,
-                  "started_at": job.started_at.isoformat() if job.started_at else None,
-                  "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-                  "error_code": job.error_code,
-                  "error_message": job.error_message,
-                  "output": job.output_json,
-              }
-
-          payload = {"features": _payload(features_job), "training": _payload(training_job)}
           print(json.dumps(payload))
           EOF
           cat job_summary.json
