@@ -97,10 +97,19 @@ RANDOM_STATE = 42
 # Shallow — chosen for interpretability over raw accuracy.
 DECISION_TREE_MAX_DEPTH = 5
 
-RANDOM_FOREST_N_ESTIMATORS = 200
+# 200 -> 50 (2026-08-25): real production incident -- walk-forward-fitting both tree ensembles at
+# their original size OOM-crashed the live Render free-tier web service (512MB RAM) mid-training,
+# taking the whole API down until Render restarted it. Most of a random forest's accuracy gain
+# happens in its first ~50 trees (well-established diminishing-returns behavior for tabular data at
+# this scale) -- MODEL_TRAINING's own walk-forward validation still empirically measures and
+# compares every candidate's real MAE/Spearman against the 4 baseline formulas, so a genuine
+# accuracy regression from this cut would simply lose the champion slot to a cheaper candidate
+# rather than silently degrading live recommendations.
+RANDOM_FOREST_N_ESTIMATORS = 50
 RANDOM_FOREST_MAX_DEPTH = 8
 
-GRADIENT_BOOSTING_MAX_ITER = 200
+# Same real incident/reasoning as RANDOM_FOREST_N_ESTIMATORS above.
+GRADIENT_BOOSTING_MAX_ITER = 50
 GRADIENT_BOOSTING_MAX_DEPTH = 5
 GRADIENT_BOOSTING_LEARNING_RATE = 0.05
 

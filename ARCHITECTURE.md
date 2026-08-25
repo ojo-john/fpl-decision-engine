@@ -952,7 +952,17 @@ new code needed, just running the existing pipeline.
     treated identically to the true bootstrap case (no champion at all) —
     the next `MODEL_TRAINING` run's own winner is promoted immediately
     (`lifecycle_state=CHAMPION`) rather than queued as a `SHADOW_CHALLENGER`
-    behind a champion that was producing zero live benefit anyway. The
+    behind a champion that was producing zero live benefit anyway. Directly
+    related real incident, same session: the first real retrain attempt
+    against the live database (via the new endpoint below) OOM-crashed the
+    Render free-tier web service (512MB RAM) mid-training, taking the whole
+    API down until Render restarted it -- `app.modeling.candidates`'
+    `RANDOM_FOREST_N_ESTIMATORS`/`GRADIENT_BOOSTING_MAX_ITER` were both cut
+    200 -> 50 (most of a random forest's accuracy gain happens in its first
+    ~50 trees for tabular data at this scale; walk-forward validation still
+    empirically measures every candidate against the 4 baseline formulas, so
+    a genuine regression from this cut loses the champion slot to a cheaper
+    candidate rather than silently degrading live recommendations). The
     broken champion is explicitly retired (`lifecycle_state=
     RETIRED_CHAMPION`, `is_champion=False`), mirroring
     `app.modeling.promotion.decide_and_record_promotion`'s own identical
