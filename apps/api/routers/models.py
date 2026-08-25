@@ -26,18 +26,21 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.integrations.github_actions import GithubActionsDispatchError, dispatch_train_production_workflow
 from app.jobs.service import execute_job
 from apps.api.dependencies import get_db
 from apps.api.schemas.models import (
     ChampionModelOut,
     ModelTrainingOut,
     ModelTrainingRequest,
+    RemoteTrainingDispatchOut,
     StartProbabilityModelOut,
     StartProbabilityTrainingRequest,
 )
 from packages.database.models.model_version import ModelVersion
 from packages.database.models.start_probability_model import StartProbabilityModel
 from packages.domain.jobs import JobStatus, JobType, TriggerType
+from packages.shared.config import get_settings
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -97,6 +100,31 @@ def run_model_training(
         champion_model_family=champion["model_family"],
         promotion_outcome=champion["promotion_outcome"],
         lifecycle_state=champion["lifecycle_state"],
+    )
+
+
+@router.post("/train-production", response_model=RemoteTrainingDispatchOut)
+def dispatch_remote_production_training() -> RemoteTrainingDispatchOut | JSONResponse:
+    """The FPL dashboard's own "Retrain model" button -- remotely triggers
+    ``.github/workflows/train-production.yml`` via GitHub's REST API. Deliberately NEVER runs
+    ``MODEL_TRAINING`` in-process here (unlike ``POST /models/train`` above) -- see
+    ``app.integrations.github_actions``'s own module docstring for the real OOM incident that
+    makes in-process training on this server unsafe. This is the concrete, one-click counterpart
+    to the text-only guidance ``GameweekReviewJobRunner._alert_on_mae_breach``'s push notification
+    gives ("retrain via the Train (production database) GitHub Actions workflow") -- same
+    workflow, reachable from the app itself instead of GitHub's own UI.
+    """
+    try:
+        dispatch_train_production_workflow()
+    except GithubActionsDispatchError as exc:
+        return JSONResponse(
+            status_code=502,
+            content={"error_code": "GITHUB_DISPATCH_FAILED", "error_message": str(exc)},
+        )
+    settings = get_settings()
+    return RemoteTrainingDispatchOut(
+        dispatched=True,
+        workflow_runs_url=f"https://github.com/{settings.github_repo}/actions/workflows/train-production.yml",
     )
 
 

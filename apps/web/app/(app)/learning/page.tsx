@@ -1,6 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import { backendClient } from "@/lib/api-client";
 import { BacktestButton } from "@/components/backtest-button";
+import { RetrainButton } from "@/components/retrain-button";
 import { SingleFieldActionForm } from "@/components/single-field-action-form";
 import { Card, EmptyState, ErrorState, TableScroll } from "@/components/ui";
 
@@ -25,7 +26,10 @@ async function ChampionBacktestSection() {
       <p style={{ margin: "0 0 0.75rem", color: "var(--text-muted)", fontSize: "0.9rem" }}>
         {champion.model_name} ({champion.model_family}, feature v{champion.feature_version})
       </p>
-      <BacktestButton modelVersionId={champion.model_version_id} />
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+        <BacktestButton modelVersionId={champion.model_version_id} />
+        <RetrainButton />
+      </div>
     </Card>
   );
 }
@@ -139,6 +143,12 @@ export default async function LearningPage() {
     return <ErrorState>Could not load the latest learning report ({response.status}).</ErrorState>;
   }
 
+  // Milestone 7 Layer 6, revised 2026-08-25: retraining_triggered now means "an MAE-breach push
+  // alert was attempted", not "a MODEL_TRAINING job ran" -- see packages/database/models
+  // /learning_report.py's own docstring. Whether the alert itself sent is on summary.alert_sent
+  // (summary is a loosely-typed dict, same as notable_findings -- see LearningReportOut).
+  const retrainingAlertSent = data.summary?.retraining_alert_sent === true;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <Card>
@@ -146,8 +156,16 @@ export default async function LearningPage() {
           Gameweek {data.target_fpl_event_id} review -- {data.run_status}
         </h1>
         {data.retraining_triggered && (
-          <p style={{ margin: 0, color: "var(--accent)", fontSize: "0.9rem" }}>
-            A sustained projection-accuracy breach triggered model retraining on this run.
+          <p
+            style={{
+              margin: 0,
+              color: retrainingAlertSent ? "var(--accent)" : "var(--danger, #d33)",
+              fontSize: "0.9rem",
+            }}
+          >
+            {retrainingAlertSent
+              ? "A sustained projection-accuracy breach was detected -- a retraining alert was sent. Retraining itself is manual (see below)."
+              : "A sustained projection-accuracy breach was detected, but the retraining alert failed to send."}
           </p>
         )}
       </Card>

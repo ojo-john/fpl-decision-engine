@@ -1042,6 +1042,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/models/train": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Model Training
+         * @description Triggers a real MODEL_TRAINING run. Previously only reachable via CLI (``scripts/run_job.py``)
+         *     or ``train.yml`` (which spins up its own throwaway CI database, never the real one this app's
+         *     own live deployment actually serves from -- see ARCHITECTURE.md's own "Cloud deployment"
+         *     section) -- added so a real retrain against the real, live database is actually reachable
+         *     remotely, mirroring ``POST /models/start-probability-training``'s own exact pattern.
+         */
+        post: operations["run_model_training_models_train_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/models/train-production": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dispatch Remote Production Training
+         * @description The FPL dashboard's own "Retrain model" button -- remotely triggers
+         *     ``.github/workflows/train-production.yml`` via GitHub's REST API. Deliberately NEVER runs
+         *     ``MODEL_TRAINING`` in-process here (unlike ``POST /models/train`` above) -- see
+         *     ``app.integrations.github_actions``'s own module docstring for the real OOM incident that
+         *     makes in-process training on this server unsafe. This is the concrete, one-click counterpart
+         *     to the text-only guidance ``GameweekReviewJobRunner._alert_on_mae_breach``'s push notification
+         *     gives ("retrain via the Train (production database) GitHub Actions workflow") -- same
+         *     workflow, reachable from the app itself instead of GitHub's own UI.
+         */
+        post: operations["dispatch_remote_production_training_models_train_production_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/models/start-probability-training": {
         parameters: {
             query?: never;
@@ -2136,6 +2187,49 @@ export interface components {
             requested_by?: string | null;
         };
         /**
+         * ModelTrainingOut
+         * @description See app.jobs.handlers.model_training's own module docstring for ``promotion_outcome``'s two
+         *     possible values: ``"champion"`` (this run's winner is now live -- either a true bootstrap, no
+         *     champion existed before, or a self-heal of a previously-flagged champion whose artifact was
+         *     missing/unusable) or ``"shadow_challenger"`` (a real, usable champion already exists; this run's
+         *     winner is queued for real, retrospective shadow evaluation instead -- see
+         *     app.modeling.promotion).
+         */
+        ModelTrainingOut: {
+            /** Feature Version */
+            feature_version: number;
+            /** Usable Seasons */
+            usable_seasons: string[];
+            /** Fold Count */
+            fold_count: number;
+            /** Degenerate Single Season */
+            degenerate_single_season: boolean;
+            /**
+             * Champion Model Version Id
+             * Format: uuid
+             */
+            champion_model_version_id: string;
+            /** Champion Model Family */
+            champion_model_family: string;
+            /** Promotion Outcome */
+            promotion_outcome: string;
+            /** Lifecycle State */
+            lifecycle_state: string;
+        };
+        /**
+         * ModelTrainingRequest
+         * @description See app.jobs.handlers.model_training's own module docstring.
+         *
+         *     ``requested_by`` mirrors every other job-trigger request schema's own optional
+         *     "who asked for this" field (e.g. BacktestRequest).
+         */
+        ModelTrainingRequest: {
+            /** Feature Version */
+            feature_version?: number | null;
+            /** Requested By */
+            requested_by?: string | null;
+        };
+        /**
          * NextDeadlineOut
          * @description The next unfinished gameweek's deadline, plus the real optimization-gate verdict for it --
          *     for a Dashboard countdown. Not an approximation of gate status from ``is_current`` alone;
@@ -2595,6 +2689,19 @@ export interface components {
             target_fpl_event_id?: number | null;
             /** Requested By */
             requested_by?: string | null;
+        };
+        /**
+         * RemoteTrainingDispatchOut
+         * @description See app.integrations.github_actions's own module docstring -- the FPL dashboard's own
+         *     "Retrain model" button. ``workflow_runs_url`` is a real, followable link to the workflow's own
+         *     Actions page (GitHub's workflow_dispatch API itself returns no run id to correlate against),
+         *     not a specific run.
+         */
+        RemoteTrainingDispatchOut: {
+            /** Dispatched */
+            dispatched: boolean;
+            /** Workflow Runs Url */
+            workflow_runs_url: string;
         };
         /**
          * RivalProfileOut
@@ -4810,6 +4917,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChampionModelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_model_training_models_train_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelTrainingRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelTrainingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dispatch_remote_production_training_models_train_production_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemoteTrainingDispatchOut"];
                 };
             };
             /** @description Validation Error */

@@ -89,7 +89,7 @@ the job types that have an HTTP trigger.
 | `LEAGUE_SYNC` | `league_sync.py` | ✅ | `POST /leagues/sync` | |
 | `TEAM_STRENGTH_SYNC` | `team_strength_sync.py` | ✅ | — | CLI (`scripts/run_job.py`) only, no scheduled trigger yet |
 | `FEATURE_GENERATION` | `feature_generation.py` | ✅ | — | `make features`, `feature-generation.yml`, `train.yml` |
-| `MODEL_TRAINING` | `model_training.py` | ✅ | `POST /models/train` | `make train`, `train.yml`, `train-production.yml` (`workflow_dispatch`, real prod DB); **no longer** auto-triggered by `GAMEWEEK_REVIEW` — see "Modeling / learning loop" below |
+| `MODEL_TRAINING` | `model_training.py` | ✅ | `POST /models/train` (in-process, CI-DB use), `POST /models/train-production` (remote-dispatches `train-production.yml` instead — production-safe, see "Remote production retraining trigger" below) | `make train`, `train.yml`, `train-production.yml` (`workflow_dispatch`, real prod DB); **no longer** auto-triggered by `GAMEWEEK_REVIEW` — see "Modeling / learning loop" below |
 | `START_PROBABILITY_MODEL_TRAINING` | `start_probability_training.py` | ✅ | `POST /models/start-probability-training` | a SEPARATE, additive auxiliary classifier — never touches `model_versions`/the champion; see "Modeling / learning loop" below |
 | `PROJECTION_GENERATION` | — | ❌ | — | genuinely unbuilt; `project_player`/`project_player_with_champion` in `app/optimization/projection.py` are called directly by other jobs instead |
 | `SQUAD_OPTIMIZATION` | `squad_optimization.py` | ✅ | `POST /optimize/initial-squad` | |
@@ -1705,6 +1705,36 @@ Same never-raises failure-isolation contract as every other layer here — a
 failed send is caught and recorded (`RetrainingTriggerSummary.alert_sent=
 False`, `.error` populated), never propagated as `GAMEWEEK_REVIEW`'s own
 failure.
+
+## Remote production retraining trigger (`POST /models/train-production`, `app/integrations/github_actions.py`)
+
+Added 2026-08-25, directly following Layer 5 above: the retraining-alert push notification told a
+human to go retrain via GitHub's own UI, but the FPL dashboard itself had no way to actually do
+that — a real, deliberate gap (the manager asked "can i trigger the action from the FPL UI?").
+`app.integrations.github_actions.dispatch_train_production_workflow` is a new, small integration
+module (`app/integrations/`, a new top-level package alongside `app/notifications/`) that POSTs a
+real `workflow_dispatch` event to GitHub's REST API for `train-production.yml`, using a new
+`GITHUB_ACTIONS_TRIGGER_TOKEN` secret (a fine-grained PAT scoped to just `Actions: write` on this
+one repo — same "deliberately invalid dev default, fails closed" convention as
+`vapid_private_key`, never a usable placeholder). `POST /models/train-production`
+(`apps/api/routers/models.py`) wraps this for the frontend, returning `502
+GITHUB_DISPATCH_FAILED` on any transport failure or non-204 GitHub response.
+
+Deliberately separate from the pre-existing `POST /models/train`, which still runs
+`MODEL_TRAINING` **in-process** on this same Render web service — exactly the OOM-crash path this
+whole effort exists to avoid (see "Modeling / learning loop" above). The two endpoints are not
+interchangeable: `/models/train` is for the CI-database `train.yml` use case and local/CI testing,
+`/models/train-production` is the only production-safe remote trigger, and the new
+`RetrainButton` component (`apps/web/components/retrain-button.tsx`, wired into the Learning
+page's "Champion model" card) calls the latter exclusively.
+
+GitHub's own `workflow_dispatch` API returns `204 No Content` with no run id to correlate against
+— `RemoteTrainingDispatchOut.workflow_runs_url` is therefore a link to the workflow's own Actions
+page (not a specific run), which is what the button links out to ("Watch progress on GitHub")
+rather than attempting to poll a specific run synchronously. `dispatch_train_production_workflow`
+accepts an optional `transport` param for tests (mirrors `packages.clubelo_client.client
+.ClubEloClient`'s own injectable-transport precedent — `httpx.MockTransport`, no real network
+access in `tests/unit/test_github_actions_dispatch.py`).
 
 ## League Watch (`.github/workflows/league-watch.yml`)
 

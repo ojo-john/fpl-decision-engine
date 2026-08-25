@@ -54,6 +54,8 @@ services:
         sync: false # The matching public half of VAPID_PRIVATE_KEY -- also fed to the frontend at runtime via GET /push/vapid-public-key, never build-time-baked.
       - key: VAPID_SUBJECT
         sync: false # A real mailto: or https: contact URI, required by the Web Push spec.
+      - key: GITHUB_ACTIONS_TRIGGER_TOKEN
+        sync: false # Milestone 9 Layer 5 (the FPL dashboard's own "Retrain model" button) -- a fine-grained GitHub PAT scoped to `Actions: write` on this repo only. See docs/deployment.md.
       # --- Real, non-secret values, safe to commit as-is (match this repo's own local .env defaults). ---
       - key: LOG_LEVEL
         value: INFO

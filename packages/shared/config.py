@@ -55,6 +55,20 @@ class Settings(BaseSettings):
     # can reach the sender about a misbehaving application server.
     vapid_subject: str = "mailto:dev@example.com"
 
+    # Milestone 9 Layer 5: the FPL dashboard's own "Retrain model" button
+    # (app.integrations.github_actions) remotely dispatches this repo's own
+    # train-production.yml via GitHub's REST API, rather than running MODEL_TRAINING
+    # in-process here -- that in-process path is exactly what OOM-crashed the live API on
+    # Render's free tier (see train-production.yml's own docstring for the incident).
+    # Deliberately an invalid placeholder, not a usable dev default -- same "fails closed,
+    # never commit real key material" convention as vapid_private_key: a real fine-grained
+    # GitHub PAT (scoped to just `Actions: write` on this one repo) must never be committed,
+    # so this button fails with a clear error until a real token is configured via env var.
+    github_actions_trigger_token: str = "dev-github-token-change-me"
+    # Not a secret (a public repo slug), but still config-driven rather than hardcoded --
+    # this app's own repo, but a fork/redeploy elsewhere would need its own value.
+    github_repo: str = "ojo-john/fpl-decision-engine"
+
     @property
     def cors_allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]

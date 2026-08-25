@@ -12,6 +12,7 @@ import uuid
 import pytest
 from sqlalchemy import delete, select, update
 
+from app.integrations.github_actions import GithubActionsDispatchError
 from app.jobs.service import execute_job
 from packages.database.models.model_version import ModelVersion
 from packages.database.models.player_features import PlayerFeatures
@@ -144,3 +145,38 @@ def test_post_model_training_error_response(db_session):
 
     assert response.status_code == 409
     assert response.json()["error_code"] == "NO_SEASONS_WITH_FEATURES"
+
+
+# --- POST /models/train-production -- the FPL dashboard's own "Retrain model" button, remotely
+# dispatching train-production.yml via GitHub's REST API. app.integrations.github_actions's own
+# module docstring is the one already covered, unit-tested against a real httpx.MockTransport
+# (tests/unit/test_github_actions_dispatch.py) -- these tests only prove the HTTP-layer wiring
+# (success -> 200, failure -> 502), monkeypatching dispatch_train_production_workflow itself so no
+# real network call is ever made here.
+
+
+def test_post_train_production_dispatches_successfully(monkeypatch):
+    monkeypatch.setattr("apps.api.routers.models.dispatch_train_production_workflow", lambda: None)
+    client = authed_client()
+
+    response = client.post("/models/train-production", json={})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["dispatched"] is True
+    assert body["workflow_runs_url"].endswith("/actions/workflows/train-production.yml")
+
+
+def test_post_train_production_returns_502_on_dispatch_failure(monkeypatch):
+    def _boom():
+        raise GithubActionsDispatchError("status=401: Bad credentials")
+
+    monkeypatch.setattr("apps.api.routers.models.dispatch_train_production_workflow", _boom)
+    client = authed_client()
+
+    response = client.post("/models/train-production", json={})
+
+    assert response.status_code == 502
+    body = response.json()
+    assert body["error_code"] == "GITHUB_DISPATCH_FAILED"
+    assert "401" in body["error_message"]

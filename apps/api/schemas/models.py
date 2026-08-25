@@ -45,6 +45,16 @@ class ModelTrainingOut(BaseModel):
     lifecycle_state: str
 
 
+class RemoteTrainingDispatchOut(BaseModel):
+    """See app.integrations.github_actions's own module docstring -- the FPL dashboard's own
+    "Retrain model" button. ``workflow_runs_url`` is a real, followable link to the workflow's own
+    Actions page (GitHub's workflow_dispatch API itself returns no run id to correlate against),
+    not a specific run."""
+
+    dispatched: bool
+    workflow_runs_url: str
+
+
 class StartProbabilityTrainingRequest(BaseModel):
     """See app.jobs.handlers.start_probability_training's own module docstring.
 

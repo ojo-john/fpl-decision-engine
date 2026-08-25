@@ -89,6 +89,13 @@ URL) produced by the step before it.
        real secrets, don't commit them (already covered by this repo's `*.pem` gitignore entry).
    - `VAPID_SUBJECT` -- a real contact URI (`mailto:you@example.com` is fine), required by the
      Web Push spec so a push service can reach you about a misbehaving application server.
+   - `GITHUB_ACTIONS_TRIGGER_TOKEN` -- Milestone 9 Layer 5, the FPL dashboard's own "Retrain
+     model" button (see "Retraining the model against real data" below for the full picture). A
+     **fine-grained** GitHub personal access token, scoped as narrowly as possible:
+     [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new) ->
+     **Repository access**: "Only select repositories" -> this repo only -> **Permissions** ->
+     **Actions**: Read and write (the only permission this needs). Copy the token (`github_pat_...`)
+     immediately -- GitHub only shows it once.
 4. Deploy. The container's own startup command runs `uv run alembic upgrade head` before
    starting the API (see the `Dockerfile`'s own comment) -- no manual dashboard step needed, and
    no dependency on `preDeployCommand` or the Shell tab, both of which turned out to be
@@ -168,7 +175,14 @@ One-time setup:
 2. Name: `PROD_DATABASE_URL`. Value: the exact same real Supabase connection string you set as
    Render's own `DATABASE_URL` (step 1 above).
 
-To run it: **Actions tab -> Train (production database) -> Run workflow**. `season_label` defaults
+To run it, either:
+- **From the FPL dashboard itself**: the "Retrain model (production)" button on the Learning page
+  (`POST /models/train-production`) -- dispatches this same workflow remotely via GitHub's REST
+  API, using the `GITHUB_ACTIONS_TRIGGER_TOKEN` secret set above. No GitHub UI needed; the button
+  links out to the run's own Actions page to watch progress.
+- **From GitHub directly**: **Actions tab -> Train (production database) -> Run workflow**.
+
+`season_label` defaults
 to `"all"` (every season with ingested `player_gameweek_stats`) -- leave it unless you specifically
 want to retrain against just one season. Check the run's own Job Summary (or the uploaded
 `train-production-job-summary` artifact) for the real `promotion_outcome` (`"champion"` -- promoted
