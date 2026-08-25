@@ -4,14 +4,16 @@ A convenience orchestrator, not a new capability: every step here already
 runs correctly on its own (via `make ingest`/`make features`/`make train`,
 or the `.github/workflows/` equivalents) -- this just chains the three in
 sequence via `app.jobs.service.execute_job`, mirroring
-`GameweekReviewJobRunner._trigger_retraining_and_promotion_check`'s own
-established precedent for one job type triggering another: each nested
-`execute_job` call runs on its OWN dedicated `SessionLocal()`, never this
-handler's session (this handler doesn't even open one of its own -- there
-is no dedicated run-header table for FULL_PIPELINE, same "no dedicated
-run-header table" precedent FEATURE_GENERATION's own module docstring
-already established; `jobs.output_json` recording each step's own job id/
-status is sufficient auditability here too).
+`app.scheduling.tick`'s own established precedent for one job type
+triggering another (`_run_job_safely` -> `execute_job`, dispatched for
+`RECOMMENDATION_GENERATION`/`GAMEWEEK_REVIEW`/`LEAGUE_SYNC`/`DATA_INGESTION`/
+`DEADLINE_REMINDER`/`PLAYER_ALERT_CHECK`): each nested `execute_job` call
+runs on its OWN dedicated `SessionLocal()`, never this handler's session
+(this handler doesn't even open one of its own -- there is no dedicated
+run-header table for FULL_PIPELINE, same "no dedicated run-header table"
+precedent FEATURE_GENERATION's own module docstring already established;
+`jobs.output_json` recording each step's own job id/status is sufficient
+auditability here too).
 
 Step 2 (FEATURE_GENERATION) targets ONLY the season DATA_INGESTION just
 touched -- not `{"season_label": "all"}` -- deliberately: MODEL_TRAINING

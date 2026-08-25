@@ -89,7 +89,7 @@ the job types that have an HTTP trigger.
 | `LEAGUE_SYNC` | `league_sync.py` | ✅ | `POST /leagues/sync` | |
 | `TEAM_STRENGTH_SYNC` | `team_strength_sync.py` | ✅ | — | CLI (`scripts/run_job.py`) only, no scheduled trigger yet |
 | `FEATURE_GENERATION` | `feature_generation.py` | ✅ | — | `make features`, `feature-generation.yml`, `train.yml` |
-| `MODEL_TRAINING` | `model_training.py` | ✅ | `POST /models/train` | `make train`, `train.yml`; also triggered **in-process** by `GAMEWEEK_REVIEW` on a sustained MAE breach |
+| `MODEL_TRAINING` | `model_training.py` | ✅ | `POST /models/train` | `make train`, `train.yml`, `train-production.yml` (`workflow_dispatch`, real prod DB); **no longer** auto-triggered by `GAMEWEEK_REVIEW` — see "Modeling / learning loop" below |
 | `START_PROBABILITY_MODEL_TRAINING` | `start_probability_training.py` | ✅ | `POST /models/start-probability-training` | a SEPARATE, additive auxiliary classifier — never touches `model_versions`/the champion; see "Modeling / learning loop" below |
 | `PROJECTION_GENERATION` | — | ❌ | — | genuinely unbuilt; `project_player`/`project_player_with_champion` in `app/optimization/projection.py` are called directly by other jobs instead |
 | `SQUAD_OPTIMIZATION` | `squad_optimization.py` | ✅ | `POST /optimize/initial-squad` | |
@@ -1086,12 +1086,33 @@ new code needed, just running the existing pipeline.
   `ROLLING_PROJECTION_MAE`), `note_effectiveness.py` tracks whether an
   active availability-risk/role-boost note moved a projection closer to or
   further from the real outcome (see "Note-severity rubric + outcome
-  tracking" above). `GAMEWEEK_REVIEW` ties this all together and,
-  on a **sustained** `ROLLING_PROJECTION_MAE` breach, triggers `MODEL_TRAINING`
-  in-process (not via a separate scheduled workflow) plus a promotion-gate
-  check — see `gameweek_review.py`'s own docstring for the exact
-  failure-isolation boundary (a retraining failure never fails the review
+  tracking" above). `GAMEWEEK_REVIEW` ties this all together and, on a
+  **sustained** `ROLLING_PROJECTION_MAE` breach, sends a real push
+  notification (`app.notifications.push_sender.send_push_to_all`) asking a
+  human to retrain manually via the `train-production.yml` GitHub Actions
+  workflow — see `gameweek_review.py`'s own docstring for the exact
+  failure-isolation boundary (an alert-send failure never fails the review
   itself).
+  **Revised 2026-08-25**: this step used to run `MODEL_TRAINING` in-process
+  (on Render, the same server that runs `GAMEWEEK_REVIEW` in production) and
+  immediately run a promotion-gate check against a fresh `SHADOW_CHALLENGER`.
+  Real incident: that in-process training run OOM-crashed the live API
+  mid-training on Render's free tier — training is real ML fit-and-score
+  work that Render's 512MB memory limit can't reliably absorb, especially
+  once the live request-serving process is also holding open DB connections
+  and Optimization workloads. `MODEL_TRAINING` in production now runs
+  exclusively via `train-production.yml` (`workflow_dispatch`,
+  `ubuntu-latest` runners with ~7GB RAM, connects to the real prod DB via
+  the `PROD_DATABASE_URL` secret — the Session Pooler connection, since
+  GitHub Actions runners, like Render, lack IPv6 connectivity to Supabase's
+  Direct connection), triggered by a human after seeing the alert.
+  `learning_reports.retraining_triggered=True` now means "the alert was
+  attempted" (`retraining_job_id` is always `NULL` for a new row going
+  forward — no job actually gets created by this step anymore); whether the
+  push itself succeeded is on `RetrainingTriggerSummary.alert_sent`/`error`,
+  folded into `summary_json`/`notable_findings_json`/`report_markdown`. See
+  `packages/database/models/learning_report.py`'s own docstring for the full
+  before/after column semantics.
 - **Price-signal auto-recalibration** (same failure-isolation boundary,
   independent step) — every `GAMEWEEK_REVIEW` run also calls
   `GameweekReviewJobRunner._maybe_recalibrate_price_signal`, which grid-
@@ -1530,7 +1551,7 @@ this: `AppLayout`'s own `<Nav />` has no async work of its own so it still rende
 Next's automatic Suspense boundary around `{children}` now shows a "Loading..." card instead of
 blank space while the page's own fetch is in flight.
 
-## Proactive push alerting (Milestone 9, all 4 layers: `push_subscriptions`, `app/notifications/`, `apps/api/routers/push.py`, `app.scheduling.tick`'s failure alerts, `DEADLINE_REMINDER`, `PLAYER_ALERT_CHECK`)
+## Proactive push alerting (Milestone 9, all 4 layers: `push_subscriptions`, `app/notifications/`, `apps/api/routers/push.py`, `app.scheduling.tick`'s failure alerts, `DEADLINE_REMINDER`, `PLAYER_ALERT_CHECK`; plus a 5th consumer added 2026-08-25, `GAMEWEEK_REVIEW`'s retraining alert)
 
 Real gap this closes: nothing in this system ever proactively told the manager anything — every
 real event (a job failure, an approaching deadline, a price/injury change) was only visible if
@@ -1669,6 +1690,21 @@ player's push failure would abort every other player's real, distinct alert in t
 one player leaves that player's state row un-upserted (retried next run); every other player in the
 same batch is still checked, alerted, and upserted normally — covered by
 `tests/integration/test_player_alert_check_job.py::test_other_players_are_unaffected_when_one_players_send_fails`.
+
+**Layer 5 — model-degradation retraining alert** (added 2026-08-25,
+`app/jobs/handlers/gameweek_review.py`'s `_alert_on_mae_breach`, reusing
+`send_push_to_all` directly — no new job type/table): `GAMEWEEK_REVIEW`
+sends one push ("Model accuracy has degraded") on a **sustained**
+`ROLLING_PROJECTION_MAE` breach, replacing what used to be an in-process
+`MODEL_TRAINING` run + promotion-gate check on the same server that runs
+`GAMEWEEK_REVIEW` in production (Render's free tier) — that OOM-crashed the
+live API mid-training, a real incident this session spent hours debugging
+(see "Modeling / learning loop" above and `train-production.yml`'s own
+docstring for the full incident and the GitHub-Actions-based replacement).
+Same never-raises failure-isolation contract as every other layer here — a
+failed send is caught and recorded (`RetrainingTriggerSummary.alert_sent=
+False`, `.error` populated), never propagated as `GAMEWEEK_REVIEW`'s own
+failure.
 
 ## League Watch (`.github/workflows/league-watch.yml`)
 

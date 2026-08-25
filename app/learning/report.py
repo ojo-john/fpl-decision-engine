@@ -28,7 +28,13 @@ keeps working unchanged) that appends one more mechanically-derived
 ``"retraining_triggered"`` finding whenever a retraining attempt actually
 happened this run, and ``render_gameweek_review_report_markdown`` gets a new
 "Retraining trigger" section. See ``app.jobs.handlers.gameweek_review``'s own
-module docstring for exactly when this fires.
+module docstring for exactly when this fires. Revised 2026-08-25: this step
+originally ran ``MODEL_TRAINING`` in-process and immediately checked for a
+promotion; a real incident (an in-process retrain OOM-crashed the live
+Render web service) changed it to only send a push notification asking a
+human to retrain manually instead -- ``RetrainingTriggerSummary``'s own
+fields were narrowed accordingly (no more ``model_training_job_id``/
+``promotion_verdict``/etc., just whether an alert was sent).
 
 Milestone 7 extension (note-severity outcome tracking) adds
 ``NoteEffectivenessSummary`` below the same way: ``compose_notable_findings``
@@ -130,25 +136,22 @@ class OutcomeSummary:
 @dataclass(frozen=True)
 class RetrainingTriggerSummary:
     """What happened, if anything, when this run's own ``ROLLING_PROJECTION_MAE`` learning signal
-    came back with ``threshold_breached=True`` (Milestone 7 Layer 6).
+    came back with ``threshold_breached=True`` (Milestone 7 Layer 6, revised 2026-08-25).
 
     ``triggered=False`` for the overwhelmingly common case (no breach this
-    run) -- every other field is ``None`` in that case. When ``triggered`` is
-    ``True``, ``model_training_status``/``error`` describe whether the
-    triggered ``MODEL_TRAINING`` job itself succeeded (a training-side
-    failure is recorded here, never propagated as this GAMEWEEK_REVIEW run's
-    own failure -- see ``app.jobs.handlers.gameweek_review``'s own module
-    docstring), and ``promotion_verdict`` is populated only when training
-    succeeded AND a shadow challenger/champion pair existed to run
-    ``app.modeling.promotion.evaluate_promotion`` against.
+    run) -- ``alert_sent``/``error`` are only meaningful when ``triggered`` is
+    ``True``. This step used to run ``MODEL_TRAINING`` in-process and
+    immediately check for a promotion; it now only sends a push notification
+    asking a human to retrain manually -- see
+    ``app.jobs.handlers.gameweek_review``'s own module docstring for the real
+    incident (an in-process retrain OOM-crashed the live Render web service)
+    that motivated this. ``error`` is populated only if the notification
+    itself failed to send, never propagated as this GAMEWEEK_REVIEW run's own
+    failure.
     """
 
     triggered: bool
-    model_training_job_id: str | None = None
-    model_training_status: str | None = None
-    shadow_challenger_model_version_id: str | None = None
-    promotion_verdict: str | None = None
-    promotion_id: str | None = None
+    alert_sent: bool = False
     error: str | None = None
 
 
@@ -196,10 +199,7 @@ def compose_notable_findings(
         findings.append(
             {
                 "type": "retraining_triggered",
-                "model_training_job_id": retraining.model_training_job_id,
-                "model_training_status": retraining.model_training_status,
-                "shadow_challenger_model_version_id": retraining.shadow_challenger_model_version_id,
-                "promotion_verdict": retraining.promotion_verdict,
+                "alert_sent": retraining.alert_sent,
                 "error": retraining.error,
             }
         )
@@ -331,9 +331,7 @@ def _notable_findings_section(findings: list[dict[str, Any]]) -> str:
             )
         elif finding["type"] == "retraining_triggered":
             lines.append(
-                f"- **Retraining triggered**: model_training_job_id={finding['model_training_job_id']}, "
-                f"status={finding['model_training_status']}, "
-                f"promotion_verdict={finding['promotion_verdict']}, error={finding['error']}"
+                f"- **Retraining alert sent**: alert_sent={finding['alert_sent']}, error={finding['error']}"
             )
         else:  # "note_effectiveness_negative"
             lines.append(
@@ -367,15 +365,11 @@ def _note_effectiveness_table(evaluations: list[NoteEffectivenessSummary]) -> st
 
 def _retraining_trigger_section(retraining: RetrainingTriggerSummary | None) -> str:
     if retraining is None or not retraining.triggered:
-        return "_No retraining triggered this gameweek._\n"
+        return "_No retraining alert sent this gameweek._\n"
     lines = [
         "| Field | Value |",
         "| --- | --- |",
-        f"| model_training_job_id | {retraining.model_training_job_id} |",
-        f"| model_training_status | {retraining.model_training_status} |",
-        f"| shadow_challenger_model_version_id | {retraining.shadow_challenger_model_version_id} |",
-        f"| promotion_verdict | {retraining.promotion_verdict} |",
-        f"| promotion_id | {retraining.promotion_id} |",
+        f"| alert_sent | {retraining.alert_sent} |",
         f"| error | {retraining.error} |",
     ]
     return "\n".join(lines) + "\n"

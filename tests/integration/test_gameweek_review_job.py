@@ -29,20 +29,28 @@ call for gameweeks this job itself never reviews) so
 a real, hand-verified ``notable_findings_json`` to assert against, not an
 empty list.
 
-Milestone 7 Layer 6 (BACKTEST job + the GAMEWEEK_REVIEW -> MODEL_TRAINING
-retraining-trigger wiring) adds its own dedicated tests near the bottom of
-this module. One side effect worth calling out explicitly: the happy-path
-scenario above's own sustained ``ROLLING_PROJECTION_MAE`` breach now ALSO
-triggers a real retraining attempt as a side effect (that is the new, correct
-behavior this layer adds, not a regression) -- the happy-path test's own
+Milestone 7 Layer 6 (BACKTEST job + the GAMEWEEK_REVIEW retraining-alert
+wiring) adds its own dedicated tests near the bottom of this module. One
+side effect worth calling out explicitly: the happy-path scenario above's
+own sustained ``ROLLING_PROJECTION_MAE`` breach now ALSO triggers a
+retraining-alert attempt as a side effect (that is the new, correct behavior
+this layer adds, not a regression) -- the happy-path test's own
 ``notable_finding_count``/``notable_findings_json`` assertions account for
-this. ``_clear_model_lifecycle_state_around_test`` (autouse, this whole
-module) resets ``model_versions.is_champion``/``lifecycle_state`` before AND
-after every test here, exactly like ``test_promotion.py``'s own precedent --
-required because a real, nested ``MODEL_TRAINING`` run's own
-bootstrap-vs-shadow-challenger decision (and this module's own Layer 6 tests'
-determinism) depends on that global state, on this shared, non-truncated
-Postgres.
+this.
+
+REVISED 2026-08-25: this retraining step no longer runs a nested
+``MODEL_TRAINING`` job or checks shadow-challenger promotion in-process --
+see ``app.jobs.handlers.gameweek_review.GameweekReviewJobRunner
+._alert_on_mae_breach``'s own docstring for exactly why (a real production
+OOM incident) and what it does instead (send a push notification asking a
+human to retrain manually). The dedicated Layer 6 tests below now assert on
+that alert being sent (or its failure being recorded, never propagated), not
+on a real nested job/promotion outcome. ``_clear_model_lifecycle_state_around
+_test`` (autouse, this whole module) is KEPT regardless -- see its own
+docstring: it is no longer needed to make a nested training run deterministic,
+but it still guards this module (and, incidentally, whichever module runs
+right after it) against stray ``is_champion``/``lifecycle_state`` pollution
+left behind by other modules on this shared, non-truncated Postgres.
 """
 
 import uuid
@@ -63,7 +71,6 @@ from packages.database.models.job import Job
 from packages.database.models.learning_report import LearningReport
 from packages.database.models.learning_signal import LearningSignal
 from packages.database.models.model_metric import ModelMetric
-from packages.database.models.model_promotion import ModelPromotion
 from packages.database.models.model_version import ModelVersion
 from packages.database.models.note_effectiveness_evaluation import NoteEffectivenessEvaluation
 from packages.database.models.optimization_run import OptimizationRun
@@ -85,7 +92,6 @@ from packages.domain.learning import (
     GameweekReviewRunStatus,
     LearningSignalType,
     ModelLifecycleState,
-    PromotionVerdict,
     RecommendationConfidence,
 )
 from packages.domain.modeling import ModelFamily
@@ -96,13 +102,6 @@ from packages.domain.optimization import (
     TargetGameweekStatus,
 )
 from packages.domain.rules import RulesStatus
-
-# Milestone 7 Layer 6: a deliberately implausible sentinel feature_version, guaranteed to never
-# have any real player_features rows anywhere in this shared test database -- used by the
-# retraining-trigger-fails scenario below to make a nested MODEL_TRAINING run's own
-# NO_SEASONS_WITH_FEATURES failure fully deterministic, regardless of what other test modules may
-# have already ingested/generated features for feature_version=1 earlier in the same pytest session.
-_NO_FEATURES_SENTINEL_FEATURE_VERSION = 987654321
 
 _CAPTAIN_ELEMENT_ID = 30000
 _REVIEWED_FPL_EVENT_ID = 20
@@ -121,16 +120,17 @@ def _now():
 def _clear_global_model_lifecycle_state(db_session) -> None:
     """Blanket reset across the WHOLE ``model_versions`` table -- mirrors
     ``tests/integration/test_promotion.py``'s own ``_clear_global_model_lifecycle_state`` (Milestone
-    7 Layer 5's own precedent for this exact cross-test-pollution risk).
-
-    Milestone 7 Layer 6's retraining-trigger wiring means this module's own "sustained MAE breach"
-    scenario -- already exercised by the pre-existing happy-path/rerun tests below, which construct
-    exactly such a breach to prove ``ROLLING_PROJECTION_MAE.threshold_breached=True`` -- now ALSO
-    triggers a real, nested ``MODEL_TRAINING`` job as a side effect. Without this fixture, whether
-    that nested run takes the bootstrap-champion or shadow-challenger path (and whether it succeeds
-    or fails) would depend on whatever ``is_champion``/``lifecycle_state`` state happens to be left
-    over from other test modules that already ran earlier in this same pytest session, since this
-    whole suite shares one persistent, non-truncated Postgres (see ``conftest.py``'s own docstring).
+    7 Layer 5's own precedent for this exact cross-test-pollution risk): this whole suite shares one
+    persistent, non-truncated Postgres (see ``conftest.py``'s own docstring), and this module's own
+    tests never set ``is_champion=True`` themselves -- but a stray champion left behind by a
+    DIFFERENT module that already ran earlier in the same pytest session (e.g.
+    ``test_model_training_job.py``/``test_backtest_job.py``) would otherwise silently make
+    ``app.optimization.champion_loader.load_current_champion`` resolve to whatever THAT module last
+    left behind, for any module that runs AFTER this one and doesn't do its own reset (confirmed by a
+    real full-suite run: without this fixture, ``test_h2h_simulation_job.py`` -- which alphabetically
+    runs immediately after this module and has no reset fixture of its own -- started failing against
+    a leaked champion). Resetting both before AND after every test here keeps this module a clean
+    boundary regardless of what ran immediately before or after it.
     """
     db_session.execute(
         update(ModelVersion).values(is_champion=False, lifecycle_state=ModelLifecycleState.CANDIDATE)
@@ -199,72 +199,6 @@ def _create_champion_model_version(db_session, season_label: str, baseline_mae: 
     )
     db_session.commit()
     return model_version.id
-
-
-def _create_global_champion_model_version(
-    db_session, season_label: str, baseline_mae: float, feature_version: int = 1
-) -> uuid.UUID:
-    """Like ``_create_champion_model_version``, but ALSO flags this row the REAL global champion
-    (``is_champion=True``, ``lifecycle_state=CHAMPION``) -- needed only by this module's own
-    Layer 6 retraining-trigger tests, which need
-    ``app.jobs.handlers.gameweek_review``'s own ``_resolve_feature_version_for_retraining``/
-    ``_trigger_retraining_and_promotion_check`` to resolve a real ``(feature_version, champion)``
-    pair the same way production does. Safe here -- unlike ``_create_champion_model_version``'s own
-    deliberate avoidance of this -- ONLY because ``_clear_model_lifecycle_state_around_test`` above
-    guarantees this is reset before AND after every test in this module, so it can never leak into
-    another test module.
-    """
-    model_version = ModelVersion(
-        model_name="gw-review-test-global-champion",
-        model_family=ModelFamily.BASELINE_SEASON_AVERAGE,
-        feature_version=feature_version,
-        target_variable="total_points",
-        training_seasons_json=[season_label],
-        is_champion=True,
-        lifecycle_state=ModelLifecycleState.CHAMPION,
-        trained_at=_now(),
-    )
-    db_session.add(model_version)
-    db_session.commit()
-    db_session.refresh(model_version)
-    db_session.add(
-        ModelMetric(
-            model_version_id=model_version.id,
-            fold_index=None,
-            mae=Decimal(str(baseline_mae)),
-            rmse=Decimal(str(baseline_mae)),
-            mean_bias=Decimal("0.0000"),
-            n_observations=100,
-        )
-    )
-    db_session.commit()
-    return model_version.id
-
-
-def _seed_historical_season_for_model_training(db_session) -> None:
-    """Real historical ``2023-24`` ``player_features`` rows (``feature_version=1``), so a nested
-    ``MODEL_TRAINING`` run triggered mid-GAMEWEEK_REVIEW has genuine data to train against.
-
-    Duplicated (not imported) from ``tests/integration/test_model_training_job.py``'s own
-    ``_seed_historical_season`` -- mirrors this repo's own established "duplicate test setup rather
-    than cross-import between test modules" convention (see e.g. ``test_api_learning.py``'s own
-    module docstring). Idempotent to call again for the same ``season_label`` -- already relied on
-    by ``test_model_training_job.py``'s own multiple, independent tests doing exactly this.
-    """
-    ingestion_job = execute_job(
-        db_session,
-        job_type=JobType.HISTORICAL_DATA_INGESTION,
-        parameters={"season_label": "2023-24"},
-        trigger_type=TriggerType.LOCAL,
-    )
-    assert ingestion_job.status == JobStatus.SUCCEEDED
-    features_job = execute_job(
-        db_session,
-        job_type=JobType.FEATURE_GENERATION,
-        parameters={"season_label": "2023-24"},
-        trigger_type=TriggerType.LOCAL,
-    )
-    assert features_job.status == JobStatus.SUCCEEDED
 
 
 def _create_optimization_run_with_captain_projection(
@@ -509,8 +443,11 @@ def test_gameweek_review_happy_path_produces_succeeded_report_with_real_findings
 
     # --- notable_findings_json: 1 material failure + 2 breached signals + 1 retraining-triggered
     # entry (Milestone 7 Layer 6: this scenario's own sustained ROLLING_PROJECTION_MAE breach ALSO
-    # triggers a real retraining attempt -- see the dedicated Layer 6 tests below for the full
-    # trigger/promotion assertions; this happy-path test only needs to know a 4th finding now exists) --
+    # triggers a retraining-alert attempt -- see the dedicated Layer 6 tests below for the full
+    # alert-sent/alert-failed assertions; this happy-path test only needs to know a 4th finding now
+    # exists. The alert itself is real and unmocked here, so it will fail closed against the test
+    # environment's own dev-default VAPID key -- caught internally, never surfacing as this job's
+    # own failure -- which is fine: `triggered` is still True regardless of `alert_sent`) --
     assert report.notable_findings_json is not None
     findings_by_type = [f["type"] for f in report.notable_findings_json]
     assert findings_by_type.count("material_failure") == 1
@@ -703,7 +640,7 @@ def test_gameweek_review_no_mae_breach_does_not_trigger_retraining(
     assert report.retraining_triggered is False
     assert report.retraining_job_id is None
     assert job.output_json["retraining_triggered"] is False
-    assert job.output_json["retraining_job_id"] is None
+    assert job.output_json["retraining_alert_sent"] is False
     findings_by_type = [f["type"] for f in report.notable_findings_json]
     assert "retraining_triggered" not in findings_by_type
 
@@ -711,27 +648,38 @@ def test_gameweek_review_no_mae_breach_does_not_trigger_retraining(
     assert _model_training_job_count() == model_training_jobs_before
 
 
-def test_gameweek_review_sustained_mae_breach_triggers_model_training_and_shadow_promotion_check(
-    db_session, patched_fpl_client_optimization, patched_historical_fpl_client
+def test_gameweek_review_sustained_mae_breach_sends_a_retraining_alert(
+    db_session, patched_fpl_client_optimization, monkeypatch
 ):
-    """A genuine, sustained ROLLING_PROJECTION_MAE breach triggers a real MODEL_TRAINING job; since a
-    real global champion already exists, that training run's own winner becomes a SHADOW_CHALLENGER
-    (never an immediate new champion -- Layer 5's own non-bootstrap branch), which this handler then
-    immediately runs a promotion-gate check against -- with zero prior shadow-evaluation history,
-    that always comes back RETAINED_INCONCLUSIVE (see app.modeling.promotion's own module docstring),
-    which is exactly what's asserted here: nothing special-cased, just the real gate function called
-    and its real (inconclusive) verdict recorded.
+    """A genuine, sustained ROLLING_PROJECTION_MAE breach sends a push notification asking a human to
+    retrain manually -- see GameweekReviewJobRunner._alert_on_mae_breach's own docstring for why this
+    no longer runs MODEL_TRAINING in-process (a real production OOM incident). No nested
+    MODEL_TRAINING job is created as a side effect anymore -- that is now a fully manual, human
+    decision made via the ``train-production.yml`` GitHub Actions workflow.
     """
-    _seed_historical_season_for_model_training(db_session)
-
     season_id = _seed_players(db_session)
     season = db_session.get(Season, season_id)
     rules_config_id = _seed_rules_config_id(db_session, season_id)
-    champion_id = _create_global_champion_model_version(db_session, season.label, _BASELINE_MAE)
+    model_version_id = _create_champion_model_version(db_session, season.label, _BASELINE_MAE)
 
     for fpl_event_id in _PRIOR_FPL_EVENT_IDS:
-        _seed_prior_degraded_gameweek(db_session, season_id, rules_config_id, fpl_event_id, champion_id)
-    audit = _seed_reviewed_gameweek(db_session, season_id, rules_config_id, champion_id)
+        _seed_prior_degraded_gameweek(db_session, season_id, rules_config_id, fpl_event_id, model_version_id)
+    audit = _seed_reviewed_gameweek(db_session, season_id, rules_config_id, model_version_id)
+
+    sent_calls = []
+
+    def _fake_send_push_to_all(session, title, body, url=None):
+        sent_calls.append({"title": title, "body": body})
+        return 1
+
+    monkeypatch.setattr("app.jobs.handlers.gameweek_review.send_push_to_all", _fake_send_push_to_all)
+
+    def _model_training_job_count() -> int:
+        return len(
+            db_session.execute(select(Job).where(Job.job_type == JobType.MODEL_TRAINING)).scalars().all()
+        )
+
+    model_training_jobs_before = _model_training_job_count()
 
     job = execute_job(
         db_session,
@@ -754,66 +702,49 @@ def test_gameweek_review_sustained_mae_breach_triggers_model_training_and_shadow
     ).scalar_one()
     assert mae_signal.threshold_breached is True
 
-    # --- retraining_triggered=True, retraining_job_id points at a real, SUCCEEDED MODEL_TRAINING job ---
+    # --- exactly one real push notification sent, never a nested MODEL_TRAINING job ---
+    assert len(sent_calls) == 1
+    assert sent_calls[0]["title"] == "Model accuracy has degraded"
+    assert "retraining" in sent_calls[0]["body"].lower()
+    assert _model_training_job_count() == model_training_jobs_before
+
     assert report.retraining_triggered is True
-    assert report.retraining_job_id is not None
-    training_job = db_session.get(Job, report.retraining_job_id)
-    assert training_job is not None
-    assert training_job.job_type == JobType.MODEL_TRAINING
-    assert training_job.status == JobStatus.SUCCEEDED
-    assert training_job.output_json["champion"]["promotion_outcome"] == "shadow_challenger"
-
-    shadow_challenger_id = uuid.UUID(training_job.output_json["champion"]["model_version_id"])
-    shadow_challenger = db_session.get(ModelVersion, shadow_challenger_id)
-    assert shadow_challenger.lifecycle_state == ModelLifecycleState.SHADOW_CHALLENGER
-    assert shadow_challenger.is_champion is False
-
-    # The pre-existing global champion is untouched.
-    champion = db_session.get(ModelVersion, champion_id)
-    assert champion.is_champion is True
-    assert champion.lifecycle_state == ModelLifecycleState.CHAMPION
-
-    # --- a real, RETAINED_INCONCLUSIVE ModelPromotion row was recorded for this exact pair ---
-    promotions = (
-        db_session.execute(select(ModelPromotion).where(ModelPromotion.decided_by_job_id == job.id))
-        .scalars()
-        .all()
-    )
-    assert len(promotions) == 1
-    assert promotions[0].verdict == PromotionVerdict.RETAINED_INCONCLUSIVE
-    assert promotions[0].challenger_model_version_id == shadow_challenger_id
-
+    assert report.retraining_job_id is None
     assert job.output_json["retraining_triggered"] is True
-    assert job.output_json["retraining_promotion_verdict"] == "retained_inconclusive"
+    assert job.output_json["retraining_alert_sent"] is True
 
-    # --- notable_findings_json/report_markdown fold in the retraining outcome ---
+    # --- notable_findings_json/report_markdown fold in the alert outcome ---
     retraining_finding = next(f for f in report.notable_findings_json if f["type"] == "retraining_triggered")
-    assert retraining_finding["model_training_status"] == "succeeded"
-    assert retraining_finding["promotion_verdict"] == "retained_inconclusive"
+    assert retraining_finding["alert_sent"] is True
+    assert retraining_finding["error"] is None
     assert "Retraining trigger" in report.report_markdown
-    assert str(training_job.id) in report.report_markdown
 
 
-def test_gameweek_review_retraining_failure_is_recorded_but_never_fails_the_review(
-    db_session, patched_fpl_client_optimization
+def test_gameweek_review_retraining_alert_failure_is_recorded_but_never_fails_the_review(
+    db_session, patched_fpl_client_optimization, monkeypatch
 ):
-    """A sustained MAE breach still triggers a MODEL_TRAINING attempt even when that nested training
-    run itself would fail (here: no player_features exist anywhere for the champion's own
-    feature_version, so MODEL_TRAINING refuses with NO_SEASONS_WITH_FEATURES) -- GAMEWEEK_REVIEW's
-    own primary work (outcome ingestion, failure attribution, the 4 signals) already succeeded by
-    this point, so the overall job result must still be SUCCEEDED, with the retraining failure
-    recorded on the report, never propagated as this run's own failure.
+    """A sustained MAE breach still attempts the push alert even when sending it fails (here: forced
+    via monkeypatch, mirroring test_gameweek_review_price_signal_recalibration_failure_is_recorded
+    _but_never_fails_the_review's own approach) -- GAMEWEEK_REVIEW's own primary work (outcome
+    ingestion, failure attribution, the 4 signals) already succeeded by this point, so the overall
+    job result must still be SUCCEEDED, with the alert failure recorded on the report, never
+    propagated as this run's own failure. See _alert_on_mae_breach's own docstring: this is the
+    concrete failure-isolation boundary it promises.
     """
+
+    def _boom(session, title, body, url=None):
+        raise RuntimeError("simulated push send failure")
+
+    monkeypatch.setattr("app.jobs.handlers.gameweek_review.send_push_to_all", _boom)
+
     season_id = _seed_players(db_session)
     season = db_session.get(Season, season_id)
     rules_config_id = _seed_rules_config_id(db_session, season_id)
-    champion_id = _create_global_champion_model_version(
-        db_session, season.label, _BASELINE_MAE, feature_version=_NO_FEATURES_SENTINEL_FEATURE_VERSION
-    )
+    model_version_id = _create_champion_model_version(db_session, season.label, _BASELINE_MAE)
 
     for fpl_event_id in _PRIOR_FPL_EVENT_IDS:
-        _seed_prior_degraded_gameweek(db_session, season_id, rules_config_id, fpl_event_id, champion_id)
-    audit = _seed_reviewed_gameweek(db_session, season_id, rules_config_id, champion_id)
+        _seed_prior_degraded_gameweek(db_session, season_id, rules_config_id, fpl_event_id, model_version_id)
+    audit = _seed_reviewed_gameweek(db_session, season_id, rules_config_id, model_version_id)
 
     job = execute_job(
         db_session,
@@ -838,27 +769,16 @@ def test_gameweek_review_retraining_failure_is_recorded_but_never_fails_the_revi
     ).scalar_one()
     assert mae_signal.threshold_breached is True
 
-    # --- the retraining ATTEMPT is recorded, and its own failure is visible, never masked ---
+    # --- the alert ATTEMPT is recorded, and its own failure is visible, never masked ---
     assert report.retraining_triggered is True
-    assert report.retraining_job_id is not None
-    training_job = db_session.get(Job, report.retraining_job_id)
-    assert training_job is not None
-    assert training_job.job_type == JobType.MODEL_TRAINING
-    assert training_job.status == JobStatus.FAILED
-    assert training_job.error_code == "NO_SEASONS_WITH_FEATURES"
+    assert report.retraining_job_id is None
+    assert job.output_json["retraining_triggered"] is True
+    assert job.output_json["retraining_alert_sent"] is False
 
     retraining_finding = next(f for f in report.notable_findings_json if f["type"] == "retraining_triggered")
-    assert retraining_finding["model_training_status"] == "failed"
+    assert retraining_finding["alert_sent"] is False
     assert retraining_finding["error"] is not None
-    assert retraining_finding["promotion_verdict"] is None
-
-    # --- no promotion-gate check ever ran (training never succeeded, so no SHADOW_CHALLENGER exists) ---
-    promotions = (
-        db_session.execute(select(ModelPromotion).where(ModelPromotion.decided_by_job_id == job.id))
-        .scalars()
-        .all()
-    )
-    assert promotions == []
+    assert "simulated push send failure" in retraining_finding["error"]
 
 
 # --- Milestone: price-signal auto-recalibration -----------------------------------------------

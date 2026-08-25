@@ -54,20 +54,27 @@ Milestone 7 Layer 6 (Recursive Learning Loop: BACKTEST job + the
 GAMEWEEK_REVIEW -> MODEL_TRAINING retraining-trigger wiring) adds
 ``retraining_triggered``/``retraining_job_id`` below. Once this run's own
 ``ROLLING_PROJECTION_MAE`` learning signal comes back with
-``threshold_breached=True``, ``app.jobs.handlers.gameweek_review`` triggers a
-``MODEL_TRAINING`` job and records the outcome here --
-``retraining_triggered=True`` and ``retraining_job_id`` pointing at that
-``jobs`` row. Both stay ``NULL`` for the overwhelmingly common case (no
+``threshold_breached=True``, ``app.jobs.handlers.gameweek_review`` records the
+outcome here. Both stay ``NULL`` for the overwhelmingly common case (no
 breach this run) and also for any row that never reached this final step
 (e.g. a ``FAILED`` row from an earlier failure) -- same "``NULL`` until this
 step actually runs" convention already used by
 ``recommendation_outcome_id``/``failure_attribution_count`` above.
-``retraining_triggered=True`` does NOT imply the triggered training (or any
-downstream promotion-gate check) succeeded -- see
-``summary_json``/``notable_findings_json``/``report_markdown`` for the full
-outcome (this job's own retraining-trigger step is explicitly failure-
-isolated from GAMEWEEK_REVIEW's own primary success; a training failure is
-recorded, never propagated as this row's own ``FAILED`` status).
+
+REVISED 2026-08-25: ``retraining_triggered=True`` no longer means a
+``MODEL_TRAINING`` job was launched -- real incident: running it in-process
+from whichever server runs GAMEWEEK_REVIEW (Render, in production)
+OOM-crashed the live web service mid-training (see
+``.github/workflows/train-production.yml``'s own docstring for the full
+incident). It now means a push notification was sent asking a human to
+manually retrain via that workflow instead. ``retraining_job_id`` is always
+``NULL`` for a new row going forward -- no job actually gets created by this
+step anymore; kept only for its own historical value on any older row from
+before this change. See ``summary_json``/``notable_findings_json``/
+``report_markdown`` for whether the alert itself sent successfully (this
+job's own retraining-alert step is explicitly failure-isolated from
+GAMEWEEK_REVIEW's own primary success; a failed notification is recorded,
+never propagated as this row's own ``FAILED`` status).
 """
 
 import uuid

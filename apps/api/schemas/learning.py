@@ -30,8 +30,10 @@ class LearningReportOut(BaseModel):
     report_markdown: str | None
     summary: dict[str, Any] | None
     notable_findings: list[dict[str, Any]] | None
-    # Milestone 7 Layer 6 -- see packages/database/models/learning_report.py's own docstring for
-    # the exact "NULL until the retraining-trigger step actually runs" convention these follow.
+    # Milestone 7 Layer 6, revised 2026-08-25 -- see packages/database/models/learning_report.py's
+    # own docstring: retraining_triggered now means "an MAE-breach push alert was sent", not "a
+    # MODEL_TRAINING job was launched" -- retraining_job_id is always NULL for a new row going
+    # forward (retraining is a manual, human-triggered decision now, never run from this step).
     retraining_triggered: bool | None
     retraining_job_id: uuid.UUID | None
     started_at: datetime
