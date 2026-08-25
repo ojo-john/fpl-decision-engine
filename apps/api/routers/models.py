@@ -30,6 +30,8 @@ from app.jobs.service import execute_job
 from apps.api.dependencies import get_db
 from apps.api.schemas.models import (
     ChampionModelOut,
+    ModelTrainingOut,
+    ModelTrainingRequest,
     StartProbabilityModelOut,
     StartProbabilityTrainingRequest,
 )
@@ -59,6 +61,42 @@ def get_champion_model(db: Session = Depends(get_db)) -> ChampionModelOut | JSON
         model_family=version.model_family.value,
         feature_version=version.feature_version,
         trained_at=version.trained_at,
+    )
+
+
+@router.post("/train", response_model=ModelTrainingOut)
+def run_model_training(
+    body: ModelTrainingRequest, db: Session = Depends(get_db)
+) -> ModelTrainingOut | JSONResponse:
+    """Triggers a real MODEL_TRAINING run. Previously only reachable via CLI (``scripts/run_job.py``)
+    or ``train.yml`` (which spins up its own throwaway CI database, never the real one this app's
+    own live deployment actually serves from -- see ARCHITECTURE.md's own "Cloud deployment"
+    section) -- added so a real retrain against the real, live database is actually reachable
+    remotely, mirroring ``POST /models/start-probability-training``'s own exact pattern."""
+    job = execute_job(
+        db,
+        job_type=JobType.MODEL_TRAINING,
+        parameters={"feature_version": body.feature_version} if body.feature_version is not None else None,
+        requested_by=body.requested_by,
+        trigger_type=TriggerType.API,
+    )
+    if job.status != JobStatus.SUCCEEDED:
+        return JSONResponse(
+            status_code=409,
+            content={"error_code": job.error_code, "error_message": job.error_message, "job_id": str(job.id)},
+        )
+
+    assert job.output_json is not None  # a SUCCEEDED job always has output_json
+    champion = job.output_json["champion"]
+    return ModelTrainingOut(
+        feature_version=job.output_json["feature_version"],
+        usable_seasons=job.output_json["usable_seasons"],
+        fold_count=job.output_json["fold_count"],
+        degenerate_single_season=job.output_json["degenerate_single_season"],
+        champion_model_version_id=uuid.UUID(champion["model_version_id"]),
+        champion_model_family=champion["model_family"],
+        promotion_outcome=champion["promotion_outcome"],
+        lifecycle_state=champion["lifecycle_state"],
     )
 
 

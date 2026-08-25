@@ -209,11 +209,22 @@ class ModelTrainingJobRunner(JobRunner):
             # a SHADOW_CHALLENGER instead -- real promotion happens later via
             # app.modeling.promotion.evaluate_promotion/decide_and_record_promotion. See this module's
             # own docstring for the full rationale.
-            champion_exists = (
-                session.execute(select(ModelVersion.id).where(ModelVersion.is_champion.is_(True)).limit(1))
-                .scalars()
-                .first()
-                is not None
+            #
+            # "Champion exists" additionally requires it to be USABLE: a baseline family (no artifact
+            # needed) or a tree family with real artifact_bytes present. A flagged champion whose
+            # artifact_bytes is NULL (see ModelVersion.artifact_bytes's own docstring for the real
+            # production incident this class of state comes from -- a redeploy wiping a
+            # local-disk-only artifact before this column existed) is producing zero live benefit
+            # right now regardless of what the flag says, so it is treated exactly like the bootstrap
+            # case: this run's winner is promoted immediately, self-healing the broken champion,
+            # rather than leaving it in place indefinitely while a challenger shadow-evaluates for
+            # real gameweeks it may take weeks to accumulate.
+            existing_champion = session.execute(
+                select(ModelVersion).where(ModelVersion.is_champion.is_(True)).limit(1)
+            ).scalar_one_or_none()
+            champion_exists = existing_champion is not None and (
+                existing_champion.model_family in BASELINE_MODEL_FAMILIES
+                or existing_champion.artifact_bytes is not None
             )
             if champion_exists:
                 champion_version.lifecycle_state = ModelLifecycleState.SHADOW_CHALLENGER
@@ -222,6 +233,14 @@ class ModelTrainingJobRunner(JobRunner):
                 all_versions = session.execute(select(ModelVersion)).scalars().all()
                 set_exactly_one_champion(all_versions, champion_version)
                 champion_version.lifecycle_state = ModelLifecycleState.CHAMPION
+                # set_exactly_one_champion only flips is_champion -- a self-healed, dethroned
+                # BROKEN champion (existing_champion was flagged but unusable, see above) still
+                # needs its own lifecycle_state moved off CHAMPION explicitly, mirroring
+                # app.modeling.promotion.decide_and_record_promotion's own identical
+                # previous_champion.lifecycle_state = RETIRED_CHAMPION step on a real promotion.
+                # The true bootstrap case (existing_champion is None) has nothing to retire.
+                if existing_champion is not None:
+                    existing_champion.lifecycle_state = ModelLifecycleState.RETIRED_CHAMPION
                 promotion_outcome = "champion"
 
             session.commit()

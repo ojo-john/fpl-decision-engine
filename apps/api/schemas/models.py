@@ -17,6 +17,34 @@ class ChampionModelOut(BaseModel):
     trained_at: datetime
 
 
+class ModelTrainingRequest(BaseModel):
+    """See app.jobs.handlers.model_training's own module docstring.
+
+    ``requested_by`` mirrors every other job-trigger request schema's own optional
+    "who asked for this" field (e.g. BacktestRequest)."""
+
+    feature_version: int | None = None
+    requested_by: str | None = None
+
+
+class ModelTrainingOut(BaseModel):
+    """See app.jobs.handlers.model_training's own module docstring for ``promotion_outcome``'s two
+    possible values: ``"champion"`` (this run's winner is now live -- either a true bootstrap, no
+    champion existed before, or a self-heal of a previously-flagged champion whose artifact was
+    missing/unusable) or ``"shadow_challenger"`` (a real, usable champion already exists; this run's
+    winner is queued for real, retrospective shadow evaluation instead -- see
+    app.modeling.promotion)."""
+
+    feature_version: int
+    usable_seasons: list[str]
+    fold_count: int
+    degenerate_single_season: bool
+    champion_model_version_id: uuid.UUID
+    champion_model_family: str
+    promotion_outcome: str
+    lifecycle_state: str
+
+
 class StartProbabilityTrainingRequest(BaseModel):
     """See app.jobs.handlers.start_probability_training's own module docstring.
 

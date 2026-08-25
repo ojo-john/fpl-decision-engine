@@ -13,6 +13,7 @@ module.
 """
 
 import io
+from datetime import UTC, datetime
 from pathlib import Path
 
 import joblib
@@ -289,6 +290,56 @@ def test_model_training_second_run_with_existing_champion_creates_shadow_challen
     # Every other one of the second run's 7 candidates stays a plain CANDIDATE.
     non_winners = [v for v in second_versions if v.id != shadow_challengers[0].id]
     assert all(v.lifecycle_state == ModelLifecycleState.CANDIDATE for v in non_winners)
+
+
+def test_model_training_self_heals_a_champion_flagged_but_missing_its_artifact(
+    db_session, patched_historical_fpl_client
+):
+    """Real production incident (2026-08-24): a tree-family champion can be flagged is_champion=True
+    with artifact_bytes=NULL (a redeploy wiped its local-disk-only artifact before that column
+    existed -- see ModelVersion.artifact_bytes's own docstring). Producing zero live benefit despite
+    the flag, this is treated exactly like the bootstrap case: the next training run's own winner is
+    promoted immediately, and the broken champion is retired -- not left in place indefinitely while
+    a challenger shadow-evaluates for real gameweeks it may take weeks to accumulate.
+    """
+    _clear_existing_champion(db_session)
+    _seed_historical_season(db_session)
+    broken_champion = ModelVersion(
+        model_name="broken-champion",
+        model_family=ModelFamily.RANDOM_FOREST,
+        feature_version=1,
+        target_variable="total_points",
+        training_seasons_json=["2022-23"],
+        artifact_uri="models/some_old_pre_fix_row/model.joblib",
+        artifact_bytes=None,
+        is_champion=True,
+        lifecycle_state=ModelLifecycleState.CHAMPION,
+        trained_at=datetime.now(UTC),
+    )
+    db_session.add(broken_champion)
+    db_session.commit()
+    db_session.refresh(broken_champion)
+
+    job = _run_model_training_job(db_session)
+
+    assert job.status == JobStatus.SUCCEEDED
+    assert job.output_json["champion"]["promotion_outcome"] == "champion"
+    assert job.output_json["champion"]["lifecycle_state"] == "champion"
+
+    db_session.refresh(broken_champion)
+    assert broken_champion.is_champion is False
+    assert broken_champion.lifecycle_state == ModelLifecycleState.RETIRED_CHAMPION
+
+    new_champion = db_session.execute(
+        select(ModelVersion).where(ModelVersion.is_champion.is_(True))
+    ).scalar_one()
+    assert new_champion.id != broken_champion.id
+    assert new_champion.lifecycle_state == ModelLifecycleState.CHAMPION
+
+    champions = (
+        db_session.execute(select(ModelVersion).where(ModelVersion.is_champion.is_(True))).scalars().all()
+    )
+    assert len(champions) == 1
 
 
 def test_model_training_shadow_challenger_replaces_prior_shadow_challenger_lifecycle_but_not_champion(

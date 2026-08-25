@@ -89,7 +89,7 @@ the job types that have an HTTP trigger.
 | `LEAGUE_SYNC` | `league_sync.py` | ✅ | `POST /leagues/sync` | |
 | `TEAM_STRENGTH_SYNC` | `team_strength_sync.py` | ✅ | — | CLI (`scripts/run_job.py`) only, no scheduled trigger yet |
 | `FEATURE_GENERATION` | `feature_generation.py` | ✅ | — | `make features`, `feature-generation.yml`, `train.yml` |
-| `MODEL_TRAINING` | `model_training.py` | ✅ | — | `make train`, `train.yml`; also triggered **in-process** by `GAMEWEEK_REVIEW` on a sustained MAE breach |
+| `MODEL_TRAINING` | `model_training.py` | ✅ | `POST /models/train` | `make train`, `train.yml`; also triggered **in-process** by `GAMEWEEK_REVIEW` on a sustained MAE breach |
 | `START_PROBABILITY_MODEL_TRAINING` | `start_probability_training.py` | ✅ | `POST /models/start-probability-training` | a SEPARATE, additive auxiliary classifier — never touches `model_versions`/the champion; see "Modeling / learning loop" below |
 | `PROJECTION_GENERATION` | — | ❌ | — | genuinely unbuilt; `project_player`/`project_player_with_champion` in `app/optimization/projection.py` are called directly by other jobs instead |
 | `SQUAD_OPTIMIZATION` | `squad_optimization.py` | ✅ | `POST /optimize/initial-squad` | |
@@ -946,6 +946,27 @@ new code needed, just running the existing pipeline.
     any live code path anymore. **A pre-existing champion trained before
     this migration has `artifact_bytes = NULL`** — a fresh `MODEL_TRAINING`
     run is required once to get a durably-stored champion again.
+  - **Self-healing promotion**: a champion flagged `is_champion=True` but
+    with no usable artifact (a baseline family needs none; a tree family
+    with `artifact_bytes IS NULL` is exactly the broken state above) is
+    treated identically to the true bootstrap case (no champion at all) —
+    the next `MODEL_TRAINING` run's own winner is promoted immediately
+    (`lifecycle_state=CHAMPION`) rather than queued as a `SHADOW_CHALLENGER`
+    behind a champion that was producing zero live benefit anyway. The
+    broken champion is explicitly retired (`lifecycle_state=
+    RETIRED_CHAMPION`, `is_champion=False`), mirroring
+    `app.modeling.promotion.decide_and_record_promotion`'s own identical
+    step on a real gate-evaluated promotion — `set_exactly_one_champion`
+    only ever flips `is_champion`, never `lifecycle_state`, so this needed
+    its own explicit line (a previously-latent gap: the true bootstrap case
+    never had an old champion row to retire in the first place). **`POST
+    /models/train`** (added alongside this fix) is the first HTTP trigger
+    `MODEL_TRAINING` has ever had — mirrors `POST
+    /models/start-probability-training`'s exact pattern — since `train.yml`
+    only ever touches a throwaway CI database (see "Cloud deployment" above
+    for the identical, established reason `scheduled-dispatcher.yml`/
+    `ingest.yml` never touch the real one either), leaving no remote way to
+    actually retrain against the real, live database without this.
 - **`START_PROBABILITY_MODEL_TRAINING`** (`app/jobs/handlers
   /start_probability_training.py`, `app/modeling/start_probability.py`): a
   SEPARATE, additive auxiliary classifier — P(player starts this gameweek,
