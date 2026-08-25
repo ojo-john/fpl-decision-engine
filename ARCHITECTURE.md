@@ -64,7 +64,7 @@ tests/unit/ (60 files)  No DB
 tests/integration/ (60) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
 tests/fixtures/          Committed FPL API samples (fpl_api/) + a small real historical CSV set (historical/2023-24/)
-.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml, historical-ingest.yml, feature-generation.yml, train.yml, league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
+.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml, historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
 .github/state/            current-squad.json, known-notes-snapshot.json (both consumed by scout-watch.yml; league-814682-watch.json consumed by league-watch.yml)
 ```
 
@@ -1378,6 +1378,15 @@ because a human manually ran `scripts/run_job.py` or hit an API endpoint — the
 at all for the real thing, only for CI self-tests against ephemeral databases. `league-watch.yml`/
 `scout-watch.yml` (below) are the only genuinely-automated things that existed before this, and
 they deliberately avoid the problem by never touching the database at all.
+
+`.github/workflows/train-production.yml` (2026-08-25) is the one deliberate exception to "GitHub
+Actions never touches a real database" — `workflow_dispatch` only, connects to the REAL, live
+database via a `PROD_DATABASE_URL` repository secret (see `docs/deployment.md`'s own "Retraining
+the model against real data" section), a genuinely separate workflow file from `train.yml` rather
+than a toggle on it, so the real-database intent is unambiguous from the workflow name alone. Real
+motivation: `MODEL_TRAINING` run through Render's own `POST /models/train` OOM-crashed the
+free-tier web service (512MB RAM) mid-training, twice — GitHub's `ubuntu-latest` runners have
+~7GB RAM, comfortably enough for this specific workload with no model-quality tradeoff needed.
 
 The real scheduling logic lives in `app.scheduling.tick` (`run_tick`, plus its pure/testable
 decision functions — `gameweeks_needing_review`, `is_interval_due`,

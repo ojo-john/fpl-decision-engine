@@ -1,0 +1,183 @@
+name: Train (production database)
+
+# Manual training runner (workflow_dispatch ONLY -- never on push/schedule) that connects to the
+# REAL, live production database instead of a throwaway ephemeral Postgres container. Real gap
+# this closes: train.yml (this repo's other training workflow) always spins up its own empty
+# Postgres service container, same pattern as ingest.yml/historical-ingest.yml/
+# feature-generation.yml -- none of those workflows have ever touched the real database this app's
+# live Render deployment actually serves from (see ARCHITECTURE.md's own "Cloud deployment"
+# section). That was fine for DATA_INGESTION (the real scheduler tick already covers it) and for
+# testing the training pipeline itself -- but MODEL_TRAINING previously had NO way to run against
+# real production data except locally, from a machine with DATABASE_URL pointed at the real
+# Supabase instance. Kept as a genuinely separate workflow file from train.yml (not a toggle on
+# it) so the real-database intent is unambiguous from the workflow name alone -- accidentally
+# running the wrong one is a real, meaningfully different mistake to guard against here.
+#
+# Real incident this exists for (2026-08-25): retraining directly through Render's own
+# POST /models/train OOM-crashed the free-tier web service (512MB RAM) mid-training, twice, even
+# after cutting tree ensemble sizes 75% (see app.modeling.candidates' own RANDOM_FOREST_N_ESTIMATORS/
+# GRADIENT_BOOSTING_MAX_ITER history). GitHub Actions' standard ubuntu-latest runners have ~7GB RAM
+# -- more than enough headroom, with no model-quality tradeoff required.
+#
+# Requires a `PROD_DATABASE_URL` repository secret (Settings -> Secrets and variables -> Actions ->
+# New repository secret) pointing at the real Supabase connection string -- see docs/deployment.md
+# for the exact setup. Never echoed/logged anywhere in this workflow; only ever referenced via
+# `env:`, which is how GitHub Actions' own automatic secret-masking works.
+on:
+  workflow_dispatch:
+    inputs:
+      season_label:
+        description: "Season to generate features for before training (e.g. '2023-24'), or 'all'"
+        required: true
+        type: string
+        default: "all"
+      requested_by:
+        description: "Who is requesting this run (defaults to the triggering actor)"
+        required: false
+        default: ""
+
+jobs:
+  train-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      - name: Verify PROD_DATABASE_URL is configured
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::PROD_DATABASE_URL repository secret is not set -- see docs/deployment.md."
+            exit 1
+          fi
+
+      - name: Run migrations
+        run: uv run alembic upgrade head
+
+      - name: Resolve requested_by
+        id: requested_by
+        run: |
+          value="${{ github.event.inputs.requested_by }}"
+          if [ -z "$value" ]; then
+            value="${{ github.actor }}"
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
+      - name: Run feature_generation then model_training against the REAL database
+        run: |
+          uv run python - <<'EOF' > job_summary.json
+          import json
+
+          from app.jobs.service import execute_job
+          from packages.database.session import SessionLocal
+          from packages.domain.jobs import JobType, TriggerType
+
+          session = SessionLocal()
+          try:
+              features_job = execute_job(
+                  session,
+                  job_type=JobType.FEATURE_GENERATION,
+                  parameters={"season_label": "${{ github.event.inputs.season_label }}"},
+                  requested_by="${{ steps.requested_by.outputs.value }}",
+                  trigger_type=TriggerType.GITHUB_MANUAL,
+                  git_commit_sha="${{ github.sha }}",
+              )
+              training_job = None
+              if features_job.status.value == "succeeded":
+                  training_job = execute_job(
+                      session,
+                      job_type=JobType.MODEL_TRAINING,
+                      requested_by="${{ steps.requested_by.outputs.value }}",
+                      trigger_type=TriggerType.GITHUB_MANUAL,
+                      git_commit_sha="${{ github.sha }}",
+                  )
+          finally:
+              session.close()
+
+          def _payload(job):
+              if job is None:
+                  return None
+              return {
+                  "job_id": str(job.id),
+                  "job_type": job.job_type.value if hasattr(job.job_type, "value") else job.job_type,
+                  "status": job.status.value if hasattr(job.status, "value") else job.status,
+                  "started_at": job.started_at.isoformat() if job.started_at else None,
+                  "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                  "error_code": job.error_code,
+                  "error_message": job.error_message,
+                  "output": job.output_json,
+              }
+
+          payload = {"features": _payload(features_job), "training": _payload(training_job)}
+          print(json.dumps(payload))
+          EOF
+          cat job_summary.json
+          status=$(python -c "
+          import json
+          job = json.load(open('job_summary.json'))
+          features_ok = job['features'] is not None and job['features']['status'] == 'succeeded'
+          training_ok = job['training'] is not None and job['training']['status'] == 'succeeded'
+          print('succeeded' if features_ok and training_ok else 'failed')
+          ")
+          if [ "$status" != "succeeded" ]; then
+            exit 1
+          fi
+
+      - name: Append job summary
+        if: always()
+        run: |
+          python - <<'EOF'
+          import json
+          import os
+
+          with open("job_summary.json") as f:
+              job = json.load(f)
+
+          features = job.get("features") or {}
+          training = job.get("training") or {}
+          training_output = training.get("output") or {}
+          candidates = training_output.get("candidates") or {}
+          champion = training_output.get("champion") or {}
+
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+          with open(summary_path, "a") as summary:
+              summary.write("## Train (production database) Job Result\n\n")
+              summary.write("### feature_generation\n\n")
+              summary.write("| Field | Value |\n| --- | --- |\n")
+              summary.write(f"| job_id | {features.get('job_id')} |\n")
+              summary.write(f"| status | {features.get('status')} |\n")
+              summary.write(f"| error_code | {features.get('error_code')} |\n")
+              summary.write("\n### model_training\n\n")
+              summary.write("| Field | Value |\n| --- | --- |\n")
+              summary.write(f"| job_id | {training.get('job_id')} |\n")
+              summary.write(f"| status | {training.get('status')} |\n")
+              summary.write(f"| error_code | {training.get('error_code')} |\n")
+              summary.write(f"| champion_family | {champion.get('model_family')} |\n")
+              summary.write(f"| promotion_outcome | {champion.get('promotion_outcome')} |\n")
+              summary.write(f"| lifecycle_state | {champion.get('lifecycle_state')} |\n")
+              summary.write("\n")
+              if candidates:
+                  summary.write(
+                      "| Candidate | Folds Scored | Aggregate MAE | Aggregate Spearman |\n"
+                      "| --- | --- | --- | --- |\n"
+                  )
+                  for name, metrics in candidates.items():
+                      summary.write(
+                          f"| {name} | {metrics.get('fold_count_scored')} | "
+                          f"{metrics.get('aggregate_mae')} | {metrics.get('aggregate_spearman')} |\n"
+                      )
+          EOF
+
+      - name: Upload job summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: train-production-job-summary
+          path: job_summary.json

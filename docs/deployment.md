@@ -151,6 +151,36 @@ URL) produced by the step before it.
    should return `{"status":"tick_completed"}` with a `200` -- safe to run this manually any time
    to force an immediate check rather than waiting for cron-job.org's own schedule.
 
+## Retraining the model against real data
+
+`POST /models/train` (via Render) runs `MODEL_TRAINING` in-process on the free-tier web service --
+real incident (2026-08-25): this OOM-crashed the service (512MB RAM) mid-training, twice, even
+after cutting tree ensemble sizes 75% (see `app.modeling.candidates`' own
+`RANDOM_FOREST_N_ESTIMATORS`/`GRADIENT_BOOSTING_MAX_ITER` history) -- there just isn't enough free
+RAM there for this specific workload. Use the **Train (production database)** GitHub Actions
+workflow instead (`.github/workflows/train-production.yml`) -- GitHub's own `ubuntu-latest` runners
+have ~7GB RAM, comfortably enough, no model-quality tradeoff required.
+
+One-time setup:
+
+1. In your GitHub repo, go to **Settings -> Secrets and variables -> Actions -> New repository
+   secret**.
+2. Name: `PROD_DATABASE_URL`. Value: the exact same real Supabase connection string you set as
+   Render's own `DATABASE_URL` (step 1 above).
+
+To run it: **Actions tab -> Train (production database) -> Run workflow**. `season_label` defaults
+to `"all"` (every season with ingested `player_gameweek_stats`) -- leave it unless you specifically
+want to retrain against just one season. Check the run's own Job Summary (or the uploaded
+`train-production-job-summary` artifact) for the real `promotion_outcome` (`"champion"` -- promoted
+immediately -- vs `"shadow_challenger"` -- a real, usable champion already existed, this run queued
+a challenger instead) and per-candidate `aggregate_mae`/`aggregate_spearman`.
+
+This workflow's `DATABASE_URL` points at the same real, persistent database Render's own API
+serves from (unlike `train.yml`/`ingest.yml`/`historical-ingest.yml`/`feature-generation.yml`,
+which all spin up their own throwaway, empty Postgres service container inside the runner -- see
+`ARCHITECTURE.md`'s own "Cloud deployment" section for why) -- a real `MODEL_TRAINING` run here
+genuinely updates what your live dashboard serves.
+
 ## What this does NOT replace
 
 The local `docker compose up` + `scripts/scheduler.py` setup (see `docs/operations.md`) is still
