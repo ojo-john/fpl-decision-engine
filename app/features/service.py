@@ -81,8 +81,11 @@ FEATURE_DATA_SOURCE = "feature_engineering_v1"
 # round trip. Chunking the IN-list keeps each individual round trip small regardless of how much
 # history has accumulated in total -- same real precedent as
 # app.ingestion.normalization._PRICE_SIGNAL_INSERT_CHUNK_SIZE for an INSERT that hit the same
-# class of problem.
-_CROSS_SEASON_PLAYER_ID_CHUNK_SIZE = 200
+# class of problem. First tried 200 -- STILL timed out against the real database (confirmed via
+# the real error's own bind-parameter count): each of these players can carry many seasons x ~38
+# gameweeks of history, so the RESULT SET size per chunk (not just IN-list matching cost) is the
+# real driver -- cut much smaller.
+_CROSS_SEASON_PLAYER_ID_CHUNK_SIZE = 25
 
 
 def _resolve_elo_differential(
