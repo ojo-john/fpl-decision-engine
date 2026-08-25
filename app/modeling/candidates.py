@@ -97,19 +97,20 @@ RANDOM_STATE = 42
 # Shallow — chosen for interpretability over raw accuracy.
 DECISION_TREE_MAX_DEPTH = 5
 
-# 200 -> 50 (2026-08-25): real production incident -- walk-forward-fitting both tree ensembles at
-# their original size OOM-crashed the live Render free-tier web service (512MB RAM) mid-training,
-# taking the whole API down until Render restarted it. Most of a random forest's accuracy gain
-# happens in its first ~50 trees (well-established diminishing-returns behavior for tabular data at
-# this scale) -- MODEL_TRAINING's own walk-forward validation still empirically measures and
-# compares every candidate's real MAE/Spearman against the 4 baseline formulas, so a genuine
-# accuracy regression from this cut would simply lose the champion slot to a cheaper candidate
-# rather than silently degrading live recommendations.
-RANDOM_FOREST_N_ESTIMATORS = 50
+# Real production incident (2026-08-25): walk-forward-fitting both tree ensembles at these
+# original sizes OOM-crashed the live Render free-tier web service (512MB RAM) mid-training,
+# taking the whole API down until Render restarted it, when MODEL_TRAINING ran there via
+# POST /models/train. Briefly cut 200 -> 50 as a same-day mitigation, then reverted back to 200
+# once real training moved to `.github/workflows/train-production.yml` (GitHub's ubuntu-latest
+# runners have ~7GB RAM) -- the OOM was from TRAINING (walk-forward validation fitting multiple
+# full-size candidates simultaneously against the whole historical dataset), not from Render
+# merely holding one already-fitted champion in memory for live inference afterward (a 200-tree
+# artifact is only a few MB once deserialized) -- so full size is safe again as long as
+# MODEL_TRAINING itself never runs on Render again.
+RANDOM_FOREST_N_ESTIMATORS = 200
 RANDOM_FOREST_MAX_DEPTH = 8
 
-# Same real incident/reasoning as RANDOM_FOREST_N_ESTIMATORS above.
-GRADIENT_BOOSTING_MAX_ITER = 50
+GRADIENT_BOOSTING_MAX_ITER = 200
 GRADIENT_BOOSTING_MAX_DEPTH = 5
 GRADIENT_BOOSTING_LEARNING_RATE = 0.05
 

@@ -956,14 +956,17 @@ new code needed, just running the existing pipeline.
     related real incident, same session: the first real retrain attempt
     against the live database (via the new endpoint below) OOM-crashed the
     Render free-tier web service (512MB RAM) mid-training, taking the whole
-    API down until Render restarted it -- `app.modeling.candidates`'
-    `RANDOM_FOREST_N_ESTIMATORS`/`GRADIENT_BOOSTING_MAX_ITER` were both cut
-    200 -> 50 (most of a random forest's accuracy gain happens in its first
-    ~50 trees for tabular data at this scale; walk-forward validation still
-    empirically measures every candidate against the 4 baseline formulas, so
-    a genuine regression from this cut loses the champion slot to a cheaper
-    candidate rather than silently degrading live recommendations). The
-    broken champion is explicitly retired (`lifecycle_state=
+    API down until Render restarted it. `app.modeling.candidates`'
+    `RANDOM_FOREST_N_ESTIMATORS`/`GRADIENT_BOOSTING_MAX_ITER` were briefly
+    cut 200 -> 50 as a same-day mitigation, then reverted back to 200 once
+    real training moved to `.github/workflows/train-production.yml`
+    (GitHub's `ubuntu-latest` runners have ~7GB RAM) — the OOM was from
+    TRAINING (walk-forward validation fitting multiple full-size candidates
+    simultaneously against the whole historical dataset), not from Render
+    merely holding one already-fitted champion in memory for live inference
+    afterward, so full size is safe again as long as `MODEL_TRAINING` itself
+    never runs on Render again — see that constant's own code comment for
+    the full history. The broken champion is explicitly retired (`lifecycle_state=
     RETIRED_CHAMPION`, `is_champion=False`), mirroring
     `app.modeling.promotion.decide_and_record_promotion`'s own identical
     step on a real gate-evaluated promotion — `set_exactly_one_champion`
