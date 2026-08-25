@@ -1427,6 +1427,18 @@ on the free plan, including after free-tier cold-start wake-ups. Local `docker-c
 overrides `command:` for the `api`/`scheduler` services, so this default `CMD` never runs there
 and local dev is unaffected.
 
+**Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
+(a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)
+-- with no loading state, a Render free-tier cold-start wake (30-60s after 15 minutes idle) rendered
+as a genuinely blank page while the request was in flight. Especially confusing in the installed
+PWA's standalone view (no browser chrome/spinner to hint anything is happening, unlike a regular
+Safari tab) -- a real user hit this live (2026-08-24), reported "the page just goes blank" opening
+from their Home Screen icon, confirmed via direct testing to be cold-start wait time, not a crash
+(reloading after ~15-20s with a warm backend loaded fine). `apps/web/app/(app)/loading.tsx` fixes
+this: `AppLayout`'s own `<Nav />` has no async work of its own so it still renders immediately, and
+Next's automatic Suspense boundary around `{children}` now shows a "Loading..." card instead of
+blank space while the page's own fetch is in flight.
+
 ## Proactive push alerting (Milestone 9, all 4 layers: `push_subscriptions`, `app/notifications/`, `apps/api/routers/push.py`, `app.scheduling.tick`'s failure alerts, `DEADLINE_REMINDER`, `PLAYER_ALERT_CHECK`)
 
 Real gap this closes: nothing in this system ever proactively told the manager anything — every
@@ -1436,7 +1448,18 @@ someone opened the dashboard and went looking. Caught live (2026-08-23): the rea
 noticed.
 
 Web Push via an installable PWA, not a native app or SMS — free, no phone number, works via "Add
-to Home Screen" on the existing dashboard. This is a single-shared-secret system with **no
+to Home Screen" on the existing dashboard. iOS Safari genuinely has no `window.PushManager` in a
+regular browser tab (Apple's real, intentional restriction: Web Push there requires the page to be
+"Added to Home Screen" and running standalone) -- `push-notification-toggle.tsx`'s own
+`isIOSSafariNotInstalled()` detects this and shows install guidance instead of silently rendering
+nothing (a real bug caught live 2026-08-24: a user on an iPhone saw no toggle at all and no
+indication why). One further real discovery from that same session: iOS Safari's own "Request
+Desktop Site" toggle (a regular per-site Safari setting, unrelated to installation) also exposes
+`PushManager` in a normal tab -- confirmed working end-to-end (real subscribe, real
+`POST /push/test`, real notification received) without ever installing to Home Screen. Not
+Apple-documented behavior, and not the primary supported path (a desktop-rendered mobile page is a
+worse everyday browsing experience), but real and worth knowing if "Add to Home Screen" alone isn't
+landing pushes for some reason. This is a single-shared-secret system with **no
 per-user or per-device identity** (see `apps/web/lib/session.ts`'s own docstring: every session
 cookie is interchangeable, no session store), so `push_subscriptions` is a flat list of this
 manager's own devices, keyed purely by each subscription's own `endpoint` URL — every real alert
