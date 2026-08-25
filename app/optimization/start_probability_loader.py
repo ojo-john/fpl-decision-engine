@@ -10,10 +10,10 @@ that run's own real backtest metrics. That is the intended, safe default: this w
 inert (zero effect on any live projection) until that explicit activation decision is made.
 """
 
+import io
 import logging
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import joblib
@@ -56,22 +56,21 @@ def load_active_start_probability_model(session: Session) -> LoadedStartProbabil
     if version is None:
         return None
 
-    if version.artifact_uri is None:
+    if version.artifact_bytes is None:
         logger.warning(
-            "start_probability_models row=%s is flagged active but has no artifact_uri; "
+            "start_probability_models row=%s is flagged active but has no stored artifact_bytes; "
             "no start-probability adjustment will be applied.",
             version.id,
         )
         return None
 
     try:
-        sklearn_model = joblib.load(Path(version.artifact_uri))
+        sklearn_model = joblib.load(io.BytesIO(version.artifact_bytes))
     except Exception:  # noqa: BLE001 - loading must never block a live projection
         logger.warning(
-            "Active start_probability_models row=%s artifact at %r failed to load; "
+            "Active start_probability_models row=%s artifact_bytes failed to load; "
             "no start-probability adjustment will be applied.",
             version.id,
-            version.artifact_uri,
             exc_info=True,
         )
         return None

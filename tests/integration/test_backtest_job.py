@@ -111,6 +111,9 @@ def _seed_manual_tree_model_version(db_session, tmp_path, season_label: str = "2
         target_variable="total_points",
         training_seasons_json=[season_label],
         artifact_uri=str(artifact_path),
+        # The sole source BACKTEST actually loads from -- see ModelVersion.artifact_uri's own
+        # docstring on why a local filesystem path alone is never authoritative.
+        artifact_bytes=artifact_path.read_bytes(),
         trained_at=datetime.now(UTC),
     )
     db_session.add(version)
@@ -190,6 +193,59 @@ def test_backtest_produces_real_metrics_for_a_tree_family_model(
 
     # The artifact itself is untouched (never refit) -- still the same file, still loadable.
     assert Path(model_version.artifact_uri).is_file()
+
+
+# --- Missing/corrupt artifact_bytes fails cleanly, never a raw unhandled exception -----------------
+# Real production incident (2026-08-24): a tree-family champion's artifact was lost after a Render
+# redeploy wiped its local-disk-only artifact_uri, and POST /jobs/backtest surfaced a raw
+# FileNotFoundError to a real user instead of a clean job failure. artifact_bytes (this table's own
+# durable, DB-stored column -- see ModelVersion's own docstring) is what this class of failure now
+# looks like: still possible (a row from before this column existed, or corrupted bytes), but always
+# a clean JobResult.FAILED, never an unhandled exception.
+
+
+def test_backtest_fails_cleanly_when_artifact_bytes_is_missing(db_session, patched_historical_fpl_client):
+    _seed_historical_season(db_session)
+    version = ModelVersion(
+        model_name="backtest-test-tree-no-bytes",
+        model_family=ModelFamily.DECISION_TREE,
+        feature_version=1,
+        target_variable="total_points",
+        training_seasons_json=["2023-24"],
+        artifact_uri="models/some_old_pre_fix_row/model.joblib",
+        artifact_bytes=None,
+        trained_at=datetime.now(UTC),
+    )
+    db_session.add(version)
+    db_session.commit()
+    db_session.refresh(version)
+
+    job = _run_backtest_job(db_session, version.id)
+
+    assert job.status == JobStatus.FAILED
+    assert job.error_code == "MODEL_ARTIFACT_MISSING"
+
+
+def test_backtest_fails_cleanly_when_artifact_bytes_is_corrupt(db_session, patched_historical_fpl_client):
+    _seed_historical_season(db_session)
+    version = ModelVersion(
+        model_name="backtest-test-tree-corrupt-bytes",
+        model_family=ModelFamily.DECISION_TREE,
+        feature_version=1,
+        target_variable="total_points",
+        training_seasons_json=["2023-24"],
+        artifact_uri="models/corrupt/model.joblib",
+        artifact_bytes=b"not a real joblib artifact",
+        trained_at=datetime.now(UTC),
+    )
+    db_session.add(version)
+    db_session.commit()
+    db_session.refresh(version)
+
+    job = _run_backtest_job(db_session, version.id)
+
+    assert job.status == JobStatus.FAILED
+    assert job.error_code == "MODEL_ARTIFACT_LOAD_FAILED"
 
 
 # --- Never retrains, never mutates the original training run's own audit trail ---------------------

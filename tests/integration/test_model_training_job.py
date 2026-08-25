@@ -12,6 +12,7 @@ multi-season backfill has been run. No real network access happens in this
 module.
 """
 
+import io
 from pathlib import Path
 
 import joblib
@@ -172,8 +173,16 @@ def test_model_training_champion_artifact_loads_and_predicts_if_tree_family(
 
         loaded_model = joblib.load(artifact_path)
         assert hasattr(loaded_model, "predict")
+
+        # artifact_bytes is the sole authoritative source champion_loader/backtest actually read
+        # from (a local filesystem path never survives a real Render redeploy -- see
+        # ModelVersion.artifact_uri's own docstring) -- must be independently loadable too.
+        assert champion.artifact_bytes is not None
+        loaded_from_bytes = joblib.load(io.BytesIO(champion.artifact_bytes))
+        assert hasattr(loaded_from_bytes, "predict")
     else:
         assert champion.artifact_uri is None
+        assert champion.artifact_bytes is None
 
 
 def test_model_training_rerun_creates_a_fresh_snapshot_not_an_upsert(

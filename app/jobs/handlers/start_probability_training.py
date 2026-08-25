@@ -136,6 +136,7 @@ class StartProbabilityModelTrainingJobRunner(JobRunner):
                     "random_state": sp.RANDOM_STATE,
                 },
                 artifact_uri=artifact_info["artifact_uri"],
+                artifact_bytes=artifact_info["artifact_bytes"],
                 artifact_checksum_sha256=artifact_info["artifact_checksum_sha256"],
                 aggregate_auc=_to_decimal(aggregate_spearman([fm["auc"] for fm in fold_metrics])),
                 aggregate_accuracy=_to_decimal(aggregate_mae([fm["accuracy"] for fm in fold_metrics])),
@@ -302,10 +303,17 @@ class StartProbabilityModelTrainingJobRunner(JobRunner):
         model = sp.build_start_probability_classifier()
         model.fit(x_all, y_all)
 
+        # Local-dev convenience only, never authoritative -- see ModelVersion.artifact_uri's own
+        # docstring: a local filesystem path never survives a real Render redeploy.
         model_dir = MODELS_DIR / f"start_probability_{trained_at:%Y%m%dT%H%M%SZ}"
         model_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = model_dir / "model.joblib"
         joblib.dump(model, artifact_path)
 
-        checksum = sha256_hex(artifact_path.read_bytes())
-        return {"artifact_uri": str(artifact_path), "artifact_checksum_sha256": checksum}
+        artifact_bytes = artifact_path.read_bytes()
+        checksum = sha256_hex(artifact_bytes)
+        return {
+            "artifact_uri": str(artifact_path),
+            "artifact_bytes": artifact_bytes,
+            "artifact_checksum_sha256": checksum,
+        }

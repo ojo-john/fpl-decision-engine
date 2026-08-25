@@ -922,6 +922,30 @@ new code needed, just running the existing pipeline.
   surfaces it; `app/optimization/projection.project_player_with_champion`
   uses it when present, falling back to the plain heuristic
   (`ep_next` → `points_per_game` → 0) otherwise.
+  - **`model_versions.artifact_bytes`** (migration 0046) is the sole
+    authoritative artifact source — `champion_loader.py`/`backtest.py` both
+    load from it, never from `artifact_uri`. Real production incident
+    (2026-08-24): `artifact_uri` originally pointed ONLY at a local
+    filesystem path (`app/jobs/handlers/model_training.py`'s own
+    `MODELS_DIR = Path("models")`) — durable on a long-lived local/
+    docker-compose container, but Render rebuilds the ENTIRE container
+    filesystem from scratch on every `git push` to `main`; nothing written
+    to local disk during a `MODEL_TRAINING` run survives the next deploy.
+    Confirmed live: `POST /jobs/backtest` raised a raw `FileNotFoundError`
+    for the champion's own `artifact_uri`, days after that champion was
+    trained and several unrelated deploys had happened since. Both loaders
+    already degraded gracefully on a missing artifact (never crashed), so
+    every live projection had been silently falling back to the plain
+    non-ML formula since whichever deploy first wiped the file — invisible
+    until a user asked why a specific recommendation looked off. Storing the
+    raw joblib bytes directly in the same persistent database this system
+    already trusts for everything else fixes this the same way every other
+    piece of real application state is already durable across a redeploy.
+    `artifact_uri`/local-disk writing stay as a local-dev convenience only
+    (matches `.gitignore`'s own `models/*` precedent), never read from by
+    any live code path anymore. **A pre-existing champion trained before
+    this migration has `artifact_bytes = NULL`** — a fresh `MODEL_TRAINING`
+    run is required once to get a durably-stored champion again.
 - **`START_PROBABILITY_MODEL_TRAINING`** (`app/jobs/handlers
   /start_probability_training.py`, `app/modeling/start_probability.py`): a
   SEPARATE, additive auxiliary classifier — P(player starts this gameweek,
@@ -941,7 +965,9 @@ new code needed, just running the existing pipeline.
   run's own real, walk-forward-backtested `aggregate_auc`/
   `aggregate_accuracy`/`aggregate_f1`/`aggregate_log_loss`. `POST
   /models/start-probability-training` triggers a run; `GET
-  /models/start-probability[/{id}]` reads persisted rows.
+  /models/start-probability[/{id}]` reads persisted rows. Same
+  `artifact_bytes`-is-authoritative fix as `model_versions` above (migration
+  0046) — `start_probability_loader.py` loads from it, never `artifact_uri`.
   When (and only when) a row IS activated,
   `app.optimization.start_probability_loader.load_active_start_probability_model`
   loads it, and `project_player_with_champion` accepts it as an optional

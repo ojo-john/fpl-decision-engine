@@ -21,6 +21,20 @@ lookups/formulas over already-materialized ``player_features`` columns (or,
 for ``BASELINE_RULES_EP_NEXT``, one extra ``player_gameweek_stats`` lookup),
 never a fitted scikit-learn object, so there is nothing to serialize.
 
+``artifact_bytes`` is the raw joblib-serialized model bytes, and the SOLE
+authoritative source ``app.optimization.champion_loader``/
+``app.jobs.handlers.backtest`` actually load from — ``artifact_uri`` still
+points at a local filesystem path (kept purely as a local-dev convenience,
+see ``app/jobs/handlers/model_training.py``'s own ``MODELS_DIR``) but is
+never durable across a real deploy (Render rebuilds the entire container
+filesystem on every push to ``main``; nothing written to local disk during a
+``MODEL_TRAINING`` run survives the next one). A real production incident
+(2026-08-24) confirmed this: the champion's artifact file was gone after a
+later deploy, silently degrading every live projection to the non-ML
+fallback formula until this column was added. ``NULL`` for the 4 baseline
+families (nothing to store) and, going forward only, for any pre-existing
+tree-family row trained before this column existed.
+
 ``lifecycle_state`` (Milestone 7 Layer 5: Challenger Training/Shadow-Mode
 Evaluation/Promotion Gates/Rollback) tracks where this row sits in the
 challenger/promotion lifecycle — see ``packages.domain.learning
@@ -40,7 +54,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean as SABoolean
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, LargeBinary, String, func
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -67,8 +81,11 @@ class ModelVersion(Base):
     target_variable: Mapped[str] = mapped_column(String(50), nullable=False)
     training_seasons_json: Mapped[list] = mapped_column(JSONB, nullable=False)
     hyperparameters_json: Mapped[dict | None] = mapped_column(JSONB)
-    # NULL for the 4 baseline families -- no artifact needed, pure lookups/formulas.
+    # NULL for the 4 baseline families -- no artifact needed, pure lookups/formulas. Local-dev
+    # convenience only, never authoritative -- see this class's own docstring.
     artifact_uri: Mapped[str | None] = mapped_column(String)
+    # The sole authoritative artifact source -- see this class's own docstring.
+    artifact_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)
     artifact_checksum_sha256: Mapped[str | None] = mapped_column(String(64))
     is_champion: Mapped[bool] = mapped_column(SABoolean, nullable=False, default=False)
     lifecycle_state: Mapped[ModelLifecycleState] = mapped_column(

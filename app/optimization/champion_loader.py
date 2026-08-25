@@ -38,10 +38,10 @@ live-incapable substitution — shadow evaluation is always retroactive, never
 live).
 """
 
+import io
 import logging
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import joblib
@@ -74,10 +74,13 @@ def load_current_champion(session: Session) -> LoadedChampion | None:
 
     Returns ``None`` if no champion has ever been selected — a normal,
     expected state for a fresh environment, not an error. For a tree family,
-    deserializes the joblib artifact at ``artifact_uri``; if that file is
-    missing, corrupted, or fails to load for any reason, logs a warning and
-    returns ``None`` rather than raising, so a broken artifact degrades
-    gracefully to the existing fallback instead of blocking optimization.
+    deserializes the joblib artifact from ``artifact_bytes`` (the sole
+    authoritative source — see ``ModelVersion.artifact_bytes``'s own
+    docstring for why ``artifact_uri``'s local filesystem path is not used
+    here); if those bytes are missing, corrupted, or fail to load for any
+    reason, logs a warning and returns ``None`` rather than raising, so a
+    broken/missing artifact degrades gracefully to the existing fallback
+    instead of blocking optimization.
     """
     version = session.execute(
         select(ModelVersion).where(ModelVersion.is_champion.is_(True))
@@ -119,15 +122,24 @@ def load_current_champion(session: Session) -> LoadedChampion | None:
             sklearn_model=None,
         )
 
+    if version.artifact_bytes is None:
+        logger.warning(
+            "Champion model_version_id=%s (family=%s) has no stored artifact_bytes (trained "
+            "before that column existed, or the artifact was never persisted); optimization "
+            "will fall back to the non-ML projection formula for this run.",
+            version.id,
+            version.model_family.value,
+        )
+        return None
+
     try:
-        sklearn_model = joblib.load(Path(version.artifact_uri))
+        sklearn_model = joblib.load(io.BytesIO(version.artifact_bytes))
     except Exception:  # noqa: BLE001 - champion loading must never block the optimizer
         logger.warning(
-            "Champion model_version_id=%s (family=%s) artifact at %r failed to load; "
+            "Champion model_version_id=%s (family=%s) artifact_bytes failed to load; "
             "optimization will fall back to the non-ML projection formula for this run.",
             version.id,
             version.model_family.value,
-            version.artifact_uri,
             exc_info=True,
         )
         return None
@@ -182,15 +194,23 @@ def load_shadow_challenger(session: Session) -> LoadedChampion | None:
             sklearn_model=None,
         )
 
-    try:
-        sklearn_model = joblib.load(Path(version.artifact_uri))
-    except Exception:  # noqa: BLE001 - shadow-challenger loading must never raise into a caller
+    if version.artifact_bytes is None:
         logger.warning(
-            "Shadow challenger model_version_id=%s (family=%s) artifact at %r failed to load; "
+            "Shadow challenger model_version_id=%s (family=%s) has no stored artifact_bytes; "
             "no shadow evaluation will be produced this run.",
             version.id,
             version.model_family.value,
-            version.artifact_uri,
+        )
+        return None
+
+    try:
+        sklearn_model = joblib.load(io.BytesIO(version.artifact_bytes))
+    except Exception:  # noqa: BLE001 - shadow-challenger loading must never raise into a caller
+        logger.warning(
+            "Shadow challenger model_version_id=%s (family=%s) artifact_bytes failed to load; "
+            "no shadow evaluation will be produced this run.",
+            version.id,
+            version.model_family.value,
             exc_info=True,
         )
         return None

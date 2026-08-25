@@ -201,6 +201,7 @@ class ModelTrainingJobRunner(JobRunner):
                     champion_family, rows_by_season, trained_at
                 )
                 champion_version.artifact_uri = artifact_info["artifact_uri"]
+                champion_version.artifact_bytes = artifact_info["artifact_bytes"]
                 champion_version.artifact_checksum_sha256 = artifact_info["artifact_checksum_sha256"]
 
             # Milestone 7 Layer 5: bootstrap case (no existing champion anywhere in the table) promotes
@@ -420,6 +421,7 @@ class ModelTrainingJobRunner(JobRunner):
                 training_seasons_json=usable_seasons,
                 hyperparameters_json=_TREE_HYPERPARAMETERS.get(family),
                 artifact_uri=None,
+                artifact_bytes=None,
                 artifact_checksum_sha256=None,
                 is_champion=False,
                 trained_at=trained_at,
@@ -489,10 +491,17 @@ class ModelTrainingJobRunner(JobRunner):
         model = _CANDIDATE_BUILDERS[champion_family]()
         model.fit(x_all, y_all)
 
+        # Local-dev convenience only, never authoritative -- see ModelVersion.artifact_uri's own
+        # docstring: a local filesystem path never survives a real Render redeploy.
         model_dir = MODELS_DIR / f"{champion_family.value}_{trained_at:%Y%m%dT%H%M%SZ}"
         model_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = model_dir / "model.joblib"
         joblib.dump(model, artifact_path)
 
-        checksum = sha256_hex(artifact_path.read_bytes())
-        return {"artifact_uri": str(artifact_path), "artifact_checksum_sha256": checksum}
+        artifact_bytes = artifact_path.read_bytes()
+        checksum = sha256_hex(artifact_bytes)
+        return {
+            "artifact_uri": str(artifact_path),
+            "artifact_bytes": artifact_bytes,
+            "artifact_checksum_sha256": checksum,
+        }

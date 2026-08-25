@@ -26,7 +26,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import Boolean as SABoolean
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, LargeBinary, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -48,8 +48,13 @@ class StartProbabilityModel(Base):
     hyperparameters_json: Mapped[dict | None] = mapped_column(JSONB)
     # NULL only if training somehow produced zero usable folds before persisting would occur --
     # in practice the job fails cleanly before ever inserting a row in that case (see the handler),
-    # so this is realistically always populated once a row exists.
+    # so this is realistically always populated once a row exists. Local-dev convenience only,
+    # never authoritative for loading -- see model_versions.artifact_uri's own docstring for the
+    # real production incident (2026-08-24) that explains why: a local filesystem path never
+    # survives a real Render redeploy, which rebuilds the entire container filesystem from scratch.
     artifact_uri: Mapped[str | None] = mapped_column(String)
+    # The sole authoritative artifact source app.optimization.start_probability_loader loads from.
+    artifact_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)
     artifact_checksum_sha256: Mapped[str | None] = mapped_column(String(64))
 
     # Real walk-forward-aggregated classification metrics (app.modeling.metrics' new

@@ -6,6 +6,7 @@ committed-CSV-fixture seeding pattern (duplicated, not imported -- this repo's o
 "duplicate test setup rather than cross-import between test modules" convention).
 """
 
+import io
 import uuid
 
 import joblib
@@ -96,6 +97,13 @@ def test_start_probability_training_produces_real_metrics_and_stays_inactive(
     # Real artifact -- proves the final refit actually happened and produces a usable classifier.
     model = joblib.load(row.artifact_uri)
     assert hasattr(model, "predict_proba")
+
+    # artifact_bytes is the sole authoritative source start_probability_loader actually reads
+    # from (a local filesystem path never survives a real Render redeploy -- see
+    # ModelVersion.artifact_uri's own docstring) -- must be independently loadable too.
+    assert row.artifact_bytes is not None
+    model_from_bytes = joblib.load(io.BytesIO(row.artifact_bytes))
+    assert hasattr(model_from_bytes, "predict_proba")
 
 
 def test_start_probability_training_fails_cleanly_with_no_features(db_session):

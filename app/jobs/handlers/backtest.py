@@ -45,13 +45,13 @@ model would "the" backtest even mean?), so a caller must always say exactly
 which already-trained ``model_versions`` row to backtest.
 """
 
+import io
 import math
 import uuid
 from collections import defaultdict
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 import joblib
@@ -142,19 +142,19 @@ class BacktestJobRunner(JobRunner):
 
             sklearn_model: Any | None = None
             if model_version.model_family not in BASELINE_MODEL_FAMILIES:
-                if model_version.artifact_uri is None:
+                if model_version.artifact_bytes is None:
                     return JobResult(
                         status=JobStatus.FAILED,
                         output=None,
                         error_code="MODEL_ARTIFACT_MISSING",
                         error_message=(
                             f"model_versions row {model_version_id} "
-                            f"(family={model_version.model_family.value}) has no artifact_uri to "
+                            f"(family={model_version.model_family.value}) has no artifact_bytes to "
                             "backtest against."
                         ),
                     )
                 try:
-                    sklearn_model = joblib.load(Path(model_version.artifact_uri))
+                    sklearn_model = joblib.load(io.BytesIO(model_version.artifact_bytes))
                 except Exception as exc:  # noqa: BLE001 - a corrupt/missing artifact is a clean job failure
                     return JobResult(
                         status=JobStatus.FAILED,
