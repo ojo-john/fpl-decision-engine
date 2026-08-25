@@ -909,6 +909,28 @@ new code needed, just running the existing pipeline.
     no function ever populated it (see `app/features/engineering.py`'s
     module docstring history) — the real gap this closes was "ingested but
     never computed as a feature", not "computed but not wired to the model".
+  - **Chunked cross-season query** (real incident, 2026-08-25):
+    `generate_features_for_season`'s own "career prior" resolution (every
+    `player_gameweek_stats` row for every player sharing an `fpl_code` with
+    someone in the season being processed — feeds
+    `career_avg_points_prior_seasons`/`career_avg_early_season_points_prior_seasons`
+    above) is unbounded by design: `career_avg_points_prior_seasons` needs a
+    player's FULL prior history, not just an early-season window, so the
+    query itself can't be scoped down. As more historical seasons get
+    backfilled over time this grows without bound; against the real, live
+    Supabase database it finally grew large enough to exceed the free
+    tier's `statement_timeout` in one single round trip, surfacing as a
+    `FEATURE_GENERATION_FAILED` job (found via the first real
+    `.github/workflows/train-production.yml` run, below). Fixed by chunking
+    the `player_id IN (...)` list (`app.features.service
+    ._CROSS_SEASON_PLAYER_ID_CHUNK_SIZE`, 200) — same real precedent as
+    `app.ingestion.normalization._PRICE_SIGNAL_INSERT_CHUNK_SIZE` for an
+    INSERT that hit the same class of problem — keeps each individual round
+    trip small regardless of how much history has accumulated in total, with
+    identical results (verified via
+    `tests/integration/test_feature_generation_job.py
+    ::test_cross_season_career_avg_survives_chunked_query`, which forces the
+    chunk size down to 1 to prove chunk-boundary correctness).
 - **`app/modeling`**: `MODEL_TRAINING` walk-forward-validates 7 candidate
   `ModelFamily` values — 4 pure-formula baselines
   (`BASELINE_SEASON_AVERAGE`/`BASELINE_RECENT_AVERAGE`/

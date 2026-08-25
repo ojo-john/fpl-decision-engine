@@ -72,6 +72,18 @@ DEFENSIVE_CONTRIBUTION_WINDOW = 5
 
 FEATURE_DATA_SOURCE = "feature_engineering_v1"
 
+# Real production incident (2026-08-25): the cross-season "career prior" query below fetches every
+# player_gameweek_stats row for every player sharing an fpl_code with someone in the current
+# season -- unbounded by design (career_avg_points_prior_seasons genuinely needs full history, not
+# just an early-season window, so the query itself can't be scoped down). As more historical
+# seasons get backfilled over time this grows without bound; against the real, live Supabase
+# database it finally grew large enough to exceed the free tier's statement_timeout in one single
+# round trip. Chunking the IN-list keeps each individual round trip small regardless of how much
+# history has accumulated in total -- same real precedent as
+# app.ingestion.normalization._PRICE_SIGNAL_INSERT_CHUNK_SIZE for an INSERT that hit the same
+# class of problem.
+_CROSS_SEASON_PLAYER_ID_CHUNK_SIZE = 200
+
 
 def _resolve_elo_differential(
     session: Session, team_id: uuid.UUID | None, opponent_team_id: uuid.UUID | None
@@ -441,33 +453,38 @@ def generate_features_for_season(
             )
         ).all()
         other_player_id_to_code = {row.id: row.fpl_code for row in other_players}
-        if other_player_id_to_code:
-            other_rows = session.execute(
-                select(
-                    PlayerGameweekStats.player_id,
-                    PlayerGameweekStats.gameweek_id,
-                    PlayerGameweekStats.total_points,
-                    PlayerGameweekStats.season_id,
-                    Gameweek.deadline_time.label("gw_deadline"),
-                    Gameweek.fpl_event_id,
-                )
-                .join(Gameweek, Gameweek.id == PlayerGameweekStats.gameweek_id)
-                .where(PlayerGameweekStats.player_id.in_(list(other_player_id_to_code.keys())))
-            ).all()
-            for other_row in other_rows:
-                code = other_player_id_to_code[other_row.player_id]
-                other_stats_by_code[code].append(
-                    PriorGameweekStat(
-                        season_id=str(other_row.season_id),
-                        gameweek_key=str(other_row.gameweek_id),
-                        gameweek_deadline=other_row.gw_deadline,
-                        total_points=other_row.total_points,
-                        minutes=0,
-                        was_home=None,
-                        fixture_kickoff_time=None,
-                        fpl_event_id=other_row.fpl_event_id,
+        other_player_ids_list = list(other_player_id_to_code.keys())
+        other_rows: list[Any] = []
+        for chunk_start in range(0, len(other_player_ids_list), _CROSS_SEASON_PLAYER_ID_CHUNK_SIZE):
+            chunk = other_player_ids_list[chunk_start : chunk_start + _CROSS_SEASON_PLAYER_ID_CHUNK_SIZE]
+            other_rows.extend(
+                session.execute(
+                    select(
+                        PlayerGameweekStats.player_id,
+                        PlayerGameweekStats.gameweek_id,
+                        PlayerGameweekStats.total_points,
+                        PlayerGameweekStats.season_id,
+                        Gameweek.deadline_time.label("gw_deadline"),
+                        Gameweek.fpl_event_id,
                     )
+                    .join(Gameweek, Gameweek.id == PlayerGameweekStats.gameweek_id)
+                    .where(PlayerGameweekStats.player_id.in_(chunk))
+                ).all()
+            )
+        for other_row in other_rows:
+            code = other_player_id_to_code[other_row.player_id]
+            other_stats_by_code[code].append(
+                PriorGameweekStat(
+                    season_id=str(other_row.season_id),
+                    gameweek_key=str(other_row.gameweek_id),
+                    gameweek_deadline=other_row.gw_deadline,
+                    total_points=other_row.total_points,
+                    minutes=0,
+                    was_home=None,
+                    fixture_kickoff_time=None,
+                    fpl_event_id=other_row.fpl_event_id,
                 )
+            )
 
     # --- This season's fixtures, indexed for "next fixture" resolution ---
     fixtures = session.execute(select(Fixture).where(Fixture.season_id == season_id)).scalars().all()

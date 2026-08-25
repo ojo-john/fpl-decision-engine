@@ -8,6 +8,8 @@ FEATURE_GENERATION against that seeded season. No real network access
 happens in this module.
 """
 
+import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -17,6 +19,7 @@ from app.jobs.service import execute_job
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.player import Player
 from packages.database.models.player_features import PlayerFeatures
+from packages.database.models.player_gameweek_stats import PlayerGameweekStats
 from packages.database.models.season import Season
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 
@@ -257,3 +260,100 @@ def test_feature_generation_is_idempotent(db_session, patched_historical_fpl_cli
     second_row_ids = _v1_row_ids()
     assert len(second_row_ids) == 68
     assert first_row_ids == second_row_ids  # same rows updated in place, never duplicated
+
+
+def test_cross_season_career_avg_survives_chunked_query(
+    db_session, patched_historical_fpl_client, monkeypatch
+):
+    """Real production incident (2026-08-25): the cross-season "career prior" query in
+    generate_features_for_season was chunked (app.features.service._CROSS_SEASON_PLAYER_ID_CHUNK_SIZE)
+    after it grew large enough to exceed the real, live Supabase database's statement_timeout.
+    Forces the chunking loop to actually split across multiple round trips (chunk size patched to 1)
+    even with just a couple of synthetic "other season" rows, and proves the result is identical to
+    an unchunked query -- chunk-boundary bugs are exactly the kind of thing this class of change can
+    silently introduce.
+    """
+    monkeypatch.setattr("app.features.service._CROSS_SEASON_PLAYER_ID_CHUNK_SIZE", 1)
+
+    season = _seed_historical_season(db_session)
+    foden = db_session.execute(
+        select(Player).where(Player.season_id == season.id, Player.fpl_element_id == 353)
+    ).scalar_one()
+    assert foden.fpl_code is not None
+
+    # A synthetic, wholly-earlier season sharing Foden's own fpl_code -- deadlines well before
+    # 2023-24's real earliest deadline (2023-08-11), so every row here is unambiguously "prior"
+    # for every 2023-24 target gameweek.
+    prior_season = Season(label=f"prior-{uuid.uuid4().hex[:12]}", is_current=False)
+    db_session.add(prior_season)
+    db_session.flush()
+
+    prior_gameweek_1 = Gameweek(
+        fpl_event_id=1,
+        season_id=prior_season.id,
+        name="Prior Gameweek 1",
+        deadline_time=datetime(2022, 1, 1, tzinfo=UTC),
+        finished=True,
+        last_synced_at=datetime.now(UTC),
+    )
+    prior_gameweek_2 = Gameweek(
+        fpl_event_id=2,
+        season_id=prior_season.id,
+        name="Prior Gameweek 2",
+        deadline_time=datetime(2022, 1, 8, tzinfo=UTC),
+        finished=True,
+        last_synced_at=datetime.now(UTC),
+    )
+    db_session.add_all([prior_gameweek_1, prior_gameweek_2])
+    db_session.flush()
+
+    prior_foden = Player(
+        fpl_element_id=foden.fpl_element_id,
+        fpl_code=foden.fpl_code,
+        season_id=prior_season.id,
+        now_cost=70,
+        last_synced_at=datetime.now(UTC),
+    )
+    db_session.add(prior_foden)
+    db_session.flush()
+
+    # Two rows so the averaged result isn't trivially equal to a single row's own total_points --
+    # a real off-by-one in the chunking loop could still coincidentally pass a single-row check.
+    db_session.add_all(
+        [
+            PlayerGameweekStats(
+                player_id=prior_foden.id,
+                season_id=prior_season.id,
+                gameweek_id=prior_gameweek_1.id,
+                total_points=10,
+                data_source="test",
+            ),
+            PlayerGameweekStats(
+                player_id=prior_foden.id,
+                season_id=prior_season.id,
+                gameweek_id=prior_gameweek_2.id,
+                total_points=20,
+                data_source="test",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    counts = generate_features_for_season(db_session, season.id, feature_version=3)
+    db_session.commit()
+    assert counts.inserted + counts.updated == 68
+
+    round4 = db_session.execute(
+        select(Gameweek).where(Gameweek.season_id == season.id, Gameweek.fpl_event_id == 4)
+    ).scalar_one()
+    row = db_session.execute(
+        select(PlayerFeatures).where(
+            PlayerFeatures.player_id == foden.id,
+            PlayerFeatures.gameweek_id == round4.id,
+            PlayerFeatures.feature_version == 3,
+        )
+    ).scalar_one()
+
+    # (10 + 20) / 2 = 15.00 -- both synthetic prior rows correctly resolved despite the chunked
+    # query splitting the (single-element) other-player-id list across two separate round trips.
+    assert row.career_avg_points_prior_seasons == Decimal("15.00")
