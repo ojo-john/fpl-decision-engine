@@ -39,7 +39,14 @@ on:
 jobs:
   train-production:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Real incident (2026-08-25): a real run against the live database was still genuinely
+    # progressing (not hung/crashed) when GitHub forcibly killed the still-running training
+    # process at the original 30-minute limit -- confirmed via the run's own log ("Terminate
+    # orphan process... python3"). Supabase's free-tier "Nano" compute has a shared, throttled
+    # CPU (confirmed via a real EXPLAIN ANALYZE: a trivial 25-row primary-key lookup took 417ms,
+    # query planning alone took 3s), so this genuinely needs much more wall-clock time, not a
+    # different fix.
+    timeout-minutes: 180
     env:
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
     steps:
