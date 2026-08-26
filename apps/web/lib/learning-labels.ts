@@ -161,9 +161,3 @@ export function formatSignalReading(
       return { headline: value.toFixed(3) };
   }
 }
-
-export const RUN_STATUS_LABELS: Record<string, string> = {
-  succeeded: "Complete",
-  running: "In progress",
-  failed: "Failed",
-};

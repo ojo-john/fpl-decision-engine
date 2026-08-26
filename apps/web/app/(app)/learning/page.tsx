@@ -9,9 +9,9 @@ import {
   FAILURE_CATEGORY_LABELS,
   FAILURE_REASON_LABELS,
   formatSignalReading,
-  RUN_STATUS_LABELS,
   SIGNAL_LABELS,
 } from "@/lib/learning-labels";
+import { RUN_STATUS_LABELS } from "@/lib/ui-labels";
 
 export const dynamic = "force-dynamic";
 

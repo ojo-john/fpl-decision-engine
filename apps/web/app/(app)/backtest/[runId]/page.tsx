@@ -1,10 +1,34 @@
 import { backendClient } from "@/lib/api-client";
 import { Card, ErrorState, TableScroll } from "@/components/ui";
+import { RUN_STATUS_LABELS } from "@/lib/ui-labels";
 
 export const dynamic = "force-dynamic";
 
 function fmt(value: string | null): string {
   return value !== null ? Number(value).toFixed(3) : "unknown";
+}
+
+/** Plain-English one-liners for this page's statistics jargon -- these are standard model-
+ * accuracy metrics computed by app/modeling/backtest.py, not this app's own invention. */
+const METRIC_HELP: Record<string, string> = {
+  MAE: "Average points off per prediction. Lower is better; 0 would be perfect.",
+  RMSE: "Like MAE, but penalizes big misses more heavily than small ones. Lower is better.",
+  "Mean bias": "Positive = the model tends to over-predict; negative = it tends to under-predict.",
+  Spearman: "How well the model ranks players relative to each other. 1.0 = perfect ranking, 0 = random.",
+  "Top-20 capture": "Share of the real top-20 scorers that the model also ranked in its own top 20.",
+};
+
+function MetricStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div>
+        {label}: {value}
+      </div>
+      {METRIC_HELP[label] && (
+        <div style={{ fontSize: "0.76rem", opacity: 0.85, marginTop: "0.1rem" }}>{METRIC_HELP[label]}</div>
+      )}
+    </div>
+  );
 }
 
 type FoldMetric = {
@@ -37,27 +61,29 @@ export default async function BacktestPage({ params }: { params: Promise<{ runId
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <Card>
         <h1 style={{ margin: "0 0 0.5rem", fontSize: "1.1rem" }}>
-          Backtest -- {data.model_family} (feature v{data.feature_version}) -- {data.run_status}
+          Backtest -- {data.model_family} (feature v{data.feature_version}) --{" "}
+          {RUN_STATUS_LABELS[data.run_status] ?? data.run_status}
         </h1>
         <p style={{ margin: "0 0 0.75rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>
-          Seasons: {data.usable_seasons.join(", ")}
+          How accurate this model&apos;s predictions were on real, historical seasons it wasn&apos;t
+          trained on. Seasons: {data.usable_seasons.join(", ")}
           {data.degenerate_single_season && " (single season -- no true out-of-sample fold)"}
         </p>
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-            gap: "0.5rem",
+            gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+            gap: "0.75rem",
             fontSize: "0.9rem",
             color: "var(--text-muted)",
           }}
         >
-          <span>MAE: {fmt(data.aggregate_mae)}</span>
-          <span>RMSE: {fmt(data.aggregate_rmse)}</span>
-          <span>Mean bias: {fmt(data.aggregate_mean_bias)}</span>
-          <span>Spearman: {fmt(data.aggregate_spearman)}</span>
-          <span>Top-20 capture: {fmt(data.aggregate_top_20_capture_rate)}</span>
-          <span>Observations: {data.n_observations}</span>
+          <MetricStat label="MAE" value={fmt(data.aggregate_mae)} />
+          <MetricStat label="RMSE" value={fmt(data.aggregate_rmse)} />
+          <MetricStat label="Mean bias" value={fmt(data.aggregate_mean_bias)} />
+          <MetricStat label="Spearman" value={fmt(data.aggregate_spearman)} />
+          <MetricStat label="Top-20 capture" value={fmt(data.aggregate_top_20_capture_rate)} />
+          <MetricStat label="Observations" value={String(data.n_observations)} />
         </div>
       </Card>
 

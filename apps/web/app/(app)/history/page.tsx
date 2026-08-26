@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { backendClient } from "@/lib/api-client";
 import { Card, EmptyState, ErrorState } from "@/components/ui";
+import { RUN_STATUS_LABELS, TRANSFER_ACTION_LABELS } from "@/lib/ui-labels";
 
 export const dynamic = "force-dynamic";
 
@@ -59,7 +60,7 @@ export default async function HistoryPage() {
               <div key={run.optimization_run_id} style={ROW_STYLE}>
                 <span>
                   {RECOMMENDATION_TYPE_LABELS[run.recommendation_type] ?? run.recommendation_type}
-                  <span style={MUTED_STYLE}>{run.run_status}</span>
+                  <span style={MUTED_STYLE}>{RUN_STATUS_LABELS[run.run_status] ?? run.run_status}</span>
                   <span style={MUTED_STYLE}>{formatDate(run.started_at)}</span>
                   {run.xi_projected_points !== null && (
                     <span style={MUTED_STYLE}>{Number(run.xi_projected_points).toFixed(1)} pts</span>
@@ -81,8 +82,10 @@ export default async function HistoryPage() {
             {transferRuns.data.map((run) => (
               <div key={run.transfer_optimization_run_id} style={ROW_STYLE}>
                 <span>
-                  {run.recommended_action ?? "no recommendation"}
-                  <span style={MUTED_STYLE}>{run.run_status}</span>
+                  {run.recommended_action
+                    ? (TRANSFER_ACTION_LABELS[run.recommended_action] ?? run.recommended_action)
+                    : "no recommendation"}
+                  <span style={MUTED_STYLE}>{RUN_STATUS_LABELS[run.run_status] ?? run.run_status}</span>
                   <span style={MUTED_STYLE}>{formatDate(run.started_at)}</span>
                 </span>
                 <Link href={`/transfers/${run.transfer_optimization_run_id}`}>View</Link>
@@ -102,7 +105,7 @@ export default async function HistoryPage() {
               <div key={run.chip_optimization_run_id} style={ROW_STYLE}>
                 <span>
                   Gameweek {run.target_fpl_event_id}
-                  <span style={MUTED_STYLE}>{run.run_status}</span>
+                  <span style={MUTED_STYLE}>{RUN_STATUS_LABELS[run.run_status] ?? run.run_status}</span>
                   <span style={MUTED_STYLE}>{formatDate(run.started_at)}</span>
                 </span>
                 <Link href={`/chips/${run.chip_optimization_run_id}`}>View</Link>
@@ -122,7 +125,7 @@ export default async function HistoryPage() {
               <div key={run.h2h_simulation_run_id} style={ROW_STYLE}>
                 <span>
                   Gameweek {run.target_fpl_event_id}
-                  <span style={MUTED_STYLE}>{run.run_status}</span>
+                  <span style={MUTED_STYLE}>{RUN_STATUS_LABELS[run.run_status] ?? run.run_status}</span>
                   <span style={MUTED_STYLE}>{formatDate(run.started_at)}</span>
                   {run.win_probability !== null && (
                     <span style={MUTED_STYLE}>{(Number(run.win_probability) * 100).toFixed(0)}% win</span>
