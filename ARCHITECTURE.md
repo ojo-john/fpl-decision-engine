@@ -59,12 +59,12 @@ scripts/export_notes_snapshot.py  CLI to regenerate .github/state/known-notes-sn
 scripts/post_deadline_smoke_test.py  CLI to verify real-data preconditions for manager_sync/chip inventory/league_sync/rival profiles/differentials/price calibration (see "Post-deadline real-data verification" section below and docs/operations.md)
 scripts/scheduler.py     Local background loop: thin wrapper around app.scheduling.tick.run_tick (see "Local scheduler" section below)
 render.yaml              Render Blueprint for the backend API's real cloud deployment (see "Cloud deployment" section below, docs/deployment.md)
-docs/deployment.md       Real, ordered free-tier cloud hosting setup checklist (Supabase/Render/Vercel/cron-job.org)
+docs/deployment.md       Real, ordered free-tier cloud hosting setup checklist (Supabase/Render/Vercel/GitHub Actions scheduler)
 tests/unit/ (60 files)  No DB
 tests/integration/ (60) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
 tests/fixtures/          Committed FPL API samples (fpl_api/) + a small real historical CSV set (historical/2023-24/)
-.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml, historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
+.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml (stale Milestone-1 CI self-test, ephemeral DB, NOT real scheduling -- see scheduler-tick.yml for that), historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), scheduler-tick.yml (real DB, see "Cloud deployment" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
 .github/state/            current-squad.json, known-notes-snapshot.json (both consumed by scout-watch.yml; league-814682-watch.json consumed by league-watch.yml)
 ```
 
@@ -1524,9 +1524,28 @@ real HTTP traffic.
 authenticated (same `dependencies=[protected]` wiring every other router gets in `apps.api.main`)
 endpoint that runs exactly one real tick, synchronously, by calling `app.scheduling.tick.run_tick`
 directly -- the EXACT same function `scripts/scheduler.py`'s own local loop calls, not a
-duplicated reimplementation. A free external cron service (cron-job.org, see `docs/deployment.md`
-for the concrete setup) hits this endpoint every 15 minutes once deployed, functionally replacing
-the local loop.
+duplicated reimplementation. `.github/workflows/scheduler-tick.yml` (a scheduled GitHub Actions
+workflow, `*/15 * * * *`, see `docs/deployment.md` for the concrete setup) hits this endpoint every
+15 minutes once deployed, functionally replacing the local loop.
+
+**Revised 2026-08-26**: originally a free external cron service (cron-job.org) called this
+endpoint instead. Real incident: it silently stopped calling the endpoint entirely for 5+ real
+days (since before GW1 finished) — every downstream symptom traced back to this single root
+cause: player stats/gameweek-finished flags never refreshed (a manager-visible "why is this
+recommending I transfer out a player who just scored 11 points" report), `GAMEWEEK_REVIEW` never
+auto-fired for GW1 (its own eligibility check correctly saw `Gameweek.finished` still `False`), and
+nothing in this app's own job-failure alerting caught it, because there was nothing TO catch — no
+job ever ran, successfully or otherwise, so Layer 2's "alert on 2 consecutive failures" alerting
+(see "Proactive push alerting" below) had no failure to observe. A manual `POST /data/refresh`
+fixed the immediate staleness instantly and `POST /internal/scheduler-tick` responded correctly
+the moment it was actually called by hand — proving the app-side code was never broken, only the
+external trigger. Moved to GitHub Actions for a real, visible run history in this repo's own
+Actions tab (the same place every other real job in this project is already watched) instead of a
+third-party dashboard nobody was checking, and because it has no request-timeout mismatch the way
+cron-job.org's free tier did (see the "Known real gaps" entry on that incident below — this
+migration is also its real resolution). **A genuine remaining blind spot**: this alerting scheme
+still can't detect "the scheduler was never invoked at all" independent of GitHub Actions' own run
+history — only a failure of a job that DID run. Noted, not yet fixed.
 
 This only works correctly because `run_tick` was already designed to be fully stateless between
 calls -- see `app.scheduling.tick`'s own module docstring: every "was it time yet" check derives
@@ -1544,8 +1563,8 @@ separate deployment-specific build). Deliberately does NOT provision a Render-ma
 real research found Render's own free Postgres expires 30+14 days after creation, incompatible
 with a season-long tool; Supabase's free Postgres (auto-pauses after 7 days of inactivity, data
 retained, resumes on next request) is the real, more durable choice instead. `docs/deployment.md`
-has the full, real, ordered setup checklist (Supabase → Render → Vercel → cron-job.org) with every
-real environment variable each service needs.
+has the full, real, ordered setup checklist (Supabase → Render → Vercel → GitHub Actions scheduler)
+with every real environment variable each service needs.
 
 Database migrations against the real Supabase database run via the `Dockerfile`'s own `CMD`
 (`uv run alembic upgrade head && exec uv run uvicorn ...`), not Render's `preDeployCommand` --
@@ -2081,6 +2100,15 @@ documents it directly.
   file (that limit is Postgres' protocol-level bound-parameter cap, ~8000+ rows before it would
   even trigger for an 8-column row; this is a real-world execution-time limit, unrelated to
   parameter count).
+- **Resolved, real bug (found and fixed 2026-08-26): the scheduler trigger itself (cron-job.org)
+  silently stopped calling `/internal/scheduler-tick` entirely for 5+ real days** — a different,
+  more fundamental failure mode than the entry directly above (that one was the endpoint being
+  called but failing every time; this one was the endpoint not being called at all). Caught the
+  same way as before: the manager questioning why a transfer recommendation looked wrong (this
+  time: "why are you telling me to transfer out João Pedro, he's on fire" — a real player who had
+  actually scored a goal and an assist for 11 real points, while this app's own database still
+  showed him at 0 for everything). See "Cloud deployment" above for the full incident and its real
+  resolution — moved the scheduler trigger to `.github/workflows/scheduler-tick.yml`.
 - **Resolved, real bug (found and fixed 2026-08-25, via the first real
   `.github/workflows/train-production.yml` run against the live database): `_bulk_upsert` itself
   had the identical execution-time-limit bug, at every one of its callers** (`player_features`,

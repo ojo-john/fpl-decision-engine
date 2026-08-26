@@ -21,18 +21,24 @@ workable combination below accepts two honest tradeoffs instead:
   (below) pings it at least every 15 minutes whenever it runs, this should never actually trigger
   in practice.
 - There is no free "persistent background worker" tier that keeps `scripts/scheduler.py`'s own
-  local loop running in the cloud. Instead, a free external cron service
-  ([cron-job.org](https://cron-job.org)) calls a real HTTP endpoint
-  (`POST /internal/scheduler-tick`) on a schedule, which runs the exact same real scheduling logic
-  (`app.scheduling.tick.run_tick`) as the local loop -- see that module's own docstring for why
-  this is safe and correct, not a separate, duplicated implementation.
+  local loop running in the cloud. Instead, `.github/workflows/scheduler-tick.yml` (a scheduled
+  GitHub Actions workflow, `*/15 * * * *`) calls a real HTTP endpoint
+  (`POST /internal/scheduler-tick`) on that same schedule, which runs the exact same real scheduling
+  logic (`app.scheduling.tick.run_tick`) as the local loop -- see that module's own docstring for
+  why this is safe and correct, not a separate, duplicated implementation.
+  **Revised 2026-08-26**: originally used a free external cron service (cron-job.org) instead --
+  replaced after a real incident where it silently stopped calling the endpoint for 5+ days with no
+  visible error anywhere (see `scheduler-tick.yml`'s own docstring for the full incident).
+  GitHub Actions gives this a real, visible run history in this repo's own Actions tab, the same
+  place every other real job in this project is already watched, rather than a third-party
+  dashboard that wasn't being checked.
 
 | Piece | Provider | What it does |
 |---|---|---|
 | Postgres | [Supabase](https://supabase.com) | Your real database, replacing the local `postgres` Docker service. |
 | Backend | [Render](https://render.com) | Runs the same `Dockerfile` this repo's `docker-compose.yml` `api` service already uses. |
 | Frontend | [Vercel](https://vercel.com) | Runs `apps/web`, Next.js's own natural home. |
-| Scheduler | [cron-job.org](https://cron-job.org) | Calls `POST /internal/scheduler-tick` on Render every 15 minutes, replacing the local `scheduler` Docker service. |
+| Scheduler | GitHub Actions (`scheduler-tick.yml`) | Calls `POST /internal/scheduler-tick` on Render every 15 minutes, replacing the local `scheduler` Docker service. |
 
 ## Setup, in order
 
@@ -68,7 +74,8 @@ URL) produced by the step before it.
    - `APPLICATION_SECRET_KEY` -- any random string you generate yourself (not the local dev
      placeholder).
    - `APP_SHARED_TOKEN` -- any random string you generate yourself. This is the single bearer
-     token the frontend and cron-job.org will both need to use later -- write it down.
+     token the frontend and the GitHub Actions scheduler (step 4 below) will both need to use
+     later -- write it down.
    - `CORS_ALLOWED_ORIGINS` -- leave a placeholder for now (e.g. `https://placeholder.vercel.app`)
      -- you'll come back and set the real value after step 3 (Vercel) gives you a real URL.
    - `FPL_MANAGER_ID` / `FPL_H2H_LEAGUE_ID` -- your own real, numeric FPL manager and H2H league
@@ -129,34 +136,34 @@ URL) produced by the step before it.
 5. **Go back to Render** and update `CORS_ALLOWED_ORIGINS` to this real Vercel URL (replacing the
    placeholder from step 2.3), then redeploy the Render service so the change takes effect.
 
-### 4. cron-job.org (scheduler)
+### 4. GitHub Actions (scheduler)
 
-1. Create a free account at [cron-job.org](https://cron-job.org).
-2. Create a new cron job:
-   - **URL**: `https://<your-real-render-url>/internal/scheduler-tick`
-   - **Method**: `POST`
-   - **Headers**: add `Authorization: Bearer <your-real-APP_SHARED_TOKEN>` (the exact same value
-     from step 2.3 / 3.3).
-   - **Schedule**: every 15 minutes -- matches `scripts/scheduler.py`'s own local tick interval
-     (see `app.scheduling.tick`'s own module docstring for why this cadence). cron-job.org's free
-     tier supports down to 1-minute granularity, but there's no benefit to calling more often than
-     this -- the endpoint's own real interval logic (`DATA_INGESTION` every 4h, `LEAGUE_SYNC` every
-     6h) only actually triggers a job when something is genuinely due, regardless of how often
-     it's pinged.
-3. Save and enable the job.
+**Revised 2026-08-26** -- previously cron-job.org; replaced after it silently stopped calling
+`/internal/scheduler-tick` for 5+ real days with no visible error anywhere (see
+`.github/workflows/scheduler-tick.yml`'s own docstring for the full incident). No third-party
+account needed now -- the workflow file is already committed, it just needs one secret:
+
+1. In your GitHub repo, go to **Settings -> Secrets and variables -> Actions -> New repository
+   secret**.
+2. Name: `APP_SHARED_TOKEN`. Value: the **exact same** random string you generated for Render's own
+   `APP_SHARED_TOKEN` in step 2.3 above.
+3. That's it -- `scheduler-tick.yml` is already scheduled (`*/15 * * * *`, matching
+   `scripts/scheduler.py`'s own local tick interval) and needs no further setup. Confirm it's
+   working: **Actions tab -> Scheduler tick -> Run workflow** (manual `workflow_dispatch` trigger,
+   doesn't require waiting for the schedule) -- a green run confirms the whole chain end to end.
 
 ## Verification
 
 1. Visit your real Vercel URL in a browser, log in with your real `APP_SHARED_TOKEN`, and confirm
    the dashboard loads (expect real data once the scheduler's first `DATA_INGESTION` tick has run
    -- see step 2 below).
-2. Wait ~15-20 minutes, then check cron-job.org's own execution history for the job you created --
-   it should show a real `200` response. Check Render's own logs (Dashboard -> your service ->
-   Logs) for `scheduler.job_completed`/`scheduler.triggering_data_ingestion` entries confirming a
-   real tick actually ran.
+2. Wait ~15-20 minutes, then check the **Actions tab -> Scheduler tick** run history for a real
+   green run. Check Render's own logs (Dashboard -> your service -> Logs) for
+   `scheduler.job_completed`/`scheduler.triggering_data_ingestion` entries confirming a real tick
+   actually ran.
 3. `curl -X POST https://<your-real-render-url>/internal/scheduler-tick -H "Authorization: Bearer <your-real-token>"`
    should return `{"status":"tick_completed"}` with a `200` -- safe to run this manually any time
-   to force an immediate check rather than waiting for cron-job.org's own schedule.
+   to force an immediate check rather than waiting for the next scheduled run.
 
 ## Retraining the model against real data
 

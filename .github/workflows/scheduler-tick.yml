@@ -1,0 +1,59 @@
+name: Scheduler tick
+
+# Replaces cron-job.org as the trigger for POST /internal/scheduler-tick -- real incident
+# (2026-08-25/26): DATA_INGESTION had not successfully run in 5+ real days (since before GW1
+# finished), silently, with no visible error anywhere in this app's own logs/job history --
+# because nothing was calling the tick endpoint at all. A manual `POST /data/refresh` fixed the
+# immediate staleness instantly and `POST /internal/scheduler-tick` responded correctly the moment
+# it was actually called, proving the app-side code was never broken; the scheduling TRIGGER
+# itself (cron-job.org) had simply stopped firing, invisibly, with no run history the manager was
+# checking. GitHub Actions gives this a real, visible run history in this repo's own Actions tab
+# (the same place every other real job in this project is already watched) instead of a third-party
+# dashboard nobody was looking at, and has no request-timeout mismatch the way cron-job.org's free
+# tier did (see ARCHITECTURE.md's own "Known real gaps" entry on that, now resolved by this file
+# existing at all).
+#
+# Deliberately the lightest possible workflow in this repo: no `uv sync`, no Postgres service
+# container, no Python at all -- run_tick() already runs entirely inside the deployed Render
+# service via the real HTTP endpoint; this just needs to make the call.
+#
+# Requires an `APP_SHARED_TOKEN` repository secret (Settings -> Secrets and variables -> Actions ->
+# New repository secret) -- the EXACT SAME value already configured as Render's own
+# `APP_SHARED_TOKEN` env var (see docs/deployment.md). Never echoed/logged anywhere here; only ever
+# referenced via `secrets.APP_SHARED_TOKEN`, which is how GitHub Actions' own automatic
+# secret-masking works.
+on:
+  schedule:
+    # Every 15 minutes -- matches scripts/scheduler.py's own local tick interval and
+    # app.scheduling.tick's own module docstring for why this cadence (run_tick's own real
+    # interval logic, e.g. DATA_INGESTION every 4h, only actually triggers a job when something
+    # is genuinely due, regardless of how often the tick itself is called).
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  scheduler-tick:
+    runs-on: ubuntu-latest
+    # Generous relative to a normal tick's own runtime -- covers a Render free-tier cold-start
+    # wake-up (real, observed: 30-60s after 15 minutes idle) plus the tick's own real work, with
+    # headroom to spare. A tick that's still running past this is a genuine anomaly worth this
+    # workflow run showing as failed/timed-out in the Actions tab, not silently swallowed.
+    timeout-minutes: 5
+    steps:
+      - name: Verify APP_SHARED_TOKEN is configured
+        run: |
+          if [ -z "${{ secrets.APP_SHARED_TOKEN }}" ]; then
+            echo "::error::APP_SHARED_TOKEN repository secret is not set -- see docs/deployment.md."
+            exit 1
+          fi
+
+      - name: Call POST /internal/scheduler-tick
+        run: |
+          curl --fail-with-body \
+            --max-time 120 \
+            --retry 2 \
+            --retry-delay 10 \
+            --retry-all-errors \
+            -X POST \
+            -H "Authorization: Bearer ${{ secrets.APP_SHARED_TOKEN }}" \
+            https://fpl-decision-engine-api.onrender.com/internal/scheduler-tick
