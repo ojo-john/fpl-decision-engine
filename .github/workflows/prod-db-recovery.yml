@@ -1,0 +1,131 @@
+name: Production DB recovery
+
+# Manual diagnostic/recovery tool (workflow_dispatch ONLY) for the real production database --
+# mirrors train-production.yml's own "connects directly to secrets.PROD_DATABASE_URL, never
+# echoed/logged" convention. Built after a real incident (2026-08-26): a train-production.yml run
+# was force-killed by its own 180-minute job timeout after running far longer than a prior
+# successful run (~76 min), and every scheduler-tick run since -- including ones hours after that
+# job was killed, and even a fresh Render auto-deploy in between -- has failed to get even
+# GET /health to respond within its own timeout. A killed GitHub Actions runner does NOT notify
+# Postgres to roll back/close whatever transaction it had open -- an abandoned "idle in
+# transaction" connection can sit there holding locks/pool slots indefinitely until something
+# explicitly terminates it. This workflow makes that diagnosable and recoverable without needing
+# Render dashboard or Supabase dashboard access at all -- only the same PROD_DATABASE_URL secret
+# train-production.yml already uses.
+#
+# `action: diagnose` (default) is read-only -- lists every real connection in pg_stat_activity
+# (state, how long it's been in that state, and a query snippet) and does not change anything.
+# `action: terminate_idle_in_transaction` additionally terminates connections that are
+# specifically "idle in transaction" AND have been in that state for more than
+# idle_threshold_minutes -- deliberately narrow (never touches an `active` connection doing real
+# work, and never touches idle-in-transaction connections younger than the threshold, which could
+# still be a legitimate slow client) rather than a blunt "kill everything" reset.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "diagnose (read-only) or terminate_idle_in_transaction (recovery)"
+        required: true
+        type: choice
+        options:
+          - diagnose
+          - terminate_idle_in_transaction
+        default: diagnose
+      idle_threshold_minutes:
+        description: "Only used by terminate_idle_in_transaction -- minimum time in that state before a connection is considered abandoned"
+        required: false
+        type: string
+        default: "10"
+
+jobs:
+  prod-db-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      - name: Verify PROD_DATABASE_URL is configured
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::PROD_DATABASE_URL repository secret is not set -- see docs/deployment.md."
+            exit 1
+          fi
+
+      - name: Diagnose pg_stat_activity
+        run: |
+          uv run python - <<'EOF'
+          from sqlalchemy import text
+
+          from packages.database.session import SessionLocal
+
+          session = SessionLocal()
+          try:
+              rows = session.execute(
+                  text(
+                      """
+                      select
+                          pid,
+                          state,
+                          application_name,
+                          now() - state_change as time_in_state,
+                          now() - query_start as time_in_query,
+                          wait_event_type,
+                          wait_event,
+                          left(query, 200) as query_snippet
+                      from pg_stat_activity
+                      where pid <> pg_backend_pid()
+                      order by state_change asc
+                      """
+                  )
+              ).mappings().all()
+              print(f"{len(rows)} connection(s) (excluding this diagnostic session itself):\n")
+              for row in rows:
+                  print(dict(row))
+          finally:
+              session.close()
+          EOF
+
+      - name: Terminate abandoned idle-in-transaction connections
+        if: github.event.inputs.action == 'terminate_idle_in_transaction'
+        run: |
+          uv run python - <<'EOF'
+          from sqlalchemy import text
+
+          from packages.database.session import SessionLocal
+
+          threshold_minutes = "${{ github.event.inputs.idle_threshold_minutes }}"
+
+          session = SessionLocal()
+          try:
+              rows = session.execute(
+                  text(
+                      """
+                      select pid, terminate_query.terminated, now() - state_change as time_in_state
+                      from pg_stat_activity
+                      cross join lateral (
+                          select pg_terminate_backend(pg_stat_activity.pid) as terminated
+                          where pg_stat_activity.pid <> pg_backend_pid()
+                            and pg_stat_activity.state = 'idle in transaction'
+                            and now() - pg_stat_activity.state_change > (:threshold || ' minutes')::interval
+                      ) as terminate_query
+                      """
+                  ),
+                  {"threshold": threshold_minutes},
+              ).mappings().all()
+              if not rows:
+                  print("No idle-in-transaction connections older than the threshold were found.")
+              for row in rows:
+                  print(dict(row))
+              session.commit()
+          finally:
+              session.close()
+          EOF
