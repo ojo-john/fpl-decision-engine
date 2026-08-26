@@ -51,16 +51,21 @@ export function SquadDifferential({
   }
 
   return (
-    <div
-      style={{
-        marginTop: "0.75rem",
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-        gap: "0.75rem",
-      }}
-    >
-      <PlayerColumn title="Only you have" players={onlyYouHave} />
-      <PlayerColumn title="Only they have" players={onlyRivalHas} />
+    <div style={{ marginTop: "0.75rem" }}>
+      <p style={{ margin: "0 0 0.5rem", fontSize: "0.78rem", color: "var(--text-muted)" }}>
+        Players you both own aren&apos;t listed on either side -- they don&apos;t affect who wins this
+        matchup, so only the differences are shown.
+      </p>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+          gap: "0.75rem",
+        }}
+      >
+        <PlayerColumn title="Only you have" players={onlyYouHave} />
+        <PlayerColumn title="Only they have" players={onlyRivalHas} />
+      </div>
     </div>
   );
 }

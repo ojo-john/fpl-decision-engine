@@ -67,7 +67,7 @@ test.describe("page rendering", () => {
     const realReview = page.getByRole("heading", { name: /review --/ });
     await expect(noReview.or(realReview)).toBeVisible();
     await expect(page.getByRole("heading", { name: "Learning signals" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Failure attributions" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "What's gone wrong" })).toBeVisible();
     expect(issues.errors).toEqual([]);
   });
 });
