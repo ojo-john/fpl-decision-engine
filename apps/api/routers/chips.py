@@ -21,12 +21,18 @@ from apps.api.schemas.chips import (
     ChipOptimizationRunOut,
     ChipOptimizationRunSummaryOut,
     ChipRecommendationOut,
+    ChipScheduleAssignmentOut,
+    ChipScheduleOptimizationRequest,
+    ChipScheduleOptimizationRunOut,
+    ChipScheduleOptimizationRunSummaryOut,
     ChipSimulationRequest,
     ChipWindowCandidateOut,
     ChipWindowOut,
 )
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.chip_recommendation import ChipRecommendation
+from packages.database.models.chip_schedule_assignment import ChipScheduleAssignment
+from packages.database.models.chip_schedule_optimization_run import ChipScheduleOptimizationRun
 from packages.database.models.chip_window_candidate import ChipWindowCandidate
 from packages.database.models.gameweek import Gameweek
 from packages.database.models.rules_config import RulesConfig
@@ -56,6 +62,16 @@ def _not_found_response(chip_optimization_run_id: uuid.UUID) -> JSONResponse:
         content={
             "error_code": "CHIP_OPTIMIZATION_RUN_NOT_FOUND",
             "detail": f"chip_optimization_runs row {chip_optimization_run_id} not found.",
+        },
+    )
+
+
+def _schedule_not_found_response(chip_schedule_optimization_run_id: uuid.UUID) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error_code": "CHIP_SCHEDULE_OPTIMIZATION_RUN_NOT_FOUND",
+            "detail": f"chip_schedule_optimization_runs row {chip_schedule_optimization_run_id} not found.",
         },
     )
 
@@ -257,6 +273,106 @@ def get_chip_windows(db: Session = Depends(get_db)) -> list[ChipWindowOut] | JSO
         )
         for w in windows
     ]
+
+
+def _load_schedule_run_response(
+    db: Session, chip_schedule_optimization_run_id: uuid.UUID
+) -> ChipScheduleOptimizationRunOut:
+    run = db.get(ChipScheduleOptimizationRun, chip_schedule_optimization_run_id)
+    assert run is not None  # a SUCCEEDED job always leaves its chip_schedule_optimization_runs row behind
+    assignment_rows = (
+        db.execute(
+            select(ChipScheduleAssignment)
+            .where(
+                ChipScheduleAssignment.chip_schedule_optimization_run_id == chip_schedule_optimization_run_id
+            )
+            .order_by(ChipScheduleAssignment.chip_type, ChipScheduleAssignment.window_number)
+        )
+        .scalars()
+        .all()
+    )
+    return ChipScheduleOptimizationRunOut(
+        chip_schedule_optimization_run_id=run.id,
+        source_chip_optimization_run_id=run.source_chip_optimization_run_id,
+        run_status=run.run_status.value,
+        total_expected_gain=run.total_expected_gain,
+        assignments=[
+            ChipScheduleAssignmentOut(
+                chip_type=row.chip_type.value,
+                window_number=row.window_number,
+                assigned_fpl_event_id=row.assigned_fpl_event_id,
+                gain_mean=row.gain_mean,
+            )
+            for row in assignment_rows
+        ],
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+    )
+
+
+@router.post("/chips/schedule", response_model=ChipScheduleOptimizationRunOut)
+def optimize_chip_schedule(
+    body: ChipScheduleOptimizationRequest, db: Session = Depends(get_db)
+) -> ChipScheduleOptimizationRunOut | JSONResponse:
+    """Phase 1 of the joint chip scheduler -- see app.jobs.handlers.chip_schedule_optimization's
+    own module docstring. MUST be registered before GET /chips/{chip_optimization_run_id} below --
+    same one-segment-path route-ordering reasoning as GET /chips/windows above (Starlette matches
+    routes in registration order; "schedule" would otherwise be swallowed as a
+    chip_optimization_run_id path parameter)."""
+    parameters: dict[str, str] = {}
+    if body.chip_optimization_run_id is not None:
+        parameters["chip_optimization_run_id"] = str(body.chip_optimization_run_id)
+
+    job = execute_job(
+        db,
+        job_type=JobType.CHIP_SCHEDULE_OPTIMIZATION,
+        parameters=parameters,
+        requested_by=body.requested_by,
+        trigger_type=TriggerType.API,
+    )
+    if job.status != JobStatus.SUCCEEDED:
+        return _error_response(job)
+
+    assert job.output_json is not None  # a SUCCEEDED job always has output_json
+    chip_schedule_optimization_run_id = uuid.UUID(job.output_json["chip_schedule_optimization_run_id"])
+    return _load_schedule_run_response(db, chip_schedule_optimization_run_id)
+
+
+@router.get("/chips/schedule", response_model=list[ChipScheduleOptimizationRunSummaryOut])
+def list_chip_schedule_optimization_runs(
+    manager_squad_snapshot_id: uuid.UUID | None = Query(None),
+    db: Session = Depends(get_db),
+) -> list[ChipScheduleOptimizationRunSummaryOut]:
+    """Most-recent-first history, mirrors GET /chips's own identical shape/reasoning."""
+    stmt = select(ChipScheduleOptimizationRun)
+    if manager_squad_snapshot_id is not None:
+        stmt = stmt.where(ChipScheduleOptimizationRun.manager_squad_snapshot_id == manager_squad_snapshot_id)
+    stmt = stmt.order_by(ChipScheduleOptimizationRun.started_at.desc()).limit(_MAX_RESULTS)
+
+    rows = db.execute(stmt).scalars().all()
+    return [
+        ChipScheduleOptimizationRunSummaryOut(
+            chip_schedule_optimization_run_id=row.id,
+            source_chip_optimization_run_id=row.source_chip_optimization_run_id,
+            manager_squad_snapshot_id=row.manager_squad_snapshot_id,
+            run_status=row.run_status.value,
+            total_expected_gain=row.total_expected_gain,
+            started_at=row.started_at,
+            completed_at=row.completed_at,
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/chips/schedule/{chip_schedule_optimization_run_id}", response_model=ChipScheduleOptimizationRunOut
+)
+def get_chip_schedule_optimization_run(
+    chip_schedule_optimization_run_id: uuid.UUID, db: Session = Depends(get_db)
+) -> ChipScheduleOptimizationRunOut | JSONResponse:
+    if db.get(ChipScheduleOptimizationRun, chip_schedule_optimization_run_id) is None:
+        return _schedule_not_found_response(chip_schedule_optimization_run_id)
+    return _load_schedule_run_response(db, chip_schedule_optimization_run_id)
 
 
 @router.get("/chips/{chip_optimization_run_id}", response_model=ChipOptimizationRunOut)

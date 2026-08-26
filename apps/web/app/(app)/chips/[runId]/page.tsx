@@ -1,4 +1,5 @@
 import { backendClient } from "@/lib/api-client";
+import { ChipScheduleButton } from "@/components/chip-schedule-button";
 import { Card, ErrorState, TableScroll } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -28,6 +29,16 @@ export default async function ChipsPage({ params }: { params: Promise<{ runId: s
         <h1 style={{ margin: 0, fontSize: "1.1rem" }}>
           Chip evaluation for GW{data.target_fpl_event_id} -- {data.run_status}
         </h1>
+      </Card>
+
+      <Card>
+        <h2 style={{ margin: "0 0 0.5rem", fontSize: "0.95rem" }}>Joint schedule</h2>
+        <p style={{ margin: "0 0 0.75rem", color: "var(--text-muted)", fontSize: "0.9rem" }}>
+          The 4 chips below are each evaluated independently -- more than one can show &quot;use
+          now&quot; for the same gameweek, which isn&apos;t actually playable (only one chip per
+          gameweek). This finds the best non-colliding combination across all 4.
+        </p>
+        <ChipScheduleButton chipOptimizationRunId={data.chip_optimization_run_id} />
       </Card>
 
       {data.recommendations.map((recommendation) => (

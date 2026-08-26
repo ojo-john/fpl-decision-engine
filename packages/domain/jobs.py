@@ -34,6 +34,11 @@ class JobType(str, Enum):
     LINEUP_OPTIMIZATION = "lineup_optimization"
     TRANSFER_OPTIMIZATION = "transfer_optimization"
     CHIP_SIMULATION = "chip_simulation"
+    # Phase 1 (assignment-only, reuses an existing CHIP_SIMULATION run's already-computed
+    # per-chip candidates): picks the best non-colliding gameweek-to-chip assignment across all
+    # 4 chips, respecting "only one chip per gameweek" -- see
+    # app/jobs/handlers/chip_schedule_optimization.py's own module docstring.
+    CHIP_SCHEDULE_OPTIMIZATION = "chip_schedule_optimization"
     H2H_SIMULATION = "h2h_simulation"
     RECOMMENDATION_GENERATION = "recommendation_generation"
     GAMEWEEK_REVIEW = "gameweek_review"

@@ -44,7 +44,7 @@ app/features/          Leakage-safe per-(player, gameweek) feature engineering
 app/modeling/          MODEL_TRAINING internals: baselines, sklearn candidates, walk-forward validation, promotion
 app/optimization/      Squad/lineup MILP solver, constraints, projection formula, optimization gate
 app/transfers/         Transfer scenario search, selling-price/free-transfer rules
-app/chips/             Chip window resolution, user chip inventory, chip scenario evaluation
+app/chips/             Chip window resolution, user chip inventory, chip scenario evaluation, joint-schedule assignment solver (see "Joint chip scheduling (Phase 1)" below)
 app/h2h/                Rival-state derivation, H2H matchup Monte Carlo simulation, strategy comparison
 app/learning/           Recursive learning: outcome ingestion, counterfactuals, failure attribution, signals
 app/scheduling/         Real, stateless scheduling logic (run_tick) -- called by both scripts/scheduler.py's local loop and POST /internal/scheduler-tick (see "Local scheduler"/"Cloud deployment" sections below)
@@ -95,7 +95,8 @@ the job types that have an HTTP trigger.
 | `SQUAD_OPTIMIZATION` | `squad_optimization.py` | ✅ | `POST /optimize/initial-squad` | |
 | `LINEUP_OPTIMIZATION` | `lineup_optimization.py` | ✅ | `POST /optimize/lineup` | |
 | `TRANSFER_OPTIMIZATION` | `transfer_optimization.py` | ✅ | `POST /optimize/transfers` | |
-| `CHIP_SIMULATION` | `chip_simulation.py` | ✅ | `POST /optimize/chips` | |
+| `CHIP_SIMULATION` | `chip_simulation.py` | ✅ | `POST /optimize/chips` | evaluates all 4 chips independently -- see "Joint chip scheduling (Phase 1)" below for why that alone can produce contradictory recommendations |
+| `CHIP_SCHEDULE_OPTIMIZATION` | `chip_schedule_optimization.py` | ✅ | `POST /optimize/chips/schedule` | Phase 1 of the joint chip scheduler, see below |
 | `H2H_SIMULATION` | `h2h_simulation.py` | ✅ | `POST /h2h/simulate` | |
 | `RECOMMENDATION_GENERATION` | `recommendation_generation.py` | ✅ | `POST /recommendations/generate` | |
 | `GAMEWEEK_REVIEW` | `gameweek_review.py` | ✅ | `POST /jobs/review-gameweek` | |
@@ -124,6 +125,45 @@ correlate whatever (if anything) already exists, not a meaningful pipeline
 step. CLI/`make full-pipeline` only, no HTTP trigger (matches
 `FEATURE_GENERATION`/`MODEL_TRAINING`'s own precedent of being
 CLI/workflow-triggered, not API-triggered).
+
+### Joint chip scheduling (Phase 1)
+
+Real bug found live (2026-08-26): `CHIP_SIMULATION` evaluates each of the 4 FPL chips (Wildcard,
+Free Hit, Bench Boost, Triple Captain) completely independently -- confirmed in that handler's own
+docstring ("One chip type, one recommendation... finds the ONE scheduling window... and evaluates
+ONLY that window"). It simultaneously recommended "use now" for Free Hit, Bench Boost, AND Triple
+Captain, all for the same gameweek -- impossible to act on, since a real FPL manager can only play
+one chip per gameweek. Nowhere in this codebase was that limitation previously documented.
+
+`CHIP_SCHEDULE_OPTIMIZATION` (`chip_schedule_optimization.py`) is a second, additive layer, not a
+replacement -- `CHIP_SIMULATION`'s own 4 independent recommendations are unchanged, still fully
+available (`GET /optimize/chips/{id}`). This job instead consumes an existing SUCCEEDED
+`CHIP_SIMULATION` run's own already-computed `chip_window_candidates` (read-only, zero
+re-evaluation) and solves a small PuLP assignment MIP
+(`app/chips/schedule_solver.py:solve_chip_schedule`, mirrors `app.optimization.joint_squad_solver`'s
+house style) for the best non-colliding gameweek-to-chip assignment: `lpSum(...) <= 1` per chip
+slot (at most one gameweek), `lpSum(...) <= 1` per real gameweek across all 4 chips (the actual
+mutual-exclusivity constraint), maximizing total selected gain. New tables
+`chip_schedule_optimization_runs`/`chip_schedule_assignments` (migration `0047`) mirror
+`ChipOptimizationRun`/`ChipWindowCandidate`'s own run-header/child-row shape, with
+`source_chip_optimization_run_id` as real provenance back to the `CHIP_SIMULATION` run the
+candidates came from. No optimization-gate check here (mirrors `RECOMMENDATION_GENERATION`'s
+identical precedent) -- this job runs no fresh optimization/projection of its own.
+
+**Stated Phase 1 scope boundary, not silently overclaimed**: every input gain is treated as fixed
+and independent, exactly as `CHIP_SIMULATION` already computed it -- compounding effects between
+chips (a Wildcard rebuild permanently changes the squad, which changes what Bench Boost/Triple
+Captain/a later Free Hit are actually worth in gameweeks after it) are NOT modeled yet, nor is
+full-season/both-windows-per-chip planning (this only ever sees whichever window `CHIP_SIMULATION`
+itself currently has open). Phase 2 (a chronological DP over gameweeks, re-evaluating downstream
+chips against a Wildcard-rebuilt baseline squad when one is hypothetically played earlier) is real,
+separate, larger future work -- not yet built.
+
+`GET /optimize/chips/windows` and the new `POST/GET /optimize/chips/schedule*` routes must all stay
+registered before `GET /optimize/chips/{chip_optimization_run_id}` (Starlette matches routes in
+registration order; a one-segment path like `/optimize/chips/schedule` would otherwise be swallowed
+as a `chip_optimization_run_id` path parameter) -- an established ordering constraint this addition
+had to respect, not a new one it introduced.
 
 ### The optimization gate
 

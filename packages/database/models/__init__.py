@@ -9,6 +9,8 @@ update this file, not also remember to touch ``env.py``.
 from packages.database.models.backtest_run import BacktestRun
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.chip_recommendation import ChipRecommendation
+from packages.database.models.chip_schedule_assignment import ChipScheduleAssignment
+from packages.database.models.chip_schedule_optimization_run import ChipScheduleOptimizationRun
 from packages.database.models.chip_window_candidate import ChipWindowCandidate
 from packages.database.models.cold_start_validation_run import ColdStartValidationRun
 from packages.database.models.counterfactual_result import CounterfactualResult
@@ -64,6 +66,8 @@ __all__ = [
     "BacktestRun",
     "ChipOptimizationRun",
     "ChipRecommendation",
+    "ChipScheduleAssignment",
+    "ChipScheduleOptimizationRun",
     "ChipWindowCandidate",
     "ColdStartValidationRun",
     "CounterfactualResult",

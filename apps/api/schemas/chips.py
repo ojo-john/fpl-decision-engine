@@ -71,6 +71,52 @@ class ChipSimulationErrorResponse(BaseModel):
     job_id: str
 
 
+class ChipScheduleOptimizationRequest(BaseModel):
+    """See app.jobs.handlers.chip_schedule_optimization's own module docstring.
+
+    ``chip_optimization_run_id`` is optional -- omit it to auto-resolve the most recently
+    completed SUCCEEDED CHIP_SIMULATION run (mirrors this codebase's own established
+    "auto-resolve if not given" convention, e.g. RECOMMENDATION_GENERATION's target-gameweek
+    resolution)."""
+
+    chip_optimization_run_id: uuid.UUID | None = None
+    requested_by: str | None = None
+
+
+class ChipScheduleAssignmentOut(BaseModel):
+    """One chip type's final decision from the assignment solve -- ``assigned_fpl_event_id``/
+    ``gain_mean`` are both ``None`` together when the solver determined this chip is not worth
+    playing within the evaluated candidates (a real, valid outcome, not a partial/error state)."""
+
+    chip_type: str
+    window_number: int
+    assigned_fpl_event_id: int | None
+    gain_mean: Decimal | None
+
+
+class ChipScheduleOptimizationRunOut(BaseModel):
+    chip_schedule_optimization_run_id: uuid.UUID
+    source_chip_optimization_run_id: uuid.UUID
+    run_status: str
+    total_expected_gain: Decimal | None
+    assignments: list[ChipScheduleAssignmentOut]
+    started_at: datetime
+    completed_at: datetime | None
+
+
+class ChipScheduleOptimizationRunSummaryOut(BaseModel):
+    """Slim per-row shape for GET /optimize/chips/schedule list -- omits ``assignments`` (mirrors
+    ``ChipOptimizationRunSummaryOut``'s own identical reasoning)."""
+
+    chip_schedule_optimization_run_id: uuid.UUID
+    source_chip_optimization_run_id: uuid.UUID
+    manager_squad_snapshot_id: uuid.UUID
+    run_status: str
+    total_expected_gain: Decimal | None
+    started_at: datetime
+    completed_at: datetime | None
+
+
 class ChipWindowOut(BaseModel):
     """One chip-scheduling window (a chip typically gets 2 per season) -- see
     ``app.chips.windows.resolve_chip_windows``. Genuinely available pre-season, unlike

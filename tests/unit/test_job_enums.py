@@ -21,6 +21,7 @@ EXPECTED_JOB_TYPE_VALUES = {
     "LINEUP_OPTIMIZATION": "lineup_optimization",
     "TRANSFER_OPTIMIZATION": "transfer_optimization",
     "CHIP_SIMULATION": "chip_simulation",
+    "CHIP_SCHEDULE_OPTIMIZATION": "chip_schedule_optimization",
     "H2H_SIMULATION": "h2h_simulation",
     "RECOMMENDATION_GENERATION": "recommendation_generation",
     "GAMEWEEK_REVIEW": "gameweek_review",

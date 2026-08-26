@@ -355,6 +355,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/optimize/chips/schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Chip Schedule Optimization Runs
+         * @description Most-recent-first history, mirrors GET /chips's own identical shape/reasoning.
+         */
+        get: operations["list_chip_schedule_optimization_runs_optimize_chips_schedule_get"];
+        put?: never;
+        /**
+         * Optimize Chip Schedule
+         * @description Phase 1 of the joint chip scheduler -- see app.jobs.handlers.chip_schedule_optimization's
+         *     own module docstring. MUST be registered before GET /chips/{chip_optimization_run_id} below --
+         *     same one-segment-path route-ordering reasoning as GET /chips/windows above (Starlette matches
+         *     routes in registration order; "schedule" would otherwise be swallowed as a
+         *     chip_optimization_run_id path parameter).
+         */
+        post: operations["optimize_chip_schedule_optimize_chips_schedule_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/optimize/chips/schedule/{chip_schedule_optimization_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Chip Schedule Optimization Run */
+        get: operations["get_chip_schedule_optimization_run_optimize_chips_schedule__chip_schedule_optimization_run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/optimize/chips/{chip_optimization_run_id}": {
         parameters: {
             query?: never;
@@ -1558,6 +1603,96 @@ export interface components {
             recommended_candidate: components["schemas"]["ChipWindowCandidateOut"] | null;
             /** Candidates */
             candidates: components["schemas"]["ChipWindowCandidateOut"][];
+        };
+        /**
+         * ChipScheduleAssignmentOut
+         * @description One chip type's final decision from the assignment solve -- ``assigned_fpl_event_id``/
+         *     ``gain_mean`` are both ``None`` together when the solver determined this chip is not worth
+         *     playing within the evaluated candidates (a real, valid outcome, not a partial/error state).
+         */
+        ChipScheduleAssignmentOut: {
+            /** Chip Type */
+            chip_type: string;
+            /** Window Number */
+            window_number: number;
+            /** Assigned Fpl Event Id */
+            assigned_fpl_event_id: number | null;
+            /** Gain Mean */
+            gain_mean: string | null;
+        };
+        /**
+         * ChipScheduleOptimizationRequest
+         * @description See app.jobs.handlers.chip_schedule_optimization's own module docstring.
+         *
+         *     ``chip_optimization_run_id`` is optional -- omit it to auto-resolve the most recently
+         *     completed SUCCEEDED CHIP_SIMULATION run (mirrors this codebase's own established
+         *     "auto-resolve if not given" convention, e.g. RECOMMENDATION_GENERATION's target-gameweek
+         *     resolution).
+         */
+        ChipScheduleOptimizationRequest: {
+            /** Chip Optimization Run Id */
+            chip_optimization_run_id?: string | null;
+            /** Requested By */
+            requested_by?: string | null;
+        };
+        /** ChipScheduleOptimizationRunOut */
+        ChipScheduleOptimizationRunOut: {
+            /**
+             * Chip Schedule Optimization Run Id
+             * Format: uuid
+             */
+            chip_schedule_optimization_run_id: string;
+            /**
+             * Source Chip Optimization Run Id
+             * Format: uuid
+             */
+            source_chip_optimization_run_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Total Expected Gain */
+            total_expected_gain: string | null;
+            /** Assignments */
+            assignments: components["schemas"]["ChipScheduleAssignmentOut"][];
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Completed At */
+            completed_at: string | null;
+        };
+        /**
+         * ChipScheduleOptimizationRunSummaryOut
+         * @description Slim per-row shape for GET /optimize/chips/schedule list -- omits ``assignments`` (mirrors
+         *     ``ChipOptimizationRunSummaryOut``'s own identical reasoning).
+         */
+        ChipScheduleOptimizationRunSummaryOut: {
+            /**
+             * Chip Schedule Optimization Run Id
+             * Format: uuid
+             */
+            chip_schedule_optimization_run_id: string;
+            /**
+             * Source Chip Optimization Run Id
+             * Format: uuid
+             */
+            source_chip_optimization_run_id: string;
+            /**
+             * Manager Squad Snapshot Id
+             * Format: uuid
+             */
+            manager_squad_snapshot_id: string;
+            /** Run Status */
+            run_status: string;
+            /** Total Expected Gain */
+            total_expected_gain: string | null;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Completed At */
+            completed_at: string | null;
         };
         /** ChipSimulationRequest */
         ChipSimulationRequest: {
@@ -3678,6 +3813,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChipWindowOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_chip_schedule_optimization_runs_optimize_chips_schedule_get: {
+        parameters: {
+            query?: {
+                manager_squad_snapshot_id?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChipScheduleOptimizationRunSummaryOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    optimize_chip_schedule_optimize_chips_schedule_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChipScheduleOptimizationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChipScheduleOptimizationRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_chip_schedule_optimization_run_optimize_chips_schedule__chip_schedule_optimization_run_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                chip_schedule_optimization_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChipScheduleOptimizationRunOut"];
                 };
             };
             /** @description Validation Error */

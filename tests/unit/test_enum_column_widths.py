@@ -49,6 +49,9 @@ _REAL_COLUMN_WIDTHS: dict[tuple[str, str], int] = {
     # first created them -- left untouched by 0043, not silently broken, not touched.
     ("chip_recommendations", "chip_type"): 14,
     ("chip_recommendations", "verdict"): 64,
+    ("chip_schedule_assignments", "chip_type"): 64,
+    ("chip_schedule_optimization_runs", "run_status"): 64,
+    ("chip_schedule_optimization_runs", "solver_status"): 64,
     ("chip_window_candidates", "chip_type"): 14,
     ("cold_start_validation_runs", "run_status"): 64,
     ("counterfactual_results", "comparison_type"): 64,

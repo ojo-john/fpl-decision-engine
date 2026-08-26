@@ -92,3 +92,19 @@ class ChipOptimizationRunStatus(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+
+
+class ChipScheduleRunStatus(str, Enum):
+    """Lifecycle status of a ``chip_schedule_optimization_runs`` row (Phase 1 of the joint chip
+    scheduler -- see ``app.jobs.handlers.chip_schedule_optimization``'s own module docstring).
+
+    Structurally identical to ``ChipOptimizationRunStatus`` above -- a distinct enum for the same
+    reason that one is distinct from ``OptimizationRunStatus``/``TransferOptimizationRunStatus``:
+    each run-header table gets its own dedicated status enum by this codebase's own SQLAlchemy
+    convention, even though every one of them is the same running/succeeded/failed three-state
+    shape.
+    """
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
