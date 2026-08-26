@@ -38,7 +38,7 @@ export default async function ChipsPage({ params }: { params: Promise<{ runId: s
           now&quot; for the same gameweek, which isn&apos;t actually playable (only one chip per
           gameweek). This finds the best non-colliding combination across all 4.
         </p>
-        <ChipScheduleButton chipOptimizationRunId={data.chip_optimization_run_id} />
+        <ChipScheduleButton managerSquadSnapshotId={data.manager_squad_snapshot_id} />
       </Card>
 
       {data.recommendations.map((recommendation) => (

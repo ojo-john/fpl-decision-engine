@@ -2,31 +2,38 @@
 
 Mirrors ``test_api_chip_optimization.py``'s own "duplicate a minimal setup rather than import
 from the job-level test module" discipline -- this module tests the HTTP layer specifically
-(request/response shape, error-to-409/404 mapping, route-ordering), not the job's own assignment
-logic, which is already covered in depth by ``test_chip_schedule_optimization_job.py``. Source
-``ChipOptimizationRun``/``ChipWindowCandidate`` rows are hand-seeded directly via the ORM (not a
-real CHIP_SIMULATION run) for the same reason that module does it -- fast, deterministic control
-over gain values, since this job only ever reads those two tables.
+(request/response shape, error-to-409/404 mapping, route-ordering), not the real evaluation logic,
+already covered in depth by ``test_chip_schedule_optimization_job.py``. Phase 2's own real
+structural change: the request body is now ``manager_squad_snapshot_id`` (mirrors
+``ChipSimulationRequest``'s own shape) -- there is no longer an existing ``CHIP_SIMULATION`` run
+to point at instead.
 """
 
 import uuid
-from datetime import UTC, datetime
-from decimal import Decimal
 
-from sqlalchemy import select
+import pytest
+from sqlalchemy import delete, select
 
 from app.jobs.service import execute_job
-from packages.database.models.chip_optimization_run import ChipOptimizationRun
-from packages.database.models.chip_window_candidate import ChipWindowCandidate
+from packages.database.models.chip_schedule_optimization_run import ChipScheduleOptimizationRun
 from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
 from packages.database.models.player import Player
-from packages.database.models.rules_config import RulesConfig
 from packages.database.models.season import Season
-from packages.domain.chips import ChipOptimizationRunStatus, ChipType
 from packages.domain.jobs import JobStatus, JobType, TriggerType
-from packages.domain.rules import RulesStatus
 from packages.domain.transfers import ManagerSquadSnapshotSource
 from tests.integration.conftest import authed_client
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_chip_schedule_optimization_runs(db_session):
+    """See test_chip_schedule_optimization_job.py's own identical fixture for the full real
+    incident this guards against (a shared-DB alembic-downgrade failure)."""
+    db_session.execute(delete(ChipScheduleOptimizationRun))
+    db_session.commit()
+    yield
+    db_session.execute(delete(ChipScheduleOptimizationRun))
+    db_session.commit()
+
 
 _SQUAD_ELEMENT_IDS = [
     30001,
@@ -45,6 +52,9 @@ _SQUAD_ELEMENT_IDS = [
     30049,
     30050,
 ]
+_STARTING_ELEMENT_IDS = [30001, 30010, 30011, 30019, 30014, 30028, 30029, 30030, 30031, 30048, 30049]
+_BENCH_ELEMENT_IDS = [30002, 30016, 30032, 30050]
+_CAPTAIN_ELEMENT_ID = 30048
 
 
 def _seed(db_session):
@@ -54,6 +64,36 @@ def _seed(db_session):
         select(Season.id).where(Season.label == ingestion_job.output_json["season_label"])
     ).scalar_one()
     return season_id
+
+
+def _raw_picks_json() -> dict:
+    picks = []
+    for position, element in enumerate(_STARTING_ELEMENT_IDS, start=1):
+        picks.append(
+            {
+                "element": element,
+                "position": position,
+                "multiplier": 2 if element == _CAPTAIN_ELEMENT_ID else 1,
+                "is_captain": element == _CAPTAIN_ELEMENT_ID,
+                "is_vice_captain": False,
+            }
+        )
+    for offset, element in enumerate(_BENCH_ELEMENT_IDS):
+        picks.append(
+            {
+                "element": element,
+                "position": 12 + offset,
+                "multiplier": 0,
+                "is_captain": False,
+                "is_vice_captain": False,
+            }
+        )
+    return {
+        "active_chip": None,
+        "automatic_subs": [],
+        "entry_history": {"event": 1, "bank": 5},
+        "picks": picks,
+    }
 
 
 def _create_manual_snapshot(db_session, season_id) -> ManagerSquadSnapshot:
@@ -85,7 +125,7 @@ def _create_manual_snapshot(db_session, season_id) -> ManagerSquadSnapshot:
         has_unresolved_players=False,
         raw_entry_json=None,
         raw_history_json=None,
-        raw_picks_json=None,
+        raw_picks_json=_raw_picks_json(),
         raw_transfers_json=None,
         is_current=False,
         superseded_at=None,
@@ -96,99 +136,43 @@ def _create_manual_snapshot(db_session, season_id) -> ManagerSquadSnapshot:
     return snapshot
 
 
-def _seed_source_chip_optimization_run(db_session, snapshot: ManagerSquadSnapshot) -> ChipOptimizationRun:
-    rules_config_id = db_session.execute(
-        select(RulesConfig.id).where(
-            RulesConfig.season_id == snapshot.season_id, RulesConfig.is_current.is_(True)
-        )
-    ).scalar_one()
-    now = datetime.now(UTC)
-    run = ChipOptimizationRun(
-        manager_squad_snapshot_id=snapshot.id,
-        season_id=snapshot.season_id,
-        rules_config_id=rules_config_id,
-        run_status=ChipOptimizationRunStatus.SUCCEEDED,
-        target_fpl_event_id=2,
-        projection_formula_version=1,
-        rules_status_snapshot=RulesStatus.OK,
-        optimization_permitted_snapshot=True,
-        started_at=now,
-        completed_at=now,
-    )
-    db_session.add(run)
-    db_session.commit()
-    db_session.refresh(run)
-
-    db_session.add_all(
-        [
-            ChipWindowCandidate(
-                chip_optimization_run_id=run.id,
-                chip_type=ChipType.FREEHIT,
-                window_number=1,
-                candidate_fpl_event_id=2,
-                gain_mean=Decimal("3.3"),
-                gain_floor=Decimal("3.3"),
-                gain_ceiling=Decimal("3.3"),
-                rank_within_chip_type=1,
-            ),
-            ChipWindowCandidate(
-                chip_optimization_run_id=run.id,
-                chip_type=ChipType.TRIPLE_CAPTAIN,
-                window_number=1,
-                candidate_fpl_event_id=2,
-                gain_mean=Decimal("7.3"),
-                gain_floor=Decimal("7.3"),
-                gain_ceiling=Decimal("7.3"),
-                rank_within_chip_type=1,
-            ),
-        ]
-    )
-    db_session.commit()
-    return run
-
-
 def test_chip_schedule_optimization_happy_path(
     db_session, patched_fpl_client_optimization_with_active_gameweek
 ):
+    """The active-gameweek fixture's only unfinished gameweek (event 38, window 2) is enough for a
+    real, if small, end-to-end evaluation -- request/response shape is this module's own concern,
+    not the real evaluation math (see test_chip_schedule_optimization_job.py for that)."""
     season_id = _seed(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id)
-    source_run = _seed_source_chip_optimization_run(db_session, snapshot)
     client = authed_client()
 
-    response = client.post("/optimize/chips/schedule", json={"chip_optimization_run_id": str(source_run.id)})
+    response = client.post("/optimize/chips/schedule", json={"manager_squad_snapshot_id": str(snapshot.id)})
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     body = response.json()
     assert body["run_status"] == "succeeded"
-    assert body["source_chip_optimization_run_id"] == str(source_run.id)
-    assert float(body["total_expected_gain"]) == 7.3
-    assignments_by_chip = {a["chip_type"]: a for a in body["assignments"]}
-    assert assignments_by_chip["3xc"]["assigned_fpl_event_id"] == 2
-    assert assignments_by_chip["freehit"]["assigned_fpl_event_id"] is None
+    assert body["manager_squad_snapshot_id"] == str(snapshot.id)
+    # Phase 2 never has a source CHIP_SIMULATION run (migration 0048 made this nullable).
+    assert body["source_chip_optimization_run_id"] is None
+    assert isinstance(body["assignments"], list)
 
 
-def test_chip_schedule_optimization_auto_resolves_when_no_id_given(
-    db_session, patched_fpl_client_optimization_with_active_gameweek
-):
-    season_id = _seed(db_session)
-    snapshot = _create_manual_snapshot(db_session, season_id)
-    source_run = _seed_source_chip_optimization_run(db_session, snapshot)
+def test_chip_schedule_optimization_missing_snapshot_id_returns_422(db_session):
     client = authed_client()
 
     response = client.post("/optimize/chips/schedule", json={})
 
-    assert response.status_code == 200
-    assert response.json()["source_chip_optimization_run_id"] == str(source_run.id)
+    assert response.status_code == 422
 
 
-def test_chip_schedule_optimization_unknown_source_run_returns_409(db_session):
+def test_chip_schedule_optimization_unknown_snapshot_returns_409(db_session):
     client = authed_client()
 
-    response = client.post("/optimize/chips/schedule", json={"chip_optimization_run_id": str(uuid.uuid4())})
+    response = client.post("/optimize/chips/schedule", json={"manager_squad_snapshot_id": str(uuid.uuid4())})
 
     assert response.status_code == 409
     body = response.json()
-    assert body["error_code"] == "CHIP_OPTIMIZATION_RUN_NOT_FOUND"
+    assert body["error_code"] == "SNAPSHOT_NOT_FOUND"
     assert "job_id" in body
 
 
@@ -197,10 +181,9 @@ def test_get_chip_schedule_optimization_run_returns_the_same_body_the_post_retur
 ):
     season_id = _seed(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id)
-    source_run = _seed_source_chip_optimization_run(db_session, snapshot)
     client = authed_client()
     created = client.post(
-        "/optimize/chips/schedule", json={"chip_optimization_run_id": str(source_run.id)}
+        "/optimize/chips/schedule", json={"manager_squad_snapshot_id": str(snapshot.id)}
     ).json()
 
     response = client.get(f"/optimize/chips/schedule/{created['chip_schedule_optimization_run_id']}")
@@ -223,10 +206,9 @@ def test_list_chip_schedule_optimization_runs_filters_by_snapshot(
 ):
     season_id = _seed(db_session)
     snapshot = _create_manual_snapshot(db_session, season_id)
-    source_run = _seed_source_chip_optimization_run(db_session, snapshot)
     client = authed_client()
     created = client.post(
-        "/optimize/chips/schedule", json={"chip_optimization_run_id": str(source_run.id)}
+        "/optimize/chips/schedule", json={"manager_squad_snapshot_id": str(snapshot.id)}
     ).json()
 
     response = client.get("/optimize/chips/schedule", params={"manager_squad_snapshot_id": str(snapshot.id)})
@@ -247,7 +229,7 @@ def test_list_chip_schedule_optimization_runs_empty_for_unknown_snapshot():
     assert response.json() == []
 
 
-def test_chip_windows_route_still_resolves_before_the_run_id_route(db_session):
+def test_chip_schedule_route_still_resolves_before_the_run_id_route(db_session):
     """Route-ordering regression guard: /optimize/chips/schedule (and /windows) must stay
     registered before the one-segment /optimize/chips/{chip_optimization_run_id} catch-all, or
     Starlette would try to parse "schedule"/"windows" as a UUID path parameter and 422 instead of
@@ -257,3 +239,19 @@ def test_chip_windows_route_still_resolves_before_the_run_id_route(db_session):
     response = client.get("/optimize/chips/schedule")
 
     assert response.status_code == 200
+
+
+def test_get_chip_optimization_run_includes_manager_squad_snapshot_id(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """A real regression guard for the field the frontend's own joint-schedule button now depends
+    on (POST /optimize/chips/schedule takes manager_squad_snapshot_id, not a source run id -- the
+    chip run detail page has to get it from here)."""
+    season_id = _seed(db_session)
+    snapshot = _create_manual_snapshot(db_session, season_id)
+    client = authed_client()
+
+    response = client.post("/optimize/chips", json={"manager_squad_snapshot_id": str(snapshot.id)})
+
+    assert response.status_code == 200
+    assert response.json()["manager_squad_snapshot_id"] == str(snapshot.id)

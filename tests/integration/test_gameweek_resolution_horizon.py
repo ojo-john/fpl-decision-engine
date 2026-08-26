@@ -213,3 +213,20 @@ def test_resolve_gameweeks_within_window_empty_when_window_already_closed(db_ses
     result = resolve_gameweeks_within_window(db_session, season_id, stop_event=1, now=_NOW)
 
     assert result == []
+
+
+def test_resolve_gameweeks_within_window_start_event_excludes_an_earlier_still_open_window(db_session):
+    """The real gap found building the joint chip scheduler's Phase 2: without an explicit
+    ``start_event`` lower bound, resolving a FUTURE window (e.g. window 2, GW20-38) while the
+    season is still inside an earlier one (window 1, GW1-19) would silently also return every
+    remaining gameweek of that earlier window too, since ``deadline_time > now`` alone doesn't
+    know anything about window boundaries. All 3 seeded gameweeks here have open deadlines --
+    only ``start_event`` distinguishes "window 1's own remaining gameweeks" from "window 2"."""
+    season_id = _make_season(db_session)
+    _make_gameweek(db_session, season_id, 5, deadline_offset_days=1, finished=False)
+    gw20 = _make_gameweek(db_session, season_id, 20, deadline_offset_days=100, finished=False)
+    gw21 = _make_gameweek(db_session, season_id, 21, deadline_offset_days=107, finished=False)
+
+    result = resolve_gameweeks_within_window(db_session, season_id, stop_event=38, now=_NOW, start_event=20)
+
+    assert result == [gw20, gw21]

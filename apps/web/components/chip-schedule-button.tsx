@@ -8,26 +8,29 @@ import type { components } from "@/lib/api-types";
 type ChipScheduleOptimizationRunOut = components["schemas"]["ChipScheduleOptimizationRunOut"];
 
 /**
- * POST /optimize/chips/schedule -- Phase 1 of the joint chip scheduler (see
+ * POST /optimize/chips/schedule -- the joint chip scheduler (see
  * app.jobs.handlers.chip_schedule_optimization's own module docstring). Real gap this closes: the
  * 4 chip cards on this page are each evaluated completely independently and can (did, live)
  * recommend "use now" for several chips in the SAME gameweek -- impossible to act on, since a real
  * FPL manager can only play one chip per gameweek. This button asks for the best non-colliding
- * combination across all 4, computed from the SAME candidate gains already shown above (no
- * re-evaluation -- see that module's own stated Phase 1 scope boundary: compounding effects
- * between chips, e.g. a Wildcard rebuild changing what Bench Boost is worth afterward, are not
- * modeled yet).
+ * combination across all 4, across BOTH windows each, with real path-dependent re-evaluation for
+ * anything after a Wildcard (a Wildcard permanently reshapes the squad, changing what Bench
+ * Boost/Triple Captain/a later chip window is actually worth -- see that module's own stated scope
+ * boundary for exactly what is and isn't modeled). A fresh, full evaluation, not a lookup -- takes
+ * meaningfully longer than the 4 cards above (real, uncapped Monte Carlo evaluation across two
+ * windows, plus one extra re-evaluation pass per Wildcard candidate).
  */
-export function ChipScheduleButton({ chipOptimizationRunId }: { chipOptimizationRunId: string }) {
+export function ChipScheduleButton({ managerSquadSnapshotId }: { managerSquadSnapshotId: string }) {
   const [result, setResult] = useState<ChipScheduleOptimizationRunOut | null>(null);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
       <ActionButton
         path="/optimize/chips/schedule"
-        body={{ chip_optimization_run_id: chipOptimizationRunId }}
+        body={{ manager_squad_snapshot_id: managerSquadSnapshotId }}
         label="Build joint schedule (no chip collisions)"
         pendingLabel="Scheduling..."
+        stillWorkingCopy="Still working -- a full-season joint schedule genuinely takes several real minutes (much longer than the 4 cards above), not seconds."
         onSuccess={(data) => setResult(data as ChipScheduleOptimizationRunOut)}
       />
       {result && (

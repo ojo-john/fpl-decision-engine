@@ -1,6 +1,5 @@
-"""CHIP_SCHEDULE_OPTIMIZATION job (Phase 1 of the joint chip scheduler): given an existing,
-already-SUCCEEDED ``CHIP_SIMULATION`` run's own persisted ``chip_window_candidates``, pick the
-best non-colliding gameweek-to-chip assignment across all 4 chips.
+"""CHIP_SCHEDULE_OPTIMIZATION job (the joint chip scheduler): a fresh, full-season evaluation of
+all 4 chips, both windows each, picking the best non-colliding gameweek-to-chip assignment.
 
 Real incident this fixes: ``CHIP_SIMULATION`` evaluates each of the 4 FPL chips (Wildcard,
 Free Hit, Bench Boost, Triple Captain) completely independently — confirmed live: it
@@ -9,128 +8,254 @@ SAME gameweek. A real FPL manager can only play one chip per gameweek, so 3 inde
 verdicts for one week is not an actionable recommendation, it's 3 contradictory ones. Nowhere in
 this codebase was that limitation previously documented.
 
-This handler does NOT re-evaluate anything — every gain it works with is read verbatim from the
-source run's own ``chip_window_candidates`` rows, exactly as ``app.chips.scenario`` already
-computed them. The only new work is the assignment/scheduling layer itself
-(``app.chips.schedule_solver.solve_chip_schedule``, a small PuLP MIP — see that module's own
-docstring for the exact constraints). This is a deliberate, stated Phase 1 scope boundary:
-compounding effects between chips (e.g. a Wildcard rebuild changing what Bench Boost is worth in a
-gameweek after it) are NOT modeled here — every input gain is treated as fixed and independent,
-exactly as it already was before this job existed. That deeper, path-dependent recomputation,
-across BOTH windows for every chip (not just whichever window ``CHIP_SIMULATION`` currently has
-open), is Phase 2 — a real, larger, separate piece of work, not silently bundled into this one.
+**Phase 1** (shipped first, still the schema this builds on) consumed an existing SUCCEEDED
+``CHIP_SIMULATION`` run's already-computed ``chip_window_candidates`` as fixed inputs — fast, but
+limited to whichever ONE window per chip that run happened to evaluate, and blind to any
+compounding effect between chips.
 
-No optimization-gate check here (mirrors ``RECOMMENDATION_GENERATION``'s identical precedent,
-see that handler's own module docstring): this job runs no fresh optimization or projection of
-its own, it only consumes an already-gated run's persisted output — the gate was already checked
-when the source ``CHIP_SIMULATION`` run itself was created.
+**This is Phase 2**: a real structural change, not an incremental patch. This handler no longer
+reads a prior run's rows at all — it takes a ``manager_squad_snapshot_id`` directly (mirroring
+``CHIP_SIMULATION``'s own input shape) and evaluates fresh, via
+``app.jobs.handlers.chip_simulation``'s own shared building blocks
+(``_resolve_chip_evaluation_inputs``/``_build_chip_evaluation_context``/``_evaluate_chip_candidates``
+/``_post_wildcard_evaluation_context`` — imported directly, mirroring this codebase's own existing
+precedent of importing ``_build_lineup_candidates`` across handler modules rather than duplicating
+real business logic):
 
-Input resolution (``parameters.chip_optimization_run_id``, optional): an explicit run id is used
-as-is (must exist and be SUCCEEDED); omitted resolves the most recently completed SUCCEEDED
-``CHIP_SIMULATION`` run across the whole system (mirrors this codebase's own established
-"auto-resolve if not given" convention, e.g. ``RECOMMENDATION_GENERATION``'s target-gameweek
-resolution) — there is at most one real manager configured in this system today (see
-``app.jobs.handlers.recommendation_generation``'s own docstring for the same real, stated
-single-manager assumption), so "most recent" is unambiguous.
+1. Resolve inputs and run a REAL optimization-gate check (unlike Phase 1, this job now does its
+   own fresh projection/optimization work, so — unlike Phase 1's justified "no gate, reads
+   already-gated output" — it needs the same gate every other fresh-evaluation job checks).
+2. Evaluate every genuinely ``AVAILABLE`` window (per ``app.chips.inventory
+   .derive_user_chip_windows``) for all 4 chips — BOTH windows each, not just whichever one
+   ``target_fpl_event_id`` currently falls inside — against the manager's REAL current squad.
+   These are the BASELINE candidates, identical in spirit to what ``CHIP_SIMULATION`` itself
+   computes for its own one window.
+3. **Path dependence**: only Wildcard permanently changes the squad (Free Hit's own squad change
+   reverts the following gameweek — never a path-dependence trigger; Bench Boost/Triple Captain
+   never change squad composition at all, only apply a transient multiplier). For every Wildcard
+   candidate in the season's FIRST occurring (evaluated, available) window, build a hypothetical
+   post-rebuild squad context (``_post_wildcard_evaluation_context``, reusing that candidate's own
+   already-computed ``JointSquadSolution`` — no re-solving) and re-evaluate every OTHER chip's own
+   candidate gameweek that falls chronologically AFTER it, producing a
+   ``ChipSchedulePostWildcardVariant`` — an alternate, path-aware gain, only claimable in the final
+   assignment if that exact Wildcard candidate is ALSO chosen (see ``app.chips.schedule_solver``'s
+   own module docstring for the MIP mechanics).
+4. Solve (``app.chips.schedule_solver.solve_chip_schedule``) and persist the winning assignment
+   per (chip_type, window_number) slot.
 
-Zero eligible candidates (e.g. every chip already used, or the source run evaluated none) is a
-valid SUCCEEDED outcome with an empty assignment set — never a refusal; there is nothing wrong
-with "nothing left to schedule."
+**Stated, deliberate scope boundary**: only the season's first-occurring Wildcard window triggers
+path-dependent variants for everything after it — a second Wildcard's own value (if the manager's
+first-window Wildcard was also played) is never itself re-evaluated against that hypothetical
+rebuild. Modeling that deeper, transitively-chained compounding (Wildcard-after-Wildcard) is real,
+separate, larger future work, not built here — the single most impactful real-world case (an
+early-season Wildcard reshaping everything that follows) is what this covers. Real, meaningfully
+larger compute cost than Phase 1 as a direct consequence: Bench Boost/Triple Captain are evaluated
+exhaustively per window (unlike Wildcard/Free Hit, capped at 4 candidates each) at 2000 Monte Carlo
+samples per candidate gameweek, and each qualifying Wildcard candidate triggers one additional
+re-evaluation pass over every later candidate — bounded (not exponential) but real, likely several
+minutes, similar territory to the real ``TRANSFER_OPTIMIZATION`` runs already seen on this
+Supabase tier.
+
+``source_chip_optimization_run_id`` (migration ``0048`` made this nullable) is always ``None`` for
+a run produced by this handler — there is no longer a source ``CHIP_SIMULATION`` run to point back
+to; kept only for historical Phase-1-shaped rows. Likewise ``ChipScheduleAssignment
+.source_chip_window_candidate_id`` is always ``None`` here — this handler's own candidates/variants
+are ephemeral, computed in-memory, never separately persisted as their own rows (only the winning
+assignment is written).
+
+Zero eligible candidates (e.g. every chip already used this season) is a valid SUCCEEDED outcome
+with an empty assignment set — never a refusal; there is nothing wrong with "nothing left to
+schedule."
 
 Create-early-RUNNING-row discipline mirrors ``ChipSimulationJobRunner``'s own documented
-convention: input/source-run resolution happens BEFORE the ``chip_schedule_optimization_runs`` row
-is created (a hard refusal on a missing/unusable source run never pollutes the audit trail); the
-row is created immediately after, before the solve itself, so a crash mid-run still leaves a
-terminal FAILED row via ``_finalize_failed``.
+convention: input resolution (including the gate check) happens BEFORE the
+``chip_schedule_optimization_runs`` row is created (a hard refusal never pollutes the audit
+trail); the row is created immediately after, before the real evaluation work, so a crash mid-run
+still leaves a terminal FAILED row via ``_finalize_failed``.
 """
 
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.chips.schedule_solver import ChipScheduleCandidateInput, solve_chip_schedule
+from app.chips.inventory import derive_user_chip_windows
+from app.chips.scenario import ChipWindowCandidateResult
+from app.chips.schedule_solver import (
+    ChipScheduleCandidateInput,
+    ChipSchedulePostWildcardVariant,
+    solve_chip_schedule,
+)
+from app.chips.windows import resolve_chip_windows
+from app.jobs.handlers.chip_simulation import (
+    _build_chip_evaluation_context,
+    _ChipEvaluationContext,
+    _ChipEvaluationInputs,
+    _evaluate_chip_candidates,
+    _InputResolutionError,
+    _parse_uuid_parameter,
+    _post_wildcard_evaluation_context,
+    _resolve_chip_evaluation_inputs,
+)
 from app.jobs.registry import register_handler
 from app.jobs.runner import JobContext, JobResult, JobRunner
-from packages.database.models.chip_optimization_run import ChipOptimizationRun
+from app.optimization.gameweek_resolution import resolve_gameweeks_within_window
 from packages.database.models.chip_schedule_assignment import ChipScheduleAssignment
 from packages.database.models.chip_schedule_optimization_run import ChipScheduleOptimizationRun
-from packages.database.models.chip_window_candidate import ChipWindowCandidate
 from packages.database.session import SessionLocal
-from packages.domain.chips import ChipOptimizationRunStatus, ChipScheduleRunStatus
+from packages.domain.chips import ChipScheduleRunStatus, ChipType, UserChipWindowStatus
 from packages.domain.jobs import JobStatus, JobType
 from packages.domain.optimization import SolverStatus
 
 
-class _InputResolutionError(Exception):
-    """Raised for a clear, user-facing input problem, always caught before any row is created."""
+def _evaluate_baseline_candidates(
+    session: Session, inputs: _ChipEvaluationInputs, eval_ctx: _ChipEvaluationContext
+) -> tuple[
+    list[ChipScheduleCandidateInput],
+    dict[tuple[ChipType, int], list[ChipWindowCandidateResult]],
+    dict[tuple[ChipType, int, int], uuid.UUID],
+]:
+    """Evaluate every genuinely AVAILABLE window for all 4 chips against the REAL current squad
+    (no path dependence yet -- see ``_build_post_wildcard_variants`` below for that). Returns the
+    flat candidate list the solver needs, plus the raw per-slot results and a
+    (chip_type, window_number, fpl_event_id) -> candidate_id lookup, both needed to build variants
+    afterward.
+    """
+    chip_windows = resolve_chip_windows(inputs.rules_config.raw_chips_json)
+    candidates: list[ChipScheduleCandidateInput] = []
+    results_by_slot: dict[tuple[ChipType, int], list[ChipWindowCandidateResult]] = {}
+    candidate_id_by_key: dict[tuple[ChipType, int, int], uuid.UUID] = {}
 
-    def __init__(self, error_code: str, message: str):
-        super().__init__(message)
-        self.error_code = error_code
-
-
-def _resolve_source_run(session: Session, parameters: dict | None) -> ChipOptimizationRun:
-    raw = (parameters or {}).get("chip_optimization_run_id")
-    if raw is not None:
-        try:
-            run_id = uuid.UUID(str(raw))
-        except (ValueError, AttributeError, TypeError):
-            raise _InputResolutionError(
-                "INVALID_CHIP_OPTIMIZATION_RUN_ID", "parameters.chip_optimization_run_id is not a valid UUID."
-            ) from None
-        run = session.get(ChipOptimizationRun, run_id)
-        if run is None:
-            raise _InputResolutionError(
-                "CHIP_OPTIMIZATION_RUN_NOT_FOUND", f"chip_optimization_runs row {run_id} not found."
-            )
-        if run.run_status != ChipOptimizationRunStatus.SUCCEEDED:
-            raise _InputResolutionError(
-                "CHIP_OPTIMIZATION_RUN_NOT_SUCCEEDED",
-                f"chip_optimization_runs row {run_id} has run_status={run.run_status.value}, not succeeded "
-                "-- nothing usable to schedule from.",
-            )
-        return run
-
-    run = session.execute(
-        select(ChipOptimizationRun)
-        .where(ChipOptimizationRun.run_status == ChipOptimizationRunStatus.SUCCEEDED)
-        .order_by(ChipOptimizationRun.completed_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if run is None:
-        raise _InputResolutionError(
-            "NO_SUCCEEDED_CHIP_SIMULATION_RUN",
-            "No SUCCEEDED CHIP_SIMULATION run exists to schedule from -- run one first.",
+    for chip_type in ChipType:
+        windows_for_type = [w for w in chip_windows if w.chip_type == chip_type]
+        derived = derive_user_chip_windows(
+            windows_for_type,
+            inputs.snapshot.chips_used_json,
+            inputs.snapshot.active_chip,
+            inputs.target_fpl_event_id,
         )
-    return run
+        for user_window in derived:
+            if user_window.status != UserChipWindowStatus.AVAILABLE:
+                continue
+            window_gameweek_ids = resolve_gameweeks_within_window(
+                session,
+                inputs.season_id,
+                user_window.window.stop_event,
+                eval_ctx.now,
+                start_event=user_window.window.start_event,
+            )
+            if not window_gameweek_ids:
+                continue
+            results = _evaluate_chip_candidates(session, chip_type, window_gameweek_ids, eval_ctx)
+            if not results:
+                continue
+            window_number = user_window.window.window_number
+            results_by_slot[(chip_type, window_number)] = results
+            for result in results:
+                candidate_id = uuid.uuid4()
+                candidate_id_by_key[(chip_type, window_number, result.fpl_event_id)] = candidate_id
+                candidates.append(
+                    ChipScheduleCandidateInput(
+                        candidate_id=candidate_id,
+                        chip_type=chip_type,
+                        window_number=window_number,
+                        fpl_event_id=result.fpl_event_id,
+                        gain_mean=result.gain_mean,
+                    )
+                )
+
+    return candidates, results_by_slot, candidate_id_by_key
+
+
+def _primary_wildcard_slot(
+    results_by_slot: dict[tuple[ChipType, int], list[ChipWindowCandidateResult]],
+) -> tuple[int, list[ChipWindowCandidateResult]] | None:
+    """The season's FIRST-occurring evaluated Wildcard window (by window_number -- window 1 always
+    precedes window 2 in real time) -- see module docstring for why only this one window's own
+    candidates trigger path-dependent variants for everything after them. ``None`` if Wildcard has
+    no available, evaluated window at all this run (nothing to trigger path dependence from)."""
+    wildcard_slots = {
+        window_number: results
+        for (chip_type, window_number), results in results_by_slot.items()
+        if chip_type == ChipType.WILDCARD
+    }
+    if not wildcard_slots:
+        return None
+    window_number = min(wildcard_slots)
+    return window_number, wildcard_slots[window_number]
+
+
+def _build_post_wildcard_variants(
+    session: Session,
+    eval_ctx: _ChipEvaluationContext,
+    results_by_slot: dict[tuple[ChipType, int], list[ChipWindowCandidateResult]],
+    candidate_id_by_key: dict[tuple[ChipType, int, int], uuid.UUID],
+) -> list[ChipSchedulePostWildcardVariant]:
+    """For each candidate in the primary Wildcard window, re-evaluate every OTHER chip's own
+    already-evaluated LATER candidate gameweeks against the hypothetical post-rebuild squad --
+    see module docstring for the full path-dependence design and its stated scope boundary."""
+    primary = _primary_wildcard_slot(results_by_slot)
+    if primary is None:
+        return []
+    primary_window_number, wildcard_results = primary
+
+    variants: list[ChipSchedulePostWildcardVariant] = []
+    for wildcard_result in wildcard_results:
+        wildcard_candidate_id = candidate_id_by_key[
+            (ChipType.WILDCARD, primary_window_number, wildcard_result.fpl_event_id)
+        ]
+        post_ctx = _post_wildcard_evaluation_context(session, eval_ctx, wildcard_result)
+
+        for (chip_type, window_number), results in results_by_slot.items():
+            if chip_type == ChipType.WILDCARD and window_number == primary_window_number:
+                continue  # can't claim a path-dependent variant of the very trigger itself
+            later_gameweek_ids = [
+                result.gameweek_id for result in results if result.fpl_event_id > wildcard_result.fpl_event_id
+            ]
+            if not later_gameweek_ids:
+                continue
+            variant_results = _evaluate_chip_candidates(session, chip_type, later_gameweek_ids, post_ctx)
+            for variant_result in variant_results:
+                variants.append(
+                    ChipSchedulePostWildcardVariant(
+                        variant_id=uuid.uuid4(),
+                        chip_type=chip_type,
+                        window_number=window_number,
+                        fpl_event_id=variant_result.fpl_event_id,
+                        gain_mean=variant_result.gain_mean,
+                        requires_wildcard_candidate_id=wildcard_candidate_id,
+                    )
+                )
+
+    return variants
 
 
 @register_handler(JobType.CHIP_SCHEDULE_OPTIMIZATION)
 class ChipScheduleOptimizationJobRunner(JobRunner):
-    """Picks the best non-colliding gameweek-to-chip assignment from an existing CHIP_SIMULATION
-    run's own already-computed candidates. See module docstring for the full design."""
+    """Fresh, full-season, path-dependent joint chip schedule. See module docstring for the full
+    design."""
 
     def run(self, ctx: JobContext) -> JobResult:
         session = SessionLocal()
         run_row: ChipScheduleOptimizationRun | None = None
+        now = datetime.now(UTC)
         try:
             try:
-                source_run = _resolve_source_run(session, ctx.parameters)
+                manager_squad_snapshot_id = _parse_uuid_parameter(ctx.parameters, "manager_squad_snapshot_id")
+                inputs = _resolve_chip_evaluation_inputs(session, manager_squad_snapshot_id, now)
             except _InputResolutionError as exc:
                 return JobResult(
                     status=JobStatus.FAILED, output=None, error_code=exc.error_code, error_message=str(exc)
                 )
 
             try:
-                started_at = datetime.now(UTC)
+                started_at = now
                 run_row = ChipScheduleOptimizationRun(
                     job_id=uuid.UUID(ctx.job_id),
-                    source_chip_optimization_run_id=source_run.id,
-                    manager_squad_snapshot_id=source_run.manager_squad_snapshot_id,
-                    season_id=source_run.season_id,
+                    source_chip_optimization_run_id=None,
+                    manager_squad_snapshot_id=inputs.snapshot.id,
+                    season_id=inputs.season_id,
                     run_status=ChipScheduleRunStatus.RUNNING,
                     started_at=started_at,
                 )
@@ -138,27 +263,15 @@ class ChipScheduleOptimizationJobRunner(JobRunner):
                 session.commit()
                 session.refresh(run_row)
 
-                candidate_rows = (
-                    session.execute(
-                        select(ChipWindowCandidate).where(
-                            ChipWindowCandidate.chip_optimization_run_id == source_run.id
-                        )
-                    )
-                    .scalars()
-                    .all()
+                eval_ctx = _build_chip_evaluation_context(session, inputs, now)
+                candidates, results_by_slot, candidate_id_by_key = _evaluate_baseline_candidates(
+                    session, inputs, eval_ctx
                 )
-                candidates = [
-                    ChipScheduleCandidateInput(
-                        candidate_id=row.id,
-                        chip_type=row.chip_type,
-                        window_number=row.window_number,
-                        fpl_event_id=row.candidate_fpl_event_id,
-                        gain_mean=float(row.gain_mean),
-                    )
-                    for row in candidate_rows
-                ]
+                variants = _build_post_wildcard_variants(
+                    session, eval_ctx, results_by_slot, candidate_id_by_key
+                )
 
-                solution = solve_chip_schedule(candidates)
+                solution = solve_chip_schedule(candidates, variants=variants)
 
                 if solution.solver_status != SolverStatus.OPTIMAL:
                     run_row.run_status = ChipScheduleRunStatus.FAILED
@@ -184,7 +297,10 @@ class ChipScheduleOptimizationJobRunner(JobRunner):
                                 if assignment.gain_mean is not None
                                 else None
                             ),
-                            source_chip_window_candidate_id=assignment.source_candidate_id,
+                            # Always None here -- this handler's own candidates/variants are
+                            # ephemeral, never persisted as their own chip_window_candidates rows
+                            # (see module docstring).
+                            source_chip_window_candidate_id=None,
                         )
                     )
 
@@ -202,7 +318,7 @@ class ChipScheduleOptimizationJobRunner(JobRunner):
                     status=JobStatus.SUCCEEDED,
                     output={
                         "chip_schedule_optimization_run_id": str(run_row.id),
-                        "source_chip_optimization_run_id": str(source_run.id),
+                        "manager_squad_snapshot_id": str(inputs.snapshot.id),
                         "total_expected_gain": (
                             float(solution.total_expected_gain)
                             if solution.total_expected_gain is not None

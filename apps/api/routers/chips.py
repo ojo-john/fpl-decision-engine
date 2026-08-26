@@ -145,6 +145,7 @@ def _load_run_response(db: Session, chip_optimization_run_id: uuid.UUID) -> Chip
     assert run is not None  # a SUCCEEDED job always leaves its chip_optimization_runs row behind
     return ChipOptimizationRunOut(
         chip_optimization_run_id=run.id,
+        manager_squad_snapshot_id=run.manager_squad_snapshot_id,
         run_status=run.run_status.value,
         target_fpl_event_id=run.target_fpl_event_id,
         recommendations=_load_recommendations(db, chip_optimization_run_id),
@@ -293,6 +294,7 @@ def _load_schedule_run_response(
     )
     return ChipScheduleOptimizationRunOut(
         chip_schedule_optimization_run_id=run.id,
+        manager_squad_snapshot_id=run.manager_squad_snapshot_id,
         source_chip_optimization_run_id=run.source_chip_optimization_run_id,
         run_status=run.run_status.value,
         total_expected_gain=run.total_expected_gain,
@@ -314,14 +316,13 @@ def _load_schedule_run_response(
 def optimize_chip_schedule(
     body: ChipScheduleOptimizationRequest, db: Session = Depends(get_db)
 ) -> ChipScheduleOptimizationRunOut | JSONResponse:
-    """Phase 1 of the joint chip scheduler -- see app.jobs.handlers.chip_schedule_optimization's
-    own module docstring. MUST be registered before GET /chips/{chip_optimization_run_id} below --
-    same one-segment-path route-ordering reasoning as GET /chips/windows above (Starlette matches
-    routes in registration order; "schedule" would otherwise be swallowed as a
-    chip_optimization_run_id path parameter)."""
-    parameters: dict[str, str] = {}
-    if body.chip_optimization_run_id is not None:
-        parameters["chip_optimization_run_id"] = str(body.chip_optimization_run_id)
+    """The joint chip scheduler -- see app.jobs.handlers.chip_schedule_optimization's own module
+    docstring. A fresh, full-season, path-dependent evaluation directly from a
+    manager_squad_snapshot_id (mirrors POST /chips's own input shape). MUST be registered before
+    GET /chips/{chip_optimization_run_id} below -- same one-segment-path route-ordering reasoning
+    as GET /chips/windows above (Starlette matches routes in registration order; "schedule" would
+    otherwise be swallowed as a chip_optimization_run_id path parameter)."""
+    parameters: dict[str, str] = {"manager_squad_snapshot_id": str(body.manager_squad_snapshot_id)}
 
     job = execute_job(
         db,

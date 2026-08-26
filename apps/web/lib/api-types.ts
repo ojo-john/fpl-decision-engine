@@ -370,11 +370,12 @@ export interface paths {
         put?: never;
         /**
          * Optimize Chip Schedule
-         * @description Phase 1 of the joint chip scheduler -- see app.jobs.handlers.chip_schedule_optimization's
-         *     own module docstring. MUST be registered before GET /chips/{chip_optimization_run_id} below --
-         *     same one-segment-path route-ordering reasoning as GET /chips/windows above (Starlette matches
-         *     routes in registration order; "schedule" would otherwise be swallowed as a
-         *     chip_optimization_run_id path parameter).
+         * @description The joint chip scheduler -- see app.jobs.handlers.chip_schedule_optimization's own module
+         *     docstring. A fresh, full-season, path-dependent evaluation directly from a
+         *     manager_squad_snapshot_id (mirrors POST /chips's own input shape). MUST be registered before
+         *     GET /chips/{chip_optimization_run_id} below -- same one-segment-path route-ordering reasoning
+         *     as GET /chips/windows above (Starlette matches routes in registration order; "schedule" would
+         *     otherwise be swallowed as a chip_optimization_run_id path parameter).
          */
         post: operations["optimize_chip_schedule_optimize_chips_schedule_post"];
         delete?: never;
@@ -1550,6 +1551,11 @@ export interface components {
              * Format: uuid
              */
             chip_optimization_run_id: string;
+            /**
+             * Manager Squad Snapshot Id
+             * Format: uuid
+             */
+            manager_squad_snapshot_id: string;
             /** Run Status */
             run_status: string;
             /** Target Fpl Event Id */
@@ -1622,16 +1628,17 @@ export interface components {
         };
         /**
          * ChipScheduleOptimizationRequest
-         * @description See app.jobs.handlers.chip_schedule_optimization's own module docstring.
-         *
-         *     ``chip_optimization_run_id`` is optional -- omit it to auto-resolve the most recently
-         *     completed SUCCEEDED CHIP_SIMULATION run (mirrors this codebase's own established
-         *     "auto-resolve if not given" convention, e.g. RECOMMENDATION_GENERATION's target-gameweek
-         *     resolution).
+         * @description See app.jobs.handlers.chip_schedule_optimization's own module docstring. Phase 2: a fresh,
+         *     full-season evaluation directly from a manager_squad_snapshot_id -- mirrors
+         *     ChipSimulationRequest's own input shape exactly (unlike Phase 1, there is no longer an
+         *     existing CHIP_SIMULATION run to point at instead).
          */
         ChipScheduleOptimizationRequest: {
-            /** Chip Optimization Run Id */
-            chip_optimization_run_id?: string | null;
+            /**
+             * Manager Squad Snapshot Id
+             * Format: uuid
+             */
+            manager_squad_snapshot_id: string;
             /** Requested By */
             requested_by?: string | null;
         };
@@ -1643,10 +1650,12 @@ export interface components {
              */
             chip_schedule_optimization_run_id: string;
             /**
-             * Source Chip Optimization Run Id
+             * Manager Squad Snapshot Id
              * Format: uuid
              */
-            source_chip_optimization_run_id: string;
+            manager_squad_snapshot_id: string;
+            /** Source Chip Optimization Run Id */
+            source_chip_optimization_run_id: string | null;
             /** Run Status */
             run_status: string;
             /** Total Expected Gain */
@@ -1673,15 +1682,12 @@ export interface components {
              */
             chip_schedule_optimization_run_id: string;
             /**
-             * Source Chip Optimization Run Id
-             * Format: uuid
-             */
-            source_chip_optimization_run_id: string;
-            /**
              * Manager Squad Snapshot Id
              * Format: uuid
              */
             manager_squad_snapshot_id: string;
+            /** Source Chip Optimization Run Id */
+            source_chip_optimization_run_id: string | null;
             /** Run Status */
             run_status: string;
             /** Total Expected Gain */

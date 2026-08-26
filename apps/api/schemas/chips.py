@@ -46,6 +46,10 @@ class ChipRecommendationOut(BaseModel):
 
 class ChipOptimizationRunOut(BaseModel):
     chip_optimization_run_id: uuid.UUID
+    # Added so the frontend's "Build joint schedule" button (POST /optimize/chips/schedule, Phase
+    # 2) can pass this straight through -- that endpoint now takes a manager_squad_snapshot_id
+    # directly, mirroring ChipSimulationRequest's own input shape, rather than a source run id.
+    manager_squad_snapshot_id: uuid.UUID
     run_status: str
     target_fpl_event_id: int
     recommendations: list[ChipRecommendationOut]
@@ -72,14 +76,12 @@ class ChipSimulationErrorResponse(BaseModel):
 
 
 class ChipScheduleOptimizationRequest(BaseModel):
-    """See app.jobs.handlers.chip_schedule_optimization's own module docstring.
+    """See app.jobs.handlers.chip_schedule_optimization's own module docstring. Phase 2: a fresh,
+    full-season evaluation directly from a manager_squad_snapshot_id -- mirrors
+    ChipSimulationRequest's own input shape exactly (unlike Phase 1, there is no longer an
+    existing CHIP_SIMULATION run to point at instead)."""
 
-    ``chip_optimization_run_id`` is optional -- omit it to auto-resolve the most recently
-    completed SUCCEEDED CHIP_SIMULATION run (mirrors this codebase's own established
-    "auto-resolve if not given" convention, e.g. RECOMMENDATION_GENERATION's target-gameweek
-    resolution)."""
-
-    chip_optimization_run_id: uuid.UUID | None = None
+    manager_squad_snapshot_id: uuid.UUID
     requested_by: str | None = None
 
 
@@ -96,7 +98,11 @@ class ChipScheduleAssignmentOut(BaseModel):
 
 class ChipScheduleOptimizationRunOut(BaseModel):
     chip_schedule_optimization_run_id: uuid.UUID
-    source_chip_optimization_run_id: uuid.UUID
+    manager_squad_snapshot_id: uuid.UUID
+    # Always None for a Phase-2-produced run (migration 0048 made this nullable) -- there is no
+    # longer a source CHIP_SIMULATION run to point back to; kept only for any historical
+    # Phase-1-shaped row. See packages/database/models/chip_schedule_optimization_run.py.
+    source_chip_optimization_run_id: uuid.UUID | None
     run_status: str
     total_expected_gain: Decimal | None
     assignments: list[ChipScheduleAssignmentOut]
@@ -109,8 +115,8 @@ class ChipScheduleOptimizationRunSummaryOut(BaseModel):
     ``ChipOptimizationRunSummaryOut``'s own identical reasoning)."""
 
     chip_schedule_optimization_run_id: uuid.UUID
-    source_chip_optimization_run_id: uuid.UUID
     manager_squad_snapshot_id: uuid.UUID
+    source_chip_optimization_run_id: uuid.UUID | None
     run_status: str
     total_expected_gain: Decimal | None
     started_at: datetime

@@ -8,10 +8,14 @@ per gameweek. This job consumes an existing, already-SUCCEEDED ``chip_optimizati
 own ``chip_window_candidates`` (fixed, already-computed gain estimates -- no re-evaluation here,
 that is Phase 2's job) and picks the best non-colliding gameweek-to-chip assignment across all 4.
 
-``source_chip_optimization_run_id`` is real provenance, not incidental audit trail: every
-assignment this run produces is only as good as that source run's own already-computed candidate
-gains, so a caller reviewing an assignment needs a direct path back to exactly which
-``CHIP_SIMULATION`` run it came from.
+``source_chip_optimization_run_id`` was real, required provenance in Phase 1 (a caller reviewing an
+assignment needed a direct path back to exactly which ``CHIP_SIMULATION`` run its candidate gains
+came from). **Revised for Phase 2** (migration ``0048``): Phase 2 does its own fresh, full-season
+evaluation directly from a ``manager_squad_snapshot_id`` -- mirroring ``CHIP_SIMULATION`` itself --
+rather than reading an existing run's persisted candidates, so there is no longer always a real
+source run to point back to. Nullable and unpopulated for every Phase-2-shaped row going forward;
+kept (not dropped) for any historical Phase-1-shaped row and for a caller that happens to have a
+relevant ``CHIP_SIMULATION`` run to cross-reference.
 
 Structurally the same run-header shape as ``ChipOptimizationRun`` (own top-level fields are
 mostly bookkeeping; the real result lives in the child ``chip_schedule_assignments`` rows) --
@@ -39,8 +43,8 @@ class ChipScheduleOptimizationRun(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     job_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("jobs.id"))
-    source_chip_optimization_run_id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("chip_optimization_runs.id"), nullable=False
+    source_chip_optimization_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("chip_optimization_runs.id")
     )
     manager_squad_snapshot_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("manager_squad_snapshots.id"), nullable=False

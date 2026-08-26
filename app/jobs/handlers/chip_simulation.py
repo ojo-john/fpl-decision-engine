@@ -157,6 +157,7 @@ from app.chips.scenario import (
     ChipWindowCandidateResult,
     RecommendationResult,
     TripleCaptainGameweekCandidate,
+    _rebuild_budget,
     evaluate_bench_boost_window,
     evaluate_free_hit,
     evaluate_triple_captain_window,
@@ -189,7 +190,7 @@ from app.optimization.fixture_calendar import (
     resolve_team_fixture_counts_for_gameweeks,
 )
 from app.optimization.gameweek_resolution import resolve_gameweeks_within_window, resolve_target_gameweek
-from app.optimization.gate import check_optimization_gate
+from app.optimization.gate import GateResult, check_optimization_gate
 from app.optimization.lineup_solver import solve_lineup
 from app.optimization.projection import PROJECTION_FORMULA_VERSION, project_player_with_champion
 from app.optimization.residual_cache import _ResidualCache
@@ -1134,6 +1135,212 @@ def _process_chip(
     )
 
 
+@dataclass(frozen=True)
+class _ChipEvaluationInputs:
+    """The pure, pre-row-creation input-resolution phase, shared between ``ChipSimulationJobRunner``
+    and ``ChipScheduleOptimizationJobRunner`` (Phase 2 of the joint chip scheduler, which imports
+    this and ``_resolve_chip_evaluation_inputs``/``_build_chip_evaluation_context`` below directly
+    -- mirrors this module's own existing precedent of importing ``_build_lineup_candidates`` from
+    ``app.jobs.handlers.lineup_optimization`` across handler modules, rather than duplicating this
+    much real business logic). Deliberately split from ``_ChipEvaluationContext`` (built by
+    ``_build_chip_evaluation_context`` below): this half only ever raises ``_InputResolutionError``
+    (safe to call before ANY row exists), while the context-building half can raise
+    ``_SimulationBuildError`` (only safe to call once a caller's own RUNNING row already exists, so
+    a build failure still finalizes a real FAILED audit row) -- keeping this split preserves each
+    caller's own independent choice of exactly when its own row gets created relative to a possible
+    failure, rather than silently changing ``ChipSimulationJobRunner``'s own existing behavior.
+    """
+
+    snapshot: ManagerSquadSnapshot
+    season_id: uuid.UUID
+    constraints: OptimizationConstraints
+    rules_config: RulesConfig
+    gate: GateResult
+    target_gameweek_id: uuid.UUID
+    target_fpl_event_id: int
+
+
+def _resolve_chip_evaluation_inputs(
+    session: Session, manager_squad_snapshot_id: uuid.UUID, now: datetime
+) -> _ChipEvaluationInputs:
+    """Snapshot lookup, optimization gate check, rules/constraints loading, and target-gameweek
+    resolution -- every hard-refusal input check a chip evaluation needs, before any row exists.
+    Raises ``_InputResolutionError`` for every refusal case; callers must catch this BEFORE
+    creating their own run-header row (a refusal here must never pollute the audit trail).
+    """
+    snapshot = session.get(ManagerSquadSnapshot, manager_squad_snapshot_id)
+    if snapshot is None:
+        raise _InputResolutionError(
+            "SNAPSHOT_NOT_FOUND", f"manager_squad_snapshots row {manager_squad_snapshot_id} not found."
+        )
+    season_id = snapshot.season_id
+
+    gate = check_optimization_gate(session, season_id)
+    if not gate.allowed:
+        raise _InputResolutionError(gate.reason_code or "GATE_REFUSED", "Optimization gate refused.")
+
+    try:
+        constraints = load_optimization_constraints(session, season_id)
+    except RulesBlockedError as exc:
+        raise _InputResolutionError("RULES_BLOCKED", str(exc)) from exc
+
+    rules_config = session.get(RulesConfig, constraints.rules_config_id)
+    assert rules_config is not None  # rules_config_id was just resolved from a real row
+
+    target_gameweek_id, status = resolve_target_gameweek(session, season_id, now)
+    if status == TargetGameweekStatus.NO_ACTIVE_GAMEWEEK:
+        raise _InputResolutionError(
+            "NO_ACTIVE_GAMEWEEK",
+            "No actionable gameweek (deadline not yet passed) exists to evaluate chip timing "
+            "against (off-season).",
+        )
+    assert target_gameweek_id is not None
+    target_gameweek = session.get(Gameweek, target_gameweek_id)
+    assert target_gameweek is not None
+
+    return _ChipEvaluationInputs(
+        snapshot=snapshot,
+        season_id=season_id,
+        constraints=constraints,
+        rules_config=rules_config,
+        gate=gate,
+        target_gameweek_id=target_gameweek_id,
+        target_fpl_event_id=target_gameweek.fpl_event_id,
+    )
+
+
+def _build_chip_evaluation_context(
+    session: Session, inputs: _ChipEvaluationInputs, now: datetime
+) -> _ChipEvaluationContext:
+    """Champion/residuals/captain-multiplier loading, starting-XI/bench resolution (real picks or
+    the solved-lineup fallback), and every other input a chip evaluator itself needs -- built from
+    an already-resolved ``_ChipEvaluationInputs``. Raises ``_SimulationBuildError`` -- only safe to
+    call once the caller's own RUNNING row already exists (see ``_ChipEvaluationInputs``'s own
+    docstring for why this is split from input resolution).
+    """
+    snapshot = inputs.snapshot
+    season_id = inputs.season_id
+    constraints = inputs.constraints
+
+    champion = load_current_champion(session)
+    residuals = _ResidualCache(session, season_id)
+    captain_multiplier = get_captain_multiplier(session, constraints.rules_config_id)
+
+    if snapshot.raw_picks_json and snapshot.raw_picks_json.get("picks"):
+        starters, bench = _split_starting_and_bench(snapshot.raw_picks_json)
+    else:
+        starters, bench = _derive_starting_and_bench_from_solver(
+            session, season_id, snapshot.squad_player_ids, inputs.target_gameweek_id, champion, constraints
+        )
+    if not starters:
+        raise _SimulationBuildError(
+            "Could not resolve a starting XI for this squad, neither from its own "
+            "raw_picks_json nor by solving one -- see "
+            "_derive_starting_and_bench_from_solver's own docstring for when this "
+            "fallback itself can still come back empty (solver infeasibility)."
+        )
+
+    element_ids = {p["element"] for p in starters + bench}
+    player_by_element = _resolve_players_by_element(session, season_id, element_ids)
+    positions_by_id = _positions_by_id(session, season_id)
+
+    current_squad_starting_player_ids, current_squad_captain_player_id = (
+        _current_squad_starting_ids_and_captain(starters, player_by_element)
+    )
+    bank = snapshot.bank
+    selling_prices = {uuid.UUID(k): v for k, v in snapshot.squad_player_selling_prices_json.items()}
+
+    return _ChipEvaluationContext(
+        season_id=season_id,
+        starters=starters,
+        bench=bench,
+        player_by_element=player_by_element,
+        positions_by_id=positions_by_id,
+        residuals=residuals,
+        champion=champion,
+        constraints=constraints,
+        captain_multiplier=captain_multiplier,
+        current_squad_starting_player_ids=current_squad_starting_player_ids,
+        current_squad_captain_player_id=current_squad_captain_player_id,
+        bank=bank,
+        selling_prices=selling_prices,
+        rng=random.Random(),
+        fpl_manager_id=snapshot.fpl_manager_id,
+        now=now,
+    )
+
+
+def _post_wildcard_evaluation_context(
+    session: Session, base_ctx: _ChipEvaluationContext, wildcard_result: ChipWindowCandidateResult
+) -> _ChipEvaluationContext:
+    """Builds a NEW ``_ChipEvaluationContext`` reflecting the hypothetical squad state after
+    playing Wildcard at ``wildcard_result``'s own candidate gameweek -- the joint chip scheduler's
+    Phase 2 path-dependence hook (see ``app.jobs.handlers.chip_schedule_optimization``'s own module
+    docstring): every OTHER chip's candidate gameweek that falls AFTER this one gets re-evaluated
+    against THIS context instead of ``base_ctx``, since a real Wildcard permanently reshapes the
+    squad for the rest of the season (unlike Free Hit, which reverts the following gameweek --
+    never a path-dependence trigger, so this is only ever called for a WILDCARD candidate).
+
+    Reuses ``wildcard_result.solution`` (a real ``JointSquadSolution``, already computed by
+    ``evaluate_wildcard`` itself -- no re-solving) rather than re-deriving anything: this is pure
+    translation from that MIP solution's own player-id-keyed shape into the raw-picks-dict shape
+    ``_ChipEvaluationContext.starters``/``.bench`` need (element-id-keyed, matching real FPL's own
+    ``raw_picks_json`` -- see ``_split_starting_and_bench``'s own docstring for why every OTHER
+    caller reads this shape verbatim).
+
+    New bank: the SAME total rebuild budget (``_rebuild_budget`` -- bank plus the old squad's own
+    total selling value, exactly what ``evaluate_wildcard_candidate`` itself budgeted the rebuild
+    against) minus the winning rebuild's own ``squad_total_cost``. New selling prices: each new
+    squad player's own current ``now_cost`` -- a real, deliberate simplification (a hypothetically
+    "just-bought" player's own selling price equals its purchase price until the market moves;
+    this codebase has no real profit/loss-taken modeling for a squad that was never actually
+    bought, so assuming zero profit taken is the honest, conservative choice, not an oversight).
+    """
+    solution = wildcard_result.solution
+    assert solution is not None  # only ever called with a Wildcard candidate's own result
+    assert solution.captain_player_id is not None  # OPTIMAL solves always set this
+
+    starting_ids = solution.starting_player_ids
+    bench_ids = solution.bench_player_ids_ordered
+    all_ids = [*starting_ids, *bench_ids]
+    players_by_id = {p.id: p for p in session.execute(select(Player).where(Player.id.in_(all_ids))).scalars()}
+
+    def _pick(player_id: uuid.UUID, position: int) -> dict:
+        player = players_by_id[player_id]
+        return {
+            "element": player.fpl_element_id,
+            "position": position,
+            "is_captain": player_id == solution.captain_player_id,
+            "is_vice_captain": player_id == solution.vice_captain_player_id,
+            "multiplier": 2 if player_id == solution.captain_player_id else 1,
+        }
+
+    starters = [_pick(pid, index + 1) for index, pid in enumerate(starting_ids) if pid in players_by_id]
+    bench = [
+        _pick(pid, _STARTING_XI_MAX_POSITION + 1 + index)
+        for index, pid in enumerate(bench_ids)
+        if pid in players_by_id
+    ]
+
+    element_ids = {p["element"] for p in starters + bench}
+    player_by_element = _resolve_players_by_element(session, base_ctx.season_id, element_ids)
+
+    total_rebuild_budget = _rebuild_budget(base_ctx.bank, base_ctx.selling_prices)
+    new_bank = total_rebuild_budget - (solution.squad_total_cost or 0)
+    new_selling_prices = {pid: players_by_id[pid].now_cost for pid in all_ids if pid in players_by_id}
+
+    return replace(
+        base_ctx,
+        starters=starters,
+        bench=bench,
+        player_by_element=player_by_element,
+        current_squad_starting_player_ids=starting_ids,
+        current_squad_captain_player_id=solution.captain_player_id,
+        bank=new_bank,
+        selling_prices=new_selling_prices,
+    )
+
+
 @register_handler(JobType.CHIP_SIMULATION)
 class ChipSimulationJobRunner(JobRunner):
     """Evaluates every requested chip's currently-open window and persists a recommendation each."""
@@ -1145,46 +1352,12 @@ class ChipSimulationJobRunner(JobRunner):
         try:
             try:
                 manager_squad_snapshot_id = _parse_uuid_parameter(ctx.parameters, "manager_squad_snapshot_id")
-                snapshot = session.get(ManagerSquadSnapshot, manager_squad_snapshot_id)
-                if snapshot is None:
-                    raise _InputResolutionError(
-                        "SNAPSHOT_NOT_FOUND",
-                        f"manager_squad_snapshots row {manager_squad_snapshot_id} not found.",
-                    )
-                season_id = snapshot.season_id
-
                 # No upfront raw_picks_json gate here anymore: a snapshot without one (every
                 # MANUAL_ENTRY squad, or a MANAGER_SYNC one whose own picks fetch failed) falls back
                 # to solving a starting XI instead, once execution reaches that point below -- see
                 # _derive_starting_and_bench_from_solver's own docstring.
-
                 requested_chip_types = _resolve_requested_chip_types(ctx.parameters)
-
-                gate = check_optimization_gate(session, season_id)
-                if not gate.allowed:
-                    raise _InputResolutionError(
-                        gate.reason_code or "GATE_REFUSED", "Optimization gate refused."
-                    )
-
-                try:
-                    constraints = load_optimization_constraints(session, season_id)
-                except RulesBlockedError as exc:
-                    raise _InputResolutionError("RULES_BLOCKED", str(exc)) from exc
-
-                rules_config = session.get(RulesConfig, constraints.rules_config_id)
-                assert rules_config is not None  # rules_config_id was just resolved from a real row
-
-                target_gameweek_id, status = resolve_target_gameweek(session, season_id, now)
-                if status == TargetGameweekStatus.NO_ACTIVE_GAMEWEEK:
-                    raise _InputResolutionError(
-                        "NO_ACTIVE_GAMEWEEK",
-                        "No actionable gameweek (deadline not yet passed) exists to evaluate chip timing "
-                        "against (off-season).",
-                    )
-                assert target_gameweek_id is not None
-                target_gameweek = session.get(Gameweek, target_gameweek_id)
-                assert target_gameweek is not None
-                target_fpl_event_id = target_gameweek.fpl_event_id
+                inputs = _resolve_chip_evaluation_inputs(session, manager_squad_snapshot_id, now)
             except _InputResolutionError as exc:
                 return JobResult(
                     status=JobStatus.FAILED, output=None, error_code=exc.error_code, error_message=str(exc)
@@ -1194,16 +1367,18 @@ class ChipSimulationJobRunner(JobRunner):
                 started_at = now
                 run_row = ChipOptimizationRun(
                     job_id=uuid.UUID(ctx.job_id),
-                    manager_squad_snapshot_id=snapshot.id,
-                    season_id=season_id,
-                    rules_config_id=rules_config.id,
+                    manager_squad_snapshot_id=inputs.snapshot.id,
+                    season_id=inputs.season_id,
+                    rules_config_id=inputs.rules_config.id,
                     run_status=ChipOptimizationRunStatus.RUNNING,
-                    target_fpl_event_id=target_fpl_event_id,
+                    target_fpl_event_id=inputs.target_fpl_event_id,
                     projection_formula_version=PROJECTION_FORMULA_VERSION,
-                    rules_status_snapshot=gate.rules_status,
-                    optimization_permitted_snapshot=gate.optimization_permitted,
+                    rules_status_snapshot=inputs.gate.rules_status,
+                    optimization_permitted_snapshot=inputs.gate.optimization_permitted,
                     data_quality_score_snapshot=(
-                        Decimal(str(gate.data_quality_score)) if gate.data_quality_score is not None else None
+                        Decimal(str(inputs.gate.data_quality_score))
+                        if inputs.gate.data_quality_score is not None
+                        else None
                     ),
                     parameters_json=ctx.parameters,
                     started_at=started_at,
@@ -1212,61 +1387,8 @@ class ChipSimulationJobRunner(JobRunner):
                 session.commit()
                 session.refresh(run_row)
 
-                champion = load_current_champion(session)
-                residuals = _ResidualCache(session, season_id)
-                captain_multiplier = get_captain_multiplier(session, constraints.rules_config_id)
-
-                if snapshot.raw_picks_json and snapshot.raw_picks_json.get("picks"):
-                    starters, bench = _split_starting_and_bench(snapshot.raw_picks_json)
-                else:
-                    starters, bench = _derive_starting_and_bench_from_solver(
-                        session,
-                        season_id,
-                        snapshot.squad_player_ids,
-                        target_gameweek_id,
-                        champion,
-                        constraints,
-                    )
-                if not starters:
-                    raise _SimulationBuildError(
-                        "Could not resolve a starting XI for this squad, neither from its own "
-                        "raw_picks_json nor by solving one -- see "
-                        "_derive_starting_and_bench_from_solver's own docstring for when this "
-                        "fallback itself can still come back empty (solver infeasibility)."
-                    )
-
-                element_ids = {p["element"] for p in starters + bench}
-                player_by_element = _resolve_players_by_element(session, season_id, element_ids)
-                positions_by_id = _positions_by_id(session, season_id)
-
-                current_squad_starting_player_ids, current_squad_captain_player_id = (
-                    _current_squad_starting_ids_and_captain(starters, player_by_element)
-                )
-                bank = snapshot.bank
-                selling_prices = {
-                    uuid.UUID(k): v for k, v in snapshot.squad_player_selling_prices_json.items()
-                }
-
-                chip_windows = resolve_chip_windows(rules_config.raw_chips_json)
-
-                eval_ctx = _ChipEvaluationContext(
-                    season_id=season_id,
-                    starters=starters,
-                    bench=bench,
-                    player_by_element=player_by_element,
-                    positions_by_id=positions_by_id,
-                    residuals=residuals,
-                    champion=champion,
-                    constraints=constraints,
-                    captain_multiplier=captain_multiplier,
-                    current_squad_starting_player_ids=current_squad_starting_player_ids,
-                    current_squad_captain_player_id=current_squad_captain_player_id,
-                    bank=bank,
-                    selling_prices=selling_prices,
-                    rng=random.Random(),
-                    fpl_manager_id=snapshot.fpl_manager_id,
-                    now=now,
-                )
+                eval_ctx = _build_chip_evaluation_context(session, inputs, now)
+                chip_windows = resolve_chip_windows(inputs.rules_config.raw_chips_json)
 
                 for chip_type in requested_chip_types:
                     windows_for_type = [w for w in chip_windows if w.chip_type == chip_type]
@@ -1275,9 +1397,9 @@ class ChipSimulationJobRunner(JobRunner):
                         run_row.id,
                         chip_type,
                         windows_for_type,
-                        snapshot.chips_used_json,
-                        snapshot.active_chip,
-                        target_fpl_event_id,
+                        inputs.snapshot.chips_used_json,
+                        inputs.snapshot.active_chip,
+                        inputs.target_fpl_event_id,
                         eval_ctx,
                     )
 
@@ -1289,7 +1411,7 @@ class ChipSimulationJobRunner(JobRunner):
                     status=JobStatus.SUCCEEDED,
                     output={
                         "chip_optimization_run_id": str(run_row.id),
-                        "target_fpl_event_id": target_fpl_event_id,
+                        "target_fpl_event_id": inputs.target_fpl_event_id,
                     },
                     error_code=None,
                     error_message=None,

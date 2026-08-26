@@ -74,6 +74,7 @@ def _actionable_gameweek_ids_ordered(
     season_id: uuid.UUID,
     now: datetime,
     limit: int | None = None,
+    min_fpl_event_id: int | None = None,
     max_fpl_event_id: int | None = None,
 ) -> list[uuid.UUID]:
     """Gameweek ids whose deadline hasn't passed, ascending by ``deadline_time``, optionally capped/bounded.
@@ -83,6 +84,8 @@ def _actionable_gameweek_ids_ordered(
     check is needed.
     """
     stmt = select(Gameweek.id).where(Gameweek.season_id == season_id, Gameweek.deadline_time > now)
+    if min_fpl_event_id is not None:
+        stmt = stmt.where(Gameweek.fpl_event_id >= min_fpl_event_id)
     if max_fpl_event_id is not None:
         stmt = stmt.where(Gameweek.fpl_event_id <= max_fpl_event_id)
     stmt = stmt.order_by(Gameweek.deadline_time.asc())
@@ -184,7 +187,11 @@ def resolve_most_recent_deadline_passed_gameweek_event(
 
 
 def resolve_gameweeks_within_window(
-    session: Session, season_id: uuid.UUID, stop_event: int, now: datetime
+    session: Session,
+    season_id: uuid.UUID,
+    stop_event: int,
+    now: datetime,
+    start_event: int | None = None,
 ) -> list[uuid.UUID]:
     """Still-actionable gameweeks for a season whose ``fpl_event_id <= stop_event``, ascending by deadline.
 
@@ -197,5 +204,21 @@ def resolve_gameweeks_within_window(
     when there is nothing actionable left in the window (already-closed
     window, or the real off-season state) — callers must treat this as "no
     candidate gameweek to evaluate", not an error.
+
+    ``start_event`` (optional, default ``None``) additionally bounds the LOWER
+    end — needed by any caller resolving a window that isn't necessarily the
+    one currently containing ``now`` (e.g. the joint chip scheduler's Phase 2,
+    which evaluates a chip's SECOND window while the season is still inside
+    its first). Every pre-existing caller resolves only the window that
+    already contains the current actionable gameweek, where ``deadline_time >
+    now`` alone already excludes everything before it — so omitting
+    ``start_event`` reproduces the exact previous behavior unchanged. Without
+    this bound, calling this function for a future, not-yet-open window would
+    silently also include every remaining gameweek of whatever window is
+    CURRENTLY open (a real gap found while building Phase 2 of the joint chip
+    scheduler, never hit before since no caller had previously needed to
+    resolve a window other than the current one in isolation).
     """
-    return _actionable_gameweek_ids_ordered(session, season_id, now, max_fpl_event_id=stop_event)
+    return _actionable_gameweek_ids_ordered(
+        session, season_id, now, min_fpl_event_id=start_event, max_fpl_event_id=stop_event
+    )

@@ -17,6 +17,20 @@ import { NextRequest, NextResponse } from "next/server";
  * with no body (used by the manual-squad delete button). Not a generic
  * passthrough beyond that -- there's no PUT/PATCH need yet.
  */
+// Real, non-obvious risk found building the joint chip scheduler's Phase 2 (POST
+// /optimize/chips/schedule): unlike every other action in this app (seconds, not minutes), that
+// endpoint's own synchronous evaluation can genuinely take several real minutes. Without this,
+// Vercel's own default serverless function duration (10s on the Hobby plan) would kill THIS
+// route's own response well before the backend finishes -- the backend job itself keeps running
+// and still completes/persists server-side regardless (this proxy killing its own response has no
+// effect on the backend), but the button's own inline success state would never see it. Raised to
+// the real ceiling this app might plausibly need; Vercel silently caps this at whatever the
+// account's own real plan actually allows, so this is a safe, honest attempt, not a guarantee --
+// a run that genuinely exceeds the account's real limit still fails from the frontend's own
+// perspective even though the backend run itself succeeds and remains visible via
+// GET /optimize/chips/schedule's own history.
+export const maxDuration = 300;
+
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {

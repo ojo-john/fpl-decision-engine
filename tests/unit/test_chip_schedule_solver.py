@@ -4,11 +4,19 @@ Pure function, no DB -- covers this repo's own standing priority order (failure 
 conditions before happy paths): no candidates at all, every candidate a losing (non-positive) gain,
 and the actual real-world bug this module exists to fix -- a forced collision where two chips'
 candidate lists fully overlap and the solver must pick the higher-value one, never both.
+
+The ``*_variant*`` tests below are the crux proof for Phase 2's own path-dependence mechanism --
+they must show the solver picks a DIFFERENT, better answer when a post-Wildcard variant is
+available and worth claiming, never just reproducing the naive independent-gains answer.
 """
 
 import uuid
 
-from app.chips.schedule_solver import ChipScheduleCandidateInput, solve_chip_schedule
+from app.chips.schedule_solver import (
+    ChipScheduleCandidateInput,
+    ChipSchedulePostWildcardVariant,
+    solve_chip_schedule,
+)
 from packages.domain.chips import ChipType
 from packages.domain.optimization import SolverStatus
 
@@ -115,3 +123,98 @@ def test_solve_chip_schedule_traces_the_winning_candidate_id_for_persistence():
     solution = solve_chip_schedule(candidates)
 
     assert solution.assignments[0].source_candidate_id == winning_id
+
+
+# --- Phase 2: post-Wildcard variants (path dependence) -----------------------------------------
+
+
+def test_solve_chip_schedule_claims_a_post_wildcard_variant_when_it_is_the_better_answer():
+    """Bench Boost's baseline gain at GW10 (2.0, evaluated against the REAL current squad) is
+    beaten by its own post-Wildcard-at-GW4 variant (6.0, evaluated against the hypothetical
+    rebuilt squad) -- the solver must claim the variant AND play Wildcard at GW4 together, not
+    settle for the naive independent-gains answer (Wildcard@GW4 + Bench Boost's baseline@GW10)."""
+    wildcard_id = uuid.uuid4()
+    candidates = [
+        ChipScheduleCandidateInput(wildcard_id, ChipType.WILDCARD, 1, 4, 15.0),
+        _candidate(ChipType.BBOOST, 1, 10, 2.0),
+    ]
+    variants = [
+        ChipSchedulePostWildcardVariant(
+            variant_id=uuid.uuid4(),
+            chip_type=ChipType.BBOOST,
+            window_number=1,
+            fpl_event_id=10,
+            gain_mean=6.0,
+            requires_wildcard_candidate_id=wildcard_id,
+        ),
+    ]
+
+    solution = solve_chip_schedule(candidates, variants=variants)
+
+    assert solution.solver_status == SolverStatus.OPTIMAL
+    by_chip = {a.chip_type: a for a in solution.assignments}
+    assert by_chip[ChipType.WILDCARD].assigned_fpl_event_id == 4
+    assert by_chip[ChipType.BBOOST].assigned_fpl_event_id == 10
+    assert by_chip[ChipType.BBOOST].gain_mean == 6.0
+    # The winning slot was a VARIANT, not a persisted chip_window_candidates row -- no id to trace.
+    assert by_chip[ChipType.BBOOST].source_candidate_id is None
+    assert solution.total_expected_gain == 21.0
+
+
+def test_solve_chip_schedule_never_claims_a_variant_without_its_required_wildcard():
+    """If playing Wildcard at GW4 isn't actually worthwhile overall, its own post-Wildcard variant
+    for Bench Boost must never be claimed either -- the implication constraint, not just a
+    coincidentally-correct objective value, is what's being proven here: Wildcard's own baseline
+    gain is deliberately negative, so the ONLY way to claim Bench Boost's tempting 6.0 variant
+    would be to also play a strictly loss-making Wildcard, which the solver must refuse."""
+    wildcard_id = uuid.uuid4()
+    candidates = [
+        ChipScheduleCandidateInput(wildcard_id, ChipType.WILDCARD, 1, 4, -50.0),
+        _candidate(ChipType.BBOOST, 1, 10, 2.0),
+    ]
+    variants = [
+        ChipSchedulePostWildcardVariant(
+            variant_id=uuid.uuid4(),
+            chip_type=ChipType.BBOOST,
+            window_number=1,
+            fpl_event_id=10,
+            gain_mean=6.0,
+            requires_wildcard_candidate_id=wildcard_id,
+        ),
+    ]
+
+    solution = solve_chip_schedule(candidates, variants=variants)
+
+    assert solution.solver_status == SolverStatus.OPTIMAL
+    by_chip = {a.chip_type: a for a in solution.assignments}
+    assert by_chip[ChipType.WILDCARD].assigned_fpl_event_id is None
+    assert by_chip[ChipType.BBOOST].assigned_fpl_event_id == 10
+    assert by_chip[ChipType.BBOOST].gain_mean == 2.0  # the baseline, not the unclaimable variant
+
+
+def test_solve_chip_schedule_variant_still_respects_gameweek_mutual_exclusivity():
+    """A post-Wildcard variant is just another candidate for its own real gameweek -- if it shares
+    a gameweek with something else, the solver must still pick only one."""
+    wildcard_id = uuid.uuid4()
+    candidates = [
+        ChipScheduleCandidateInput(wildcard_id, ChipType.WILDCARD, 1, 4, 15.0),
+        _candidate(ChipType.TRIPLE_CAPTAIN, 1, 10, 3.0),
+    ]
+    variants = [
+        ChipSchedulePostWildcardVariant(
+            variant_id=uuid.uuid4(),
+            chip_type=ChipType.BBOOST,
+            window_number=1,
+            fpl_event_id=10,
+            gain_mean=6.0,
+            requires_wildcard_candidate_id=wildcard_id,
+        ),
+    ]
+
+    solution = solve_chip_schedule(candidates, variants=variants)
+
+    assert solution.solver_status == SolverStatus.OPTIMAL
+    assigned_at_gw10 = [a for a in solution.assignments if a.assigned_fpl_event_id == 10]
+    assert len(assigned_at_gw10) == 1
+    assert assigned_at_gw10[0].chip_type == ChipType.BBOOST
+    assert assigned_at_gw10[0].gain_mean == 6.0

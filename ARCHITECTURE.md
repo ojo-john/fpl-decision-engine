@@ -44,7 +44,7 @@ app/features/          Leakage-safe per-(player, gameweek) feature engineering
 app/modeling/          MODEL_TRAINING internals: baselines, sklearn candidates, walk-forward validation, promotion
 app/optimization/      Squad/lineup MILP solver, constraints, projection formula, optimization gate
 app/transfers/         Transfer scenario search, selling-price/free-transfer rules
-app/chips/             Chip window resolution, user chip inventory, chip scenario evaluation, joint-schedule assignment solver (see "Joint chip scheduling (Phase 1)" below)
+app/chips/             Chip window resolution, user chip inventory, chip scenario evaluation, joint-schedule assignment solver (see "Joint chip scheduling" below)
 app/h2h/                Rival-state derivation, H2H matchup Monte Carlo simulation, strategy comparison
 app/learning/           Recursive learning: outcome ingestion, counterfactuals, failure attribution, signals
 app/scheduling/         Real, stateless scheduling logic (run_tick) -- called by both scripts/scheduler.py's local loop and POST /internal/scheduler-tick (see "Local scheduler"/"Cloud deployment" sections below)
@@ -96,7 +96,7 @@ the job types that have an HTTP trigger.
 | `LINEUP_OPTIMIZATION` | `lineup_optimization.py` | ✅ | `POST /optimize/lineup` | |
 | `TRANSFER_OPTIMIZATION` | `transfer_optimization.py` | ✅ | `POST /optimize/transfers` | |
 | `CHIP_SIMULATION` | `chip_simulation.py` | ✅ | `POST /optimize/chips` | evaluates all 4 chips independently -- see "Joint chip scheduling (Phase 1)" below for why that alone can produce contradictory recommendations |
-| `CHIP_SCHEDULE_OPTIMIZATION` | `chip_schedule_optimization.py` | ✅ | `POST /optimize/chips/schedule` | Phase 1 of the joint chip scheduler, see below |
+| `CHIP_SCHEDULE_OPTIMIZATION` | `chip_schedule_optimization.py` | ✅ | `POST /optimize/chips/schedule` | the joint chip scheduler (fresh, full-season, path-dependent), see below |
 | `H2H_SIMULATION` | `h2h_simulation.py` | ✅ | `POST /h2h/simulate` | |
 | `RECOMMENDATION_GENERATION` | `recommendation_generation.py` | ✅ | `POST /recommendations/generate` | |
 | `GAMEWEEK_REVIEW` | `gameweek_review.py` | ✅ | `POST /jobs/review-gameweek` | |
@@ -126,7 +126,7 @@ step. CLI/`make full-pipeline` only, no HTTP trigger (matches
 `FEATURE_GENERATION`/`MODEL_TRAINING`'s own precedent of being
 CLI/workflow-triggered, not API-triggered).
 
-### Joint chip scheduling (Phase 1)
+### Joint chip scheduling
 
 Real bug found live (2026-08-26): `CHIP_SIMULATION` evaluates each of the 4 FPL chips (Wildcard,
 Free Hit, Bench Boost, Triple Captain) completely independently -- confirmed in that handler's own
@@ -137,29 +137,83 @@ one chip per gameweek. Nowhere in this codebase was that limitation previously d
 
 `CHIP_SCHEDULE_OPTIMIZATION` (`chip_schedule_optimization.py`) is a second, additive layer, not a
 replacement -- `CHIP_SIMULATION`'s own 4 independent recommendations are unchanged, still fully
-available (`GET /optimize/chips/{id}`). This job instead consumes an existing SUCCEEDED
-`CHIP_SIMULATION` run's own already-computed `chip_window_candidates` (read-only, zero
-re-evaluation) and solves a small PuLP assignment MIP
-(`app/chips/schedule_solver.py:solve_chip_schedule`, mirrors `app.optimization.joint_squad_solver`'s
-house style) for the best non-colliding gameweek-to-chip assignment: `lpSum(...) <= 1` per chip
-slot (at most one gameweek), `lpSum(...) <= 1` per real gameweek across all 4 chips (the actual
-mutual-exclusivity constraint), maximizing total selected gain. New tables
-`chip_schedule_optimization_runs`/`chip_schedule_assignments` (migration `0047`) mirror
-`ChipOptimizationRun`/`ChipWindowCandidate`'s own run-header/child-row shape, with
-`source_chip_optimization_run_id` as real provenance back to the `CHIP_SIMULATION` run the
-candidates came from. No optimization-gate check here (mirrors `RECOMMENDATION_GENERATION`'s
-identical precedent) -- this job runs no fresh optimization/projection of its own.
+available (`GET /optimize/chips/{id}`). Built in two real, deliberate phases:
 
-**Stated Phase 1 scope boundary, not silently overclaimed**: every input gain is treated as fixed
-and independent, exactly as `CHIP_SIMULATION` already computed it -- compounding effects between
-chips (a Wildcard rebuild permanently changes the squad, which changes what Bench Boost/Triple
-Captain/a later Free Hit are actually worth in gameweeks after it) are NOT modeled yet, nor is
-full-season/both-windows-per-chip planning (this only ever sees whichever window `CHIP_SIMULATION`
-itself currently has open). Phase 2 (a chronological DP over gameweeks, re-evaluating downstream
-chips against a Wildcard-rebuilt baseline squad when one is hypothetically played earlier) is real,
-separate, larger future work -- not yet built.
+**Phase 1** consumed an existing SUCCEEDED `CHIP_SIMULATION` run's own already-computed
+`chip_window_candidates` (read-only, zero re-evaluation) and solved a small PuLP assignment MIP
+for the best non-colliding gameweek-to-chip assignment. Fast, but limited to whichever ONE window
+per chip that source run happened to cover, and blind to any compounding effect between chips.
 
-`GET /optimize/chips/windows` and the new `POST/GET /optimize/chips/schedule*` routes must all stay
+**Phase 2 (shipped same day) is the real, final design** -- a structural change, not an
+incremental patch on Phase 1. `POST /optimize/chips/schedule` now takes a
+`manager_squad_snapshot_id` directly (mirrors `POST /optimize/chips`'s own input shape) and
+evaluates FRESH: both windows, all 4 chips, with a REAL optimization-gate check (unlike Phase 1's
+justified "no gate, reads already-gated output" -- this job now does its own fresh
+projection/optimization work, same as every other fresh-evaluation job). Reuses
+`app.jobs.handlers.chip_simulation`'s own shared building blocks directly
+(`_resolve_chip_evaluation_inputs`/`_build_chip_evaluation_context`/`_evaluate_chip_candidates` --
+extracted from that handler's own `run()` method via a real, behavior-preserving refactor, verified
+by re-running its full existing test suite unchanged -- mirrors this codebase's own established
+precedent of importing `_build_lineup_candidates` across handler modules rather than duplicating
+real business logic).
+
+**Path dependence, the real reason Phase 2 exists**: only Wildcard permanently changes the squad
+(Free Hit's own squad change reverts the following gameweek -- never a path-dependence trigger;
+Bench Boost/Triple Captain never change squad composition, only apply a transient multiplier). For
+every Wildcard candidate in the season's FIRST occurring available window, `_post_wildcard
+_evaluation_context` (`chip_simulation.py`) builds a hypothetical post-rebuild squad context --
+reusing that candidate's own already-computed `JointSquadSolution` (no re-solving; new bank =
+`_rebuild_budget(bank, selling_prices) - squad_total_cost`, new selling prices = each new player's
+own `now_cost`, a deliberate "no profit taken yet" simplification for a squad that was never
+really bought) -- and every OTHER chip's own candidate that falls chronologically after it gets
+re-evaluated against it, producing a `ChipSchedulePostWildcardVariant`.
+
+**The solver extension is a generalization of the same MIP, not a bespoke dynamic program** -- a
+real, better design found during implementation than the chronological-DP sketch originally
+planned. Each variant gets its own binary decision var, linked to its own required Wildcard
+candidate via a standard implication constraint (`variant_var <= wildcard_var`, the exact same
+idiom `joint_squad_solver.py` already uses for captain/starting-XI dependencies) -- a variant can
+only be "active" in the solution if its own required Wildcard candidate is ALSO chosen, so the
+solver can never claim a post-Wildcard bonus without actually playing Wildcard there. See
+`app/chips/schedule_solver.py`'s own module docstring for the full constraint set.
+
+**Stated, deliberate scope boundary, not silently overclaimed**: only the season's first-occurring
+Wildcard window triggers path-dependent variants -- a second Wildcard's own value is never itself
+re-evaluated against a hypothetical first-Wildcard rebuild (modeling that deeper, transitively
+-chained compounding is real, separate, larger future work). Real, meaningfully larger compute
+cost than Phase 1 as a direct, honest consequence: Bench Boost/Triple Captain are evaluated
+exhaustively per window (unlike Wildcard/Free Hit, capped at 4 candidates each) at 2000 Monte
+Carlo samples per candidate gameweek, and each qualifying Wildcard candidate triggers one
+additional re-evaluation pass over every later candidate -- bounded (not exponential) but real,
+likely several real minutes, similar territory to the real `TRANSFER_OPTIMIZATION` runs already
+seen on this Supabase tier. The frontend's own "Build joint schedule" button says so explicitly
+(`apps/web/components/chip-schedule-button.tsx`'s own `stillWorkingCopy`, a new optional
+`ActionButton` prop -- the shared component's own default "up to 30 seconds" copy would otherwise
+be actively misleading here).
+
+**A real, separate operational risk found and mitigated while wiring the button**: the frontend
+flow goes through Vercel's own serverless proxy (`apps/web/app/api/proxy/[...path]/route.ts`),
+which has its OWN function-duration limit -- unlike the direct backend calls used to validate this
+feature during development, a multi-minute browser-initiated request could get killed by Vercel
+before the backend finishes, even though the backend job keeps running and completes/persists
+regardless. Mitigated with `export const maxDuration = 300` on that route (raises the ceiling to
+5 minutes) -- a safe, honest attempt, not a guarantee: Vercel silently caps this at whatever the
+real account plan actually allows, and a run that genuinely exceeds that still fails from the
+frontend's own perspective even though the backend run itself succeeds and remains visible via
+`GET /optimize/chips/schedule`'s own history. This app's own "no job-id polling exists anywhere in
+the API" architecture (every optimizer job is synchronous request/response) was never stress-tested
+against a real multi-minute job before this.
+
+New tables `chip_schedule_optimization_runs`/`chip_schedule_assignments` (migration `0047`) mirror
+`ChipOptimizationRun`/`ChipWindowCandidate`'s own run-header/child-row shape.
+`source_chip_optimization_run_id` (migration `0048` made this nullable) was real, required
+provenance in Phase 1; always `NULL` for a Phase-2-produced row (no more source run to point back
+to) -- kept only for any historical Phase-1-shaped row. Likewise `ChipScheduleAssignment
+.source_chip_window_candidate_id` is always `NULL` for a Phase-2 row -- Phase 2's own
+candidates/variants are ephemeral, computed in-memory, never separately persisted as their own
+rows (only the winning assignment is written).
+
+`GET /optimize/chips/windows` and the `POST/GET /optimize/chips/schedule*` routes must all stay
 registered before `GET /optimize/chips/{chip_optimization_run_id}` (Starlette matches routes in
 registration order; a one-segment path like `/optimize/chips/schedule` would otherwise be swallowed
 as a `chip_optimization_run_id` path parameter) -- an established ordering constraint this addition

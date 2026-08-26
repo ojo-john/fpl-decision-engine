@@ -59,6 +59,7 @@ export function ActionButton({
   pendingLabel,
   onSuccess,
   mapError,
+  stillWorkingCopy,
 }: {
   path: string;
   body?: Record<string, unknown>;
@@ -70,6 +71,12 @@ export function ActionButton({
    * gate refusing pre-season) and explain it in context, rather than
    * surfacing the raw backend error string. Return null to fall through. */
   mapError?: (data: unknown) => string | null;
+  /** Overrides the default STILL_WORKING_COPY ("...a full squad solve can take up to 30
+   * seconds") -- most actions this button drives really do finish in well under a minute, but a
+   * genuinely much-longer action (e.g. the joint chip scheduler's own multi-minute full-season
+   * evaluation) needs to say so honestly instead of implying a 30-second ceiling that isn't real
+   * for it. */
+  stillWorkingCopy?: string;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
@@ -110,7 +117,9 @@ export function ActionButton({
         {pending ? pendingButtonLabel(pendingLabel ?? "Working...", elapsedSeconds) : label}
       </button>
       {pending && elapsedSeconds >= STILL_WORKING_THRESHOLD_SECONDS && (
-        <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>{STILL_WORKING_COPY}</span>
+        <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>
+          {stillWorkingCopy ?? STILL_WORKING_COPY}
+        </span>
       )}
       {error && <span style={{ color: "var(--danger)", fontSize: "0.85rem" }}>{error}</span>}
     </div>
