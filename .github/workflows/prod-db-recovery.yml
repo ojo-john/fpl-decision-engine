@@ -108,8 +108,8 @@ jobs:
               transfer_rows = session.execute(
                   text(
                       """
-                      select id, run_status, recommended_action, error_code, error_message,
-                             started_at, completed_at
+                      select id, run_status, recommended_transfers_count, recommended_net_horizon_points_gain,
+                             error_code, error_message, started_at, completed_at
                       from transfer_optimization_runs
                       order by started_at desc
                       limit 5
