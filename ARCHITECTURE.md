@@ -1672,9 +1672,14 @@ overrides `command:` for the `api`/`scheduler` services, so this default `CMD` n
 and local dev is unaffected.
 
 **Real incident (2026-08-26): a killed `train-production.yml` run exhausted Supabase's connection
-pool for ~18 hours.** A `season_label: "all"` retrain (heavier than the season-scoped runs that
-previously succeeded in 11-76 minutes) genuinely exceeded the workflow's own 180-minute
-`timeout-minutes` and was force-killed by GitHub Actions. A killed runner never tells Postgres to
+pool for ~18 hours.** A `season_label: "all"` retrain genuinely exceeded the workflow's own
+180-minute `timeout-minutes` and was force-killed by GitHub Actions — **not** because `"all"`
+itself is inherently too heavy: the immediately-prior successful run (2026-08-25, 11 minutes) used
+the exact same `season_label: "all"`, processing the same 6 seasons. The real cause of this one
+run taking 3+ hours instead of ~11-76 minutes is unconfirmed (most likely transient Supabase
+"Nano"-tier compute contention at that specific time) — an initial version of this note wrongly
+blamed `season_label: "all"` itself; corrected once the prior run's own real logs were checked
+rather than assumed. A killed runner never tells Postgres to
 roll back/close whatever connection it held — the connection sat on Supabase's pooler
 (`aws-0-us-east-2.pooler.supabase.com`) as a zombie, and the free tier's small connection pool
 stayed exhausted long after: `GET /health` and every `scheduler-tick` run kept failing/timing out
@@ -1692,8 +1697,10 @@ control plane, only its data plane via `PROD_DATABASE_URL`). Once the DB itself 
 Render web service was found to STILL be unresponsive on its own (accumulated stuck
 requests/threads from ~18 hours of failed DB connection attempts don't self-clear just because the
 DB is healthy again) — resolved by a fresh `git push`-triggered Render auto-deploy, not a second
-DB-side action. **Real lesson for next retrain**: use a specific `season_label`, not `"all"` —
-every prior successful run was season-scoped and completed in well under 2 hours.
+DB-side action. **Real lesson for next retrain**: given the true root cause of the 3+ hour runtime
+is unconfirmed, actively monitor the next run rather than fire-and-forget for the full 180-minute
+timeout again — cancel it manually well before the timeout if it's clearly not progressing, so a
+repeat doesn't re-exhaust the connection pool the same way.
 
 **Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
 (a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)
