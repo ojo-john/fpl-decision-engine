@@ -90,6 +90,20 @@ jobs:
               print(f"{len(rows)} connection(s) (excluding this diagnostic session itself):\n")
               for row in rows:
                   print(dict(row))
+
+              champion_rows = session.execute(
+                  text(
+                      """
+                      select id, model_name, model_family, lifecycle_state, is_champion,
+                             (artifact_bytes is not null) as has_artifact, trained_at
+                      from model_versions
+                      where is_champion = true
+                      """
+                  )
+              ).mappings().all()
+              print("\nCurrent champion(s):\n")
+              for row in champion_rows:
+                  print(dict(row))
           finally:
               session.close()
           EOF
