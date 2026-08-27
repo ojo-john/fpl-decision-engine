@@ -1,0 +1,157 @@
+name: Apply player note (production)
+
+# Manual tool (workflow_dispatch ONLY) for applying a human-reviewed finding from an
+# FPL Scout Watch digest (see scout-watch.yml) directly against the real production database --
+# mirrors train-production.yml/prod-db-recovery.yml's own "connects to secrets.PROD_DATABASE_URL,
+# never echoed/logged" convention. Real gap this closes: scout-watch.yml's own digest issue body
+# already tells a reviewer to apply findings via POST /players/{id}/availability-risk-notes or
+# .../role-notes, but that needs the real production APP_SHARED_TOKEN, which this repo's own
+# tooling has never had a way to use outside a human manually curling it. This performs the EXACT
+# same insert `apps/api/routers/players.py`'s create_availability_risk_note/create_role_note do
+# (same fields, same season_id-from-player resolution), just triggered by workflow_dispatch
+# inputs instead of an authenticated HTTP request -- so applying a reviewed digest finding never
+# requires the production token at all.
+#
+# Resolves the player by an exact `web_name` match against the CURRENT season only (raises if zero
+# or more than one match -- ambiguous names must be re-run with a more specific input rather than
+# silently guessing). Never deletes/overwrites an existing note -- always an additive insert,
+# exactly like the real POST endpoints.
+
+on:
+  workflow_dispatch:
+    inputs:
+      note_type:
+        description: "availability_risk (discount, severity in (0,1]) or role_boost (severity, normally > 1.0)"
+        required: true
+        type: choice
+        options:
+          - availability_risk
+          - role_boost
+      player_web_name:
+        description: "Exact players.web_name to match, in the current season (e.g. 'Mbeumo')"
+        required: true
+        type: string
+      reason:
+        description: "The sourced explanation, written as a permanent audit-trail note"
+        required: true
+        type: string
+      severity:
+        description: "Multiplier -- (0,1] discount for availability_risk, normally >1.0 boost for role_boost"
+        required: true
+        type: string
+      role:
+        description: "Only used for role_boost -- short role label (e.g. 'Shares corner/free-kick duty')"
+        required: false
+        type: string
+        default: ""
+      valid_from_fpl_event_id:
+        description: "Optional -- first gameweek this note applies to"
+        required: false
+        type: string
+        default: ""
+      valid_until_fpl_event_id:
+        description: "Optional -- last gameweek this note applies to (blank = open-ended)"
+        required: false
+        type: string
+        default: ""
+      created_by:
+        description: "Attribution for the audit trail"
+        required: false
+        type: string
+        default: "claude-code (scout-watch digest review)"
+
+jobs:
+  apply-player-note:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      - name: Verify PROD_DATABASE_URL is configured
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::PROD_DATABASE_URL repository secret is not set -- see docs/deployment.md."
+            exit 1
+          fi
+
+      - name: Apply the note
+        run: |
+          uv run python - <<'EOF'
+          import uuid
+          from decimal import Decimal
+
+          from sqlalchemy import select
+
+          from packages.database.models.player import Player
+          from packages.database.models.player_availability_risk_note import PlayerAvailabilityRiskNote
+          from packages.database.models.player_role_note import PlayerRoleNote
+          from packages.database.models.season import Season
+          from packages.database.session import SessionLocal
+
+          note_type = "${{ github.event.inputs.note_type }}"
+          web_name = "${{ github.event.inputs.player_web_name }}"
+          reason = """${{ github.event.inputs.reason }}"""
+          severity = Decimal("${{ github.event.inputs.severity }}")
+          role = "${{ github.event.inputs.role }}" or None
+          created_by = "${{ github.event.inputs.created_by }}"
+
+          raw_from = "${{ github.event.inputs.valid_from_fpl_event_id }}"
+          raw_until = "${{ github.event.inputs.valid_until_fpl_event_id }}"
+          valid_from = int(raw_from) if raw_from else None
+          valid_until = int(raw_until) if raw_until else None
+          if valid_from is not None and valid_until is not None and valid_from > valid_until:
+              raise SystemExit("valid_from_fpl_event_id must not be after valid_until_fpl_event_id.")
+
+          session = SessionLocal()
+          try:
+              players = session.execute(
+                  select(Player)
+                  .join(Season, Season.id == Player.season_id)
+                  .where(Season.is_current.is_(True), Player.web_name == web_name)
+              ).scalars().all()
+              if len(players) == 0:
+                  raise SystemExit(f"No current-season player with web_name={web_name!r} found.")
+              if len(players) > 1:
+                  raise SystemExit(
+                      f"{len(players)} current-season players match web_name={web_name!r} -- ambiguous."
+                  )
+              player = players[0]
+
+              if note_type == "role_boost":
+                  if not role:
+                      raise SystemExit("role is required for note_type=role_boost.")
+                  note = PlayerRoleNote(
+                      player_id=player.id,
+                      season_id=player.season_id,
+                      role=role,
+                      reason=reason,
+                      severity=severity,
+                      valid_from_fpl_event_id=valid_from,
+                      valid_until_fpl_event_id=valid_until,
+                      created_by=created_by,
+                  )
+              else:
+                  note = PlayerAvailabilityRiskNote(
+                      player_id=player.id,
+                      season_id=player.season_id,
+                      reason=reason,
+                      severity=severity,
+                      valid_from_fpl_event_id=valid_from,
+                      valid_until_fpl_event_id=valid_until,
+                      created_by=created_by,
+                  )
+              session.add(note)
+              session.commit()
+              session.refresh(note)
+              print(f"Created {note_type} note id={note.id} for player_id={player.id} ({web_name}).")
+          finally:
+              session.close()
+          EOF
