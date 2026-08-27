@@ -64,7 +64,7 @@ tests/unit/ (60 files)  No DB
 tests/integration/ (60) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
 tests/fixtures/          Committed FPL API samples (fpl_api/) + a small real historical CSV set (historical/2023-24/)
-.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml (stale Milestone-1 CI self-test, ephemeral DB, NOT real scheduling -- see scheduler-tick.yml for that), historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), scheduler-tick.yml (real DB, see "Cloud deployment" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
+.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml (stale Milestone-1 CI self-test, ephemeral DB, NOT real scheduling -- see scheduler-tick.yml for that), historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), scheduler-tick.yml (real DB, see "Cloud deployment" section), prod-db-recovery.yml (real DB, diagnostic/recovery for connection-pool exhaustion, see "Cloud deployment" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
 .github/state/            current-squad.json, known-notes-snapshot.json (both consumed by scout-watch.yml; league-814682-watch.json consumed by league-watch.yml)
 ```
 
@@ -1670,6 +1670,30 @@ turned out to also be a paid-tier-only feature. Running the migration on every c
 on the free plan, including after free-tier cold-start wake-ups. Local `docker-compose.yml`
 overrides `command:` for the `api`/`scheduler` services, so this default `CMD` never runs there
 and local dev is unaffected.
+
+**Real incident (2026-08-26): a killed `train-production.yml` run exhausted Supabase's connection
+pool for ~18 hours.** A `season_label: "all"` retrain (heavier than the season-scoped runs that
+previously succeeded in 11-76 minutes) genuinely exceeded the workflow's own 180-minute
+`timeout-minutes` and was force-killed by GitHub Actions. A killed runner never tells Postgres to
+roll back/close whatever connection it held — the connection sat on Supabase's pooler
+(`aws-0-us-east-2.pooler.supabase.com`) as a zombie, and the free tier's small connection pool
+stayed exhausted long after: `GET /health` and every `scheduler-tick` run kept failing/timing out
+for ~18 hours, including runs well after an unrelated Render auto-deploy (proving the Render
+container itself wasn't the problem — a fresh container still can't get a Supabase connection out
+of an exhausted pool). `.github/workflows/prod-db-recovery.yml` (workflow_dispatch, reuses the
+same `PROD_DATABASE_URL` secret `train-production.yml` already has) was built specifically for
+this: `action: diagnose` is a read-only `pg_stat_activity` dump; `action:
+terminate_idle_in_transaction` kills only connections idle-in-transaction past a threshold — never
+active work. In practice, this specific incident's pool exhaustion did NOT resolve via that
+recovery action (the diagnostic script itself couldn't get a connection either, since it goes
+through the same exhausted pooler) — it needed the account owner to pause/resume the Supabase
+project directly (no API credential available to this codebase's own tooling reaches Supabase's
+control plane, only its data plane via `PROD_DATABASE_URL`). Once the DB itself recovered, the
+Render web service was found to STILL be unresponsive on its own (accumulated stuck
+requests/threads from ~18 hours of failed DB connection attempts don't self-clear just because the
+DB is healthy again) — resolved by a fresh `git push`-triggered Render auto-deploy, not a second
+DB-side action. **Real lesson for next retrain**: use a specific `season_label`, not `"all"` —
+every prior successful run was season-scoped and completed in well under 2 hours.
 
 **Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
 (a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)
