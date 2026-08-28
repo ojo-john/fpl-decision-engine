@@ -108,15 +108,19 @@ jobs:
               transfer_rows = session.execute(
                   text(
                       """
-                      select id, run_status, recommended_transfers_count, recommended_net_horizon_points_gain,
-                             error_code, error_message, started_at, completed_at
-                      from transfer_optimization_runs
-                      order by started_at desc
-                      limit 5
+                      select t.id, t.run_status, t.recommended_transfers_count,
+                             t.recommended_net_horizon_points_gain, t.error_code, t.error_message,
+                             t.started_at, t.completed_at,
+                             j.trigger_type, j.status as job_status, j.error_code as job_error_code,
+                             j.error_message as job_error_message
+                      from transfer_optimization_runs t
+                      left join jobs j on j.id = t.job_id
+                      order by t.started_at desc
+                      limit 8
                       """
                   )
               ).mappings().all()
-              print("\nRecent transfer_optimization_runs:\n")
+              print("\nRecent transfer_optimization_runs (joined to jobs):\n")
               for row in transfer_rows:
                   print(dict(row))
           finally:
