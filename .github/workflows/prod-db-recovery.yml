@@ -241,4 +241,31 @@ jobs:
       - name: Call run_tick() directly against the real database (bypasses Render entirely)
         if: github.event.inputs.action == 'run_tick_directly'
         run: |
-          uv run python -c "from app.scheduling.tick import run_tick; run_tick(); print('run_tick() completed')"
+          uv run python - <<'EOF'
+          import logging
+          logging.basicConfig(level=logging.INFO)
+
+          from sqlalchemy import select
+
+          from app.scheduling.tick import run_tick
+          from packages.database.models.job import Job
+          from packages.database.session import SessionLocal
+          from packages.domain.jobs import JobType
+
+          run_tick()
+          print("run_tick() completed")
+
+          session = SessionLocal()
+          try:
+              rows = session.execute(
+                  select(Job)
+                  .where(Job.job_type == JobType.STALE_JOB_RECONCILIATION)
+                  .order_by(Job.created_at.desc())
+                  .limit(3)
+              ).scalars().all()
+              print(f"\n{len(rows)} STALE_JOB_RECONCILIATION job row(s) found in THIS SAME process:\n")
+              for row in rows:
+                  print(row.id, row.status, row.started_at, row.completed_at, row.error_code, row.error_message)
+          finally:
+              session.close()
+          EOF
