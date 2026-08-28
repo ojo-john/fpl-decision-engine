@@ -112,6 +112,21 @@ jobs:
               for row in champion_rows:
                   print(dict(row))
 
+              next_deadline = session.execute(
+                  text(
+                      """
+                      select fpl_event_id, name, deadline_time, finished,
+                             deadline_time - now() as time_remaining
+                      from gameweeks g
+                      join seasons s on s.id = g.season_id
+                      where s.is_current = true and g.finished = false
+                      order by g.deadline_time asc
+                      limit 1
+                      """
+                  )
+              ).mappings().first()
+              print(f"\nNext deadline: {dict(next_deadline) if next_deadline else None}")
+
               transfer_rows = session.execute(
                   text(
                       """
