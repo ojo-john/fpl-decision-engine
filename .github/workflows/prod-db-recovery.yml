@@ -111,6 +111,43 @@ jobs:
               for row in champion_rows:
                   print(dict(row))
 
+              shaw_alderete = session.execute(
+                  text(
+                      """
+                      select p.web_name, t.short_name as team, pos.short_name as position, p.now_cost,
+                             p.status, p.form, p.points_per_game, p.ep_next,
+                             p.chance_of_playing_next_round, p.selected_by_percent
+                      from players p
+                      join seasons s on s.id = p.season_id
+                      left join teams t on t.id = p.team_id
+                      left join positions pos on pos.id = p.position_id
+                      where s.is_current = true and p.web_name in ('Shaw', 'Alderete')
+                      """
+                  )
+              ).mappings().all()
+              print("\nShaw vs Alderete (current season):\n")
+              for row in shaw_alderete:
+                  print(dict(row))
+
+              shaw_alderete_fixtures = session.execute(
+                  text(
+                      """
+                      select p.web_name, g.fpl_event_id, f.next_fixture_difficulty, f.next_fixture_was_home
+                      from players p
+                      join seasons s on s.id = p.season_id
+                      join player_features f on f.player_id = p.id
+                      join gameweeks g on g.id = f.gameweek_id
+                      where s.is_current = true and p.web_name in ('Shaw', 'Alderete')
+                        and g.finished = false
+                      order by p.web_name, g.fpl_event_id
+                      limit 12
+                      """
+                  )
+              ).mappings().all()
+              print("\nShaw vs Alderete upcoming fixture difficulty:\n")
+              for row in shaw_alderete_fixtures:
+                  print(dict(row))
+
               transfer_rows = session.execute(
                   text(
                       """
