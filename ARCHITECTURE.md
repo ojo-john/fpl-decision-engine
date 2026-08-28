@@ -64,7 +64,7 @@ tests/unit/ (60 files)  No DB
 tests/integration/ (60) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
 tests/fixtures/          Committed FPL API samples (fpl_api/) + a small real historical CSV set (historical/2023-24/)
-.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml (stale Milestone-1 CI self-test, ephemeral DB, NOT real scheduling -- see scheduler-tick.yml for that), historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), scheduler-tick.yml (real DB, see "Cloud deployment" section), prod-db-recovery.yml (real DB, diagnostic/recovery for connection-pool exhaustion, see "Cloud deployment" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
+.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml (stale Milestone-1 CI self-test, ephemeral DB, NOT real scheduling -- see scheduler-tick.yml for that), historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), scheduler-tick.yml (real DB, see "Cloud deployment" section), prod-db-recovery.yml (real DB, diagnostic/recovery for connection-pool exhaustion AND orphaned-run cleanup, see "Cloud deployment" section), apply-player-note.yml (real DB, applies a reviewed scout-watch digest finding without needing the production APP_SHARED_TOKEN, see "Cloud deployment" section), run-transfer-optimization.yml (real DB, runs TRANSFER_OPTIMIZATION directly, bypassing Render's web dyno, see "Cloud deployment" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
 .github/state/            current-squad.json, known-notes-snapshot.json (both consumed by scout-watch.yml; league-814682-watch.json consumed by league-watch.yml)
 ```
 
@@ -1701,6 +1701,36 @@ DB-side action. **Real lesson for next retrain**: given the true root cause of t
 is unconfirmed, actively monitor the next run rather than fire-and-forget for the full 180-minute
 timeout again — cancel it manually well before the timeout if it's clearly not progressing, so a
 repeat doesn't re-exhaust the connection pool the same way.
+
+**Real incident (2026-08-27/28): most `transfer_optimization_runs` never reached a terminal
+status.** Querying real run history found only 3 of 7 real attempts ever completed
+(`SUCCEEDED`/`FAILED`) — the other 4 sat in `RUNNING` permanently. The 3 that succeeded via the
+live HTTP API each genuinely took ~39-40 minutes (this app runs `TRANSFER_OPTIMIZATION`
+synchronously in-process, no job queue) — long, but the connection CAN survive that. The stuck
+ones trace to two distinct real causes, not one: (1) an unrelated `git push` during a live
+investigation triggered a Render auto-deploy, which restarts the container and kills whatever
+request was mid-flight on it — no different from any other external process kill; (2) two other
+stuck runs started within 2 minutes of two others that DID succeed, consistent with concurrent
+heavy requests starving each other on a single small free-tier container (this app has no
+concurrency guard on expensive per-manager optimization endpoints). Either cause exposes the same
+real gap: this app's "insert a RUNNING row before work, so a crash still leaves a terminal row"
+pattern (see e.g. `chip_schedule_optimization.py`'s own documented version of this discipline)
+protects against IN-PROCESS exceptions, but has no way to write a `FAILED` row if the process
+itself is killed externally — nothing runs the `finally`/`except` block in that case. **Not yet
+fixed at the application level** (would need e.g. a periodic reconciliation sweep marking
+long-`RUNNING` rows as failed, or moving this job off the synchronous request/response path
+entirely) — worked around operationally instead: `run-transfer-optimization.yml` runs this job
+directly against `PROD_DATABASE_URL` from a GitHub Actions runner (mirrors
+`train-production.yml`), which is immune to both real causes (no Render redeploy touches a
+process that isn't running on Render; a single GitHub Actions job never runs concurrently with
+itself). `prod-db-recovery.yml`'s `fail_orphaned_transfer_runs` action cleans up rows already
+stuck this way (RUNNING past a generous age threshold — every real successful run finished within
+40 minutes — gets marked `FAILED` with `error_code=ORPHANED_PROCESS_KILLED`, not silently
+deleted, preserving the real audit trail). Same day, `apply-player-note.yml` was added for a
+related reason: applying a reviewed `scout-watch.yml` digest finding needs
+`POST /players/{id}/availability-risk-notes`/`.../role-notes`, which needs the real production
+`APP_SHARED_TOKEN` — this performs the identical insert directly against `PROD_DATABASE_URL`
+instead, so a digest finding can be applied without ever needing that token.
 
 **Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
 (a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)

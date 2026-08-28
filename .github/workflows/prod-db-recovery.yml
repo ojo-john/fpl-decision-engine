@@ -111,25 +111,6 @@ jobs:
               for row in champion_rows:
                   print(dict(row))
 
-              latest_moves = session.execute(
-                  text(
-                      """
-                      select s.transfers_count, s.net_horizon_points_gain, s.is_recommended,
-                             po.web_name as player_out, pi.web_name as player_in,
-                             m.projected_points_gain_over_horizon
-                      from transfer_optimization_run_moves m
-                      join transfer_optimization_run_scenarios s on s.id = m.transfer_optimization_run_scenario_id
-                      join players po on po.id = m.player_out_id
-                      join players pi on pi.id = m.player_in_id
-                      where s.transfer_optimization_run_id = 'e60e4c82-6ec4-41ad-a0cd-0f6f6925e84e'
-                      order by s.transfers_count, m.move_index
-                      """
-                  )
-              ).mappings().all()
-              print("\nLatest transfer-optimization run's moves:\n")
-              for row in latest_moves:
-                  print(dict(row))
-
               transfer_rows = session.execute(
                   text(
                       """
