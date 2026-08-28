@@ -1,0 +1,128 @@
+name: Run transfer optimization (production, direct)
+
+# Manual runner (workflow_dispatch ONLY) that executes TRANSFER_OPTIMIZATION directly against the
+# real production database from a GitHub Actions runner -- mirrors train-production.yml's own
+# "connects to secrets.PROD_DATABASE_URL, bypasses Render's web dyno entirely" pattern.
+#
+# Real incident this exists for (2026-08-27/28): querying transfer_optimization_runs showed only
+# 3 of 7 real attempts ever reached a terminal status; the other 4 are permanently stuck
+# RUNNING. The 3 that succeeded via the live HTTP API each took ~39-40 minutes -- genuinely long,
+# but survivable. The stuck ones trace to two distinct real causes: (1) a git push during this
+# same investigation triggered a Render auto-deploy, which restarts the container and kills
+# whatever request was mid-flight on it -- no different from any other unplanned process kill;
+# (2) two other stuck runs started within 2 minutes of two others that DID succeed, suggesting
+# concurrent heavy requests starving each other on a single small free-tier container. Either way,
+# this app's "insert a RUNNING row before work, so a crash still leaves a terminal row" pattern
+# only protects against IN-PROCESS exceptions -- it can't write a FAILED row if the process itself
+# is killed externally, which is exactly what a Render redeploy or OOM does. Running this specific
+# job from a GitHub Actions runner instead removes BOTH real triggers at once: no Render redeploy
+# can touch a process that isn't running on Render, and this runner only ever executes one job at
+# a time (no concurrent-request contention).
+#
+# Does not fix the underlying "orphaned RUNNING row" gap in the app itself -- see
+# ARCHITECTURE.md's own note on this incident for that still-open item.
+
+on:
+  workflow_dispatch:
+    inputs:
+      manager_squad_snapshot_id:
+        description: "Leave blank to auto-resolve the current manager's most recent synced (is_current) snapshot"
+        required: false
+        type: string
+        default: ""
+      horizon_gameweeks:
+        description: "4-8, defaults to this app's own default of 6"
+        required: false
+        type: string
+        default: "6"
+      requested_by:
+        description: "Who is requesting this run (defaults to the triggering actor)"
+        required: false
+        default: ""
+
+jobs:
+  run-transfer-optimization:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      - name: Verify PROD_DATABASE_URL is configured
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::PROD_DATABASE_URL repository secret is not set -- see docs/deployment.md."
+            exit 1
+          fi
+
+      - name: Resolve requested_by
+        id: requested_by
+        run: |
+          value="${{ github.event.inputs.requested_by }}"
+          if [ -z "$value" ]; then
+            value="${{ github.actor }}"
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
+      - name: Run TRANSFER_OPTIMIZATION directly against the real database
+        run: |
+          uv run python - <<'EOF'
+          import json
+
+          from sqlalchemy import select
+
+          from app.jobs.service import execute_job
+          from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
+          from packages.database.session import SessionLocal
+          from packages.domain.jobs import JobType, TriggerType
+
+          snapshot_id = "${{ github.event.inputs.manager_squad_snapshot_id }}"
+          horizon_gameweeks = int("${{ github.event.inputs.horizon_gameweeks }}")
+
+          session = SessionLocal()
+          try:
+              if not snapshot_id:
+                  snapshot = session.execute(
+                      select(ManagerSquadSnapshot)
+                      .where(ManagerSquadSnapshot.is_current.is_(True))
+                      .order_by(ManagerSquadSnapshot.created_at.desc())
+                      .limit(1)
+                  ).scalar_one_or_none()
+                  if snapshot is None:
+                      raise SystemExit("No is_current manager squad snapshot found -- pass manager_squad_snapshot_id explicitly.")
+                  snapshot_id = str(snapshot.id)
+                  print(f"Auto-resolved manager_squad_snapshot_id={snapshot_id}")
+
+              job = execute_job(
+                  session,
+                  job_type=JobType.TRANSFER_OPTIMIZATION,
+                  parameters={
+                      "manager_squad_snapshot_id": snapshot_id,
+                      "horizon_gameweeks": horizon_gameweeks,
+                  },
+                  requested_by="${{ steps.requested_by.outputs.value }}",
+                  trigger_type=TriggerType.GITHUB_MANUAL,
+              )
+              print(
+                  json.dumps(
+                      {
+                          "job_id": str(job.id),
+                          "status": job.status.value if hasattr(job.status, "value") else job.status,
+                          "error_code": job.error_code,
+                          "error_message": job.error_message,
+                          "output": job.output_json,
+                      },
+                      indent=2,
+                      default=str,
+                  )
+              )
+          finally:
+              session.close()
+          EOF
