@@ -25,18 +25,24 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "diagnose (read-only) or terminate_idle_in_transaction (recovery)"
+        description: "diagnose (read-only), terminate_idle_in_transaction, or fail_orphaned_transfer_runs (recovery)"
         required: true
         type: choice
         options:
           - diagnose
           - terminate_idle_in_transaction
+          - fail_orphaned_transfer_runs
         default: diagnose
       idle_threshold_minutes:
         description: "Only used by terminate_idle_in_transaction -- minimum time in that state before a connection is considered abandoned"
         required: false
         type: string
         default: "10"
+      orphan_age_threshold_minutes:
+        description: "Only used by fail_orphaned_transfer_runs -- a RUNNING row older than this (every real successful run so far has finished within 40 min) is considered orphaned by an external process kill, never a still-legitimate in-flight run"
+        required: false
+        type: string
+        default: "90"
 
 jobs:
   prod-db-recovery:
@@ -158,6 +164,59 @@ jobs:
                   print("No idle-in-transaction connections older than the threshold were found.")
               for row in rows:
                   print(dict(row))
+              session.commit()
+          finally:
+              session.close()
+          EOF
+
+      - name: Fail orphaned transfer_optimization_runs (and their jobs rows)
+        if: github.event.inputs.action == 'fail_orphaned_transfer_runs'
+        run: |
+          uv run python - <<'EOF'
+          from datetime import UTC, datetime, timedelta
+
+          from sqlalchemy import select
+
+          from packages.database.models.job import Job
+          from packages.database.models.transfer_optimization_run import TransferOptimizationRun
+          from packages.database.session import SessionLocal
+          from packages.domain.jobs import JobStatus
+          from packages.domain.transfers import TransferOptimizationRunStatus
+
+          threshold_minutes = int("${{ github.event.inputs.orphan_age_threshold_minutes }}")
+          cutoff = datetime.now(UTC) - timedelta(minutes=threshold_minutes)
+          error_message = (
+              f"Orphaned: still RUNNING more than {threshold_minutes} minutes after it started, with "
+              "no terminal status ever written -- this app's own 'insert RUNNING before work' safety "
+              "net only protects against in-process exceptions, not the process itself being killed "
+              "externally (a Render redeploy, OOM, resource contention from a concurrent request). "
+              "Marked FAILED by prod-db-recovery.yml's fail_orphaned_transfer_runs action, not a real "
+              "in-process failure -- see ARCHITECTURE.md for the real incident this traces to."
+          )
+
+          session = SessionLocal()
+          try:
+              orphans = session.execute(
+                  select(TransferOptimizationRun).where(
+                      TransferOptimizationRun.run_status == TransferOptimizationRunStatus.RUNNING,
+                      TransferOptimizationRun.started_at < cutoff,
+                  )
+              ).scalars().all()
+              if not orphans:
+                  print(f"No transfer_optimization_runs RUNNING for more than {threshold_minutes} minutes.")
+              for run in orphans:
+                  run.run_status = TransferOptimizationRunStatus.FAILED
+                  run.error_code = "ORPHANED_PROCESS_KILLED"
+                  run.error_message = error_message
+                  run.completed_at = datetime.now(UTC)
+                  if run.job_id is not None:
+                      job = session.get(Job, run.job_id)
+                      if job is not None and job.status == JobStatus.RUNNING:
+                          job.status = JobStatus.FAILED
+                          job.error_code = "ORPHANED_PROCESS_KILLED"
+                          job.error_message = error_message
+                          job.completed_at = datetime.now(UTC)
+                  print(f"Marked FAILED: transfer_optimization_run_id={run.id}, started_at={run.started_at}")
               session.commit()
           finally:
               session.close()
