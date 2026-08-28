@@ -140,7 +140,7 @@ jobs:
                       where s.is_current = true and p.web_name in ('Shaw', 'Alderete')
                         and g.finished = false
                       order by p.web_name, g.fpl_event_id
-                      limit 12
+                      limit 24
                       """
                   )
               ).mappings().all()
