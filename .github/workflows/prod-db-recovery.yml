@@ -112,21 +112,6 @@ jobs:
               for row in champion_rows:
                   print(dict(row))
 
-              recent_reconciliation_runs = session.execute(
-                  text(
-                      """
-                      select id, status, started_at, completed_at, output_json, error_code, error_message
-                      from jobs
-                      where job_type = 'stale_job_reconciliation'
-                      order by started_at desc
-                      limit 3
-                      """
-                  )
-              ).mappings().all()
-              print("\nRecent STALE_JOB_RECONCILIATION runs:\n")
-              for row in recent_reconciliation_runs:
-                  print(dict(row))
-
               transfer_rows = session.execute(
                   text(
                       """
@@ -241,31 +226,10 @@ jobs:
       - name: Call run_tick() directly against the real database (bypasses Render entirely)
         if: github.event.inputs.action == 'run_tick_directly'
         run: |
-          uv run python - <<'EOF'
+          uv run python -c "
           import logging
           logging.basicConfig(level=logging.INFO)
-
-          from sqlalchemy import select
-
           from app.scheduling.tick import run_tick
-          from packages.database.models.job import Job
-          from packages.database.session import SessionLocal
-          from packages.domain.jobs import JobType
-
           run_tick()
-          print("run_tick() completed")
-
-          session = SessionLocal()
-          try:
-              rows = session.execute(
-                  select(Job)
-                  .where(Job.job_type == JobType.STALE_JOB_RECONCILIATION)
-                  .order_by(Job.created_at.desc())
-                  .limit(3)
-              ).scalars().all()
-              print(f"\n{len(rows)} STALE_JOB_RECONCILIATION job row(s) found in THIS SAME process:\n")
-              for row in rows:
-                  print(row.id, row.status, row.started_at, row.completed_at, row.error_code, row.error_message)
-          finally:
-              session.close()
-          EOF
+          print('run_tick() completed')
+          "
