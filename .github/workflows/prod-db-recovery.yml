@@ -127,6 +127,18 @@ jobs:
               ).mappings().first()
               print(f"\nNext deadline: {dict(next_deadline) if next_deadline else None}")
 
+              from app.jobs.service import execute_job
+              from packages.domain.jobs import JobType, TriggerType
+
+              sync_job = execute_job(
+                  session,
+                  job_type=JobType.MANAGER_SYNC,
+                  parameters={"fpl_manager_id": 918600},
+                  requested_by="claude-code (verifying real free-transfer count)",
+                  trigger_type=TriggerType.GITHUB_MANUAL,
+              )
+              print(f"\nFresh MANAGER_SYNC: status={sync_job.status}, output={sync_job.output_json}")
+
               snapshot_row = session.execute(
                   text(
                       """
