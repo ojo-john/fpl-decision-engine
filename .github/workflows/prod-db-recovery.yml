@@ -111,6 +111,21 @@ jobs:
               for row in champion_rows:
                   print(dict(row))
 
+              recent_reconciliation_runs = session.execute(
+                  text(
+                      """
+                      select id, status, started_at, completed_at, output_json, error_code, error_message
+                      from jobs
+                      where job_type = 'stale_job_reconciliation'
+                      order by started_at desc
+                      limit 3
+                      """
+                  )
+              ).mappings().all()
+              print("\nRecent STALE_JOB_RECONCILIATION runs:\n")
+              for row in recent_reconciliation_runs:
+                  print(dict(row))
+
               transfer_rows = session.execute(
                   text(
                       """
