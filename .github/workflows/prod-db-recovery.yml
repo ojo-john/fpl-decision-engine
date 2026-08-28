@@ -143,7 +143,7 @@ jobs:
                   text(
                       """
                       select id, fpl_manager_id, free_transfers_available, bank, as_of_gameweek_id,
-                             raw_history_json, chips_used_json, created_at
+                             raw_history_json, chips_used_json, squad_player_ids, created_at
                       from manager_squad_snapshots
                       where is_current = true
                       order by created_at desc
@@ -151,6 +151,17 @@ jobs:
                       """
                   )
               ).mappings().first()
+              if snapshot_row and snapshot_row.get("squad_player_ids"):
+                  squad_ids = snapshot_row["squad_player_ids"]
+                  squad_players = session.execute(
+                      text(
+                          "select id, web_name, now_cost from players where id = any(:ids)"
+                      ),
+                      {"ids": squad_ids},
+                  ).mappings().all()
+                  print("\nCurrent real squad (from the fresh sync):")
+                  for p in squad_players:
+                      print(f"  {p['web_name']} ({p['now_cost'] / 10})")
               if snapshot_row:
                   row = dict(snapshot_row)
                   history = row.pop("raw_history_json", None)
