@@ -21,6 +21,7 @@ from app.jobs.handlers.position_segmentation_validation import PositionSegmentat
 from app.jobs.handlers.recommendation_generation import RecommendationGenerationJobRunner
 from app.jobs.handlers.rules_sync import RulesSyncJobRunner
 from app.jobs.handlers.squad_optimization import SquadOptimizationJobRunner
+from app.jobs.handlers.stale_job_reconciliation import StaleJobReconciliationJobRunner
 from app.jobs.handlers.start_probability_training import StartProbabilityModelTrainingJobRunner
 from app.jobs.handlers.system_health import SystemHealthJobRunner
 from app.jobs.handlers.team_strength_sync import TeamStrengthSyncJobRunner
@@ -53,6 +54,7 @@ _IMPLEMENTED_JOB_TYPES = {
     JobType.FULL_PIPELINE,
     JobType.DEADLINE_REMINDER,
     JobType.PLAYER_ALERT_CHECK,
+    JobType.STALE_JOB_RECONCILIATION,
 }
 
 
@@ -146,6 +148,10 @@ def test_deadline_reminder_resolves_to_its_runner():
 
 def test_player_alert_check_resolves_to_its_runner():
     assert get_handler(JobType.PLAYER_ALERT_CHECK) is PlayerAlertCheckJobRunner
+
+
+def test_stale_job_reconciliation_resolves_to_its_runner():
+    assert get_handler(JobType.STALE_JOB_RECONCILIATION) is StaleJobReconciliationJobRunner
 
 
 @pytest.mark.parametrize(

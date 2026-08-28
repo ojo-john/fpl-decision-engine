@@ -106,6 +106,7 @@ the job types that have an HTTP trigger.
 | `FULL_PIPELINE` | `full_pipeline.py` | ✅ | — | `make full-pipeline` |
 | `DEADLINE_REMINDER` | `deadline_reminder.py` | ✅ | — | `app.scheduling.tick.run_tick`, every scheduler tick (see "Proactive push alerting" below) |
 | `PLAYER_ALERT_CHECK` | `player_alert_check.py` | ✅ | — | `app.scheduling.tick.run_tick`, chained right after a SUCCEEDED `DATA_INGESTION` (see "Proactive push alerting" below) |
+| `STALE_JOB_RECONCILIATION` | `stale_job_reconciliation.py` | ✅ | — | `app.scheduling.tick.run_tick`, every scheduler tick — marks jobs (and their run-header row) `FAILED` if RUNNING far longer than that job type could legitimately still be in-process (a process killed externally, e.g. a Render redeploy, never gets to write a terminal status itself); see "Cloud deployment" section's 2026-08-27/28 incident |
 
 All optimization/simulation/recommendation jobs are **synchronous request/response** — `execute_job` blocks until done and the HTTP endpoint returns the full result in one call. No job-id polling exists anywhere in the API.
 
@@ -1716,21 +1717,36 @@ concurrency guard on expensive per-manager optimization endpoints). Either cause
 real gap: this app's "insert a RUNNING row before work, so a crash still leaves a terminal row"
 pattern (see e.g. `chip_schedule_optimization.py`'s own documented version of this discipline)
 protects against IN-PROCESS exceptions, but has no way to write a `FAILED` row if the process
-itself is killed externally — nothing runs the `finally`/`except` block in that case. **Not yet
-fixed at the application level** (would need e.g. a periodic reconciliation sweep marking
-long-`RUNNING` rows as failed, or moving this job off the synchronous request/response path
-entirely) — worked around operationally instead: `run-transfer-optimization.yml` runs this job
-directly against `PROD_DATABASE_URL` from a GitHub Actions runner (mirrors
-`train-production.yml`), which is immune to both real causes (no Render redeploy touches a
-process that isn't running on Render; a single GitHub Actions job never runs concurrently with
-itself). `prod-db-recovery.yml`'s `fail_orphaned_transfer_runs` action cleans up rows already
-stuck this way (RUNNING past a generous age threshold — every real successful run finished within
-40 minutes — gets marked `FAILED` with `error_code=ORPHANED_PROCESS_KILLED`, not silently
-deleted, preserving the real audit trail). Same day, `apply-player-note.yml` was added for a
-related reason: applying a reviewed `scout-watch.yml` digest finding needs
-`POST /players/{id}/availability-risk-notes`/`.../role-notes`, which needs the real production
-`APP_SHARED_TOKEN` — this performs the identical insert directly against `PROD_DATABASE_URL`
-instead, so a digest finding can be applied without ever needing that token.
+itself is killed externally — nothing runs the `finally`/`except` block in that case. Worked
+around operationally first: `run-transfer-optimization.yml` runs this job directly against
+`PROD_DATABASE_URL` from a GitHub Actions runner (mirrors `train-production.yml`), immune to both
+real causes (no Render redeploy touches a process that isn't running on Render; a single GitHub
+Actions job never runs concurrently with itself), and `prod-db-recovery.yml`'s
+`fail_orphaned_transfer_runs` action cleaned up the 4 rows already stuck this way (RUNNING past a
+generous age threshold gets marked `FAILED` with `error_code=ORPHANED_PROCESS_KILLED`, not
+silently deleted, preserving the real audit trail).
+
+**Fixed at the application level the same day**: `STALE_JOB_RECONCILIATION` (new `JobType`,
+`app/jobs/handlers/stale_job_reconciliation.py`) runs every scheduler tick alongside
+`DEADLINE_REMINDER` (see "Proactive push alerting" below) and does generally, automatically, for
+EVERY job type with a run-header table, what the manual `prod-db-recovery.yml` action above did
+once by hand for transfers specifically: finds any `jobs` row still `RUNNING` past a per-job-type
+threshold (grounded in real observed durations -- e.g. 90 min for `TRANSFER_OPTIMIZATION`, whose
+real successful runs have all finished within 40; a conservative 180-min default, matching
+`train-production.yml`'s own ceiling, for any job type not explicitly listed) and marks it (and
+its linked run-header row, via a small per-job-type registry covering every table with a
+`job_id` FK and a RUNNING/SUCCEEDED/FAILED-shaped status column) `FAILED` the same way. This
+closes the gap going forward for every job type with this shape, not just transfers — the manual
+GitHub Actions tools above remain useful for a genuinely production-side incident (they don't
+need a scheduler tick to have already run, and `run-transfer-optimization.yml` still sidesteps
+the two real *causes* of orphaning, which this reconciliation does not prevent, only cleans up
+after).
+
+Same day, `apply-player-note.yml` was added for a related reason: applying a reviewed
+`scout-watch.yml` digest finding needs `POST /players/{id}/availability-risk-notes`/
+`.../role-notes`, which needs the real production `APP_SHARED_TOKEN` — this performs the
+identical insert directly against `PROD_DATABASE_URL` instead, so a digest finding can be applied
+without ever needing that token.
 
 **Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
 (a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)

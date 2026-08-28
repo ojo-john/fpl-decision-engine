@@ -49,6 +49,16 @@ class JobType(str, Enum):
     SYSTEM_HEALTH = "system_health"
     DEADLINE_REMINDER = "deadline_reminder"
     PLAYER_ALERT_CHECK = "player_alert_check"
+    # Checked every scheduler tick (Milestone 9-adjacent, added 2026-08-28): finds jobs.status ==
+    # RUNNING rows (and their linked run-header table row, e.g. transfer_optimization_runs) that
+    # have sat RUNNING far longer than that job type could ever legitimately still be in-process,
+    # and marks them FAILED. Real incident this exists for: killing the PROCESS running a job
+    # (a Render redeploy restarting the container, an OOM kill, resource contention from a
+    # concurrent request) never runs the try/except in app.jobs.service.execute_job that would
+    # normally write a terminal status -- the row just sits RUNNING forever. See
+    # app/jobs/handlers/stale_job_reconciliation.py's own module docstring for the full incident
+    # and the per-job-type staleness thresholds.
+    STALE_JOB_RECONCILIATION = "stale_job_reconciliation"
 
 
 class JobStatus(str, Enum):

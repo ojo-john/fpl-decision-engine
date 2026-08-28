@@ -32,6 +32,7 @@ EXPECTED_JOB_TYPE_VALUES = {
     "SYSTEM_HEALTH": "system_health",
     "DEADLINE_REMINDER": "deadline_reminder",
     "PLAYER_ALERT_CHECK": "player_alert_check",
+    "STALE_JOB_RECONCILIATION": "stale_job_reconciliation",
 }
 
 EXPECTED_JOB_STATUS_VALUES = {

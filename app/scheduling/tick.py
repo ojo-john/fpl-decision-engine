@@ -374,3 +374,10 @@ def run_tick() -> None:
     # that handler's own module docstring.
     logger.info("scheduler.triggering_deadline_reminder")
     _run_job_safely(JobType.DEADLINE_REMINDER, None, requested_by="scheduler")
+
+    # Checked every tick, same reasoning as DEADLINE_REMINDER above -- cheap (a single indexed
+    # query, typically zero matching rows), and the only thing that matters is a stale RUNNING row
+    # eventually getting reconciled, not how often this itself runs. See
+    # app/jobs/handlers/stale_job_reconciliation.py's own module docstring for the real incident.
+    logger.info("scheduler.triggering_stale_job_reconciliation")
+    _run_job_safely(JobType.STALE_JOB_RECONCILIATION, None, requested_by="scheduler")
