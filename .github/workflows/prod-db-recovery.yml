@@ -127,6 +127,37 @@ jobs:
               ).mappings().first()
               print(f"\nNext deadline: {dict(next_deadline) if next_deadline else None}")
 
+              snapshot_row = session.execute(
+                  text(
+                      """
+                      select id, fpl_manager_id, free_transfers_available, bank, as_of_gameweek_id,
+                             raw_history_json, chips_used_json, created_at
+                      from manager_squad_snapshots
+                      where is_current = true
+                      order by created_at desc
+                      limit 1
+                      """
+                  )
+              ).mappings().first()
+              if snapshot_row:
+                  row = dict(snapshot_row)
+                  history = row.pop("raw_history_json", None)
+                  print(f"\nCurrent manager snapshot: {row}")
+                  if history:
+                      print("\nhistory().current[] (event, event_transfers, event_transfers_cost, points):")
+                      for entry in history.get("current", []):
+                          print(
+                              {
+                                  "event": entry.get("event"),
+                                  "event_transfers": entry.get("event_transfers"),
+                                  "event_transfers_cost": entry.get("event_transfers_cost"),
+                                  "points": entry.get("points"),
+                              }
+                          )
+                      print("\nhistory().chips[]:", history.get("chips"))
+              else:
+                  print("\nNo is_current manager_squad_snapshots row found.")
+
               transfer_rows = session.execute(
                   text(
                       """
