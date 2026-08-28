@@ -25,13 +25,14 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "diagnose (read-only), terminate_idle_in_transaction, or fail_orphaned_transfer_runs (recovery)"
+        description: "diagnose (read-only), terminate_idle_in_transaction, fail_orphaned_transfer_runs, or run_tick_directly (recovery)"
         required: true
         type: choice
         options:
           - diagnose
           - terminate_idle_in_transaction
           - fail_orphaned_transfer_runs
+          - run_tick_directly
         default: diagnose
       idle_threshold_minutes:
         description: "Only used by terminate_idle_in_transaction -- minimum time in that state before a connection is considered abandoned"
@@ -236,3 +237,8 @@ jobs:
           finally:
               session.close()
           EOF
+
+      - name: Call run_tick() directly against the real database (bypasses Render entirely)
+        if: github.event.inputs.action == 'run_tick_directly'
+        run: |
+          uv run python -c "from app.scheduling.tick import run_tick; run_tick(); print('run_tick() completed')"
