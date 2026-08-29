@@ -130,11 +130,19 @@ jobs:
               from app.jobs.service import execute_job
               from packages.domain.jobs import JobType, TriggerType
 
+              ingestion_job = execute_job(
+                  session,
+                  job_type=JobType.DATA_INGESTION,
+                  requested_by="claude-code (checking live GW2 points)",
+                  trigger_type=TriggerType.GITHUB_MANUAL,
+              )
+              print(f"\nFresh DATA_INGESTION: status={ingestion_job.status}, output={ingestion_job.output_json}")
+
               sync_job = execute_job(
                   session,
                   job_type=JobType.MANAGER_SYNC,
                   parameters={"fpl_manager_id": 918600},
-                  requested_by="claude-code (verifying real free-transfer count)",
+                  requested_by="claude-code (checking real post-deadline squad)",
                   trigger_type=TriggerType.GITHUB_MANUAL,
               )
               print(f"\nFresh MANAGER_SYNC: status={sync_job.status}, output={sync_job.output_json}")
@@ -155,13 +163,19 @@ jobs:
                   squad_ids = snapshot_row["squad_player_ids"]
                   squad_players = session.execute(
                       text(
-                          "select id, web_name, now_cost from players where id = any(:ids)"
+                          """
+                          select p.id, p.web_name, p.now_cost, pgs.total_points as gw2_points
+                          from players p
+                          left join player_gameweek_stats pgs
+                            on pgs.player_id = p.id and pgs.gameweek_id = :gw_id
+                          where p.id = any(:ids)
+                          """
                       ),
-                      {"ids": squad_ids},
+                      {"ids": squad_ids, "gw_id": snapshot_row["as_of_gameweek_id"]},
                   ).mappings().all()
-                  print("\nCurrent real squad (from the fresh sync):")
+                  print("\nCurrent real squad (from the fresh sync) with live GW points:")
                   for p in squad_players:
-                      print(f"  {p['web_name']} ({p['now_cost'] / 10})")
+                      print(f"  {p['web_name']} ({p['now_cost'] / 10}) -- {p['gw2_points']} pts")
               if snapshot_row:
                   row = dict(snapshot_row)
                   history = row.pop("raw_history_json", None)
