@@ -127,25 +127,39 @@ jobs:
               ).mappings().first()
               print(f"\nNext deadline: {dict(next_deadline) if next_deadline else None}")
 
-              from app.jobs.service import execute_job
-              from packages.domain.jobs import JobType, TriggerType
+              van_dijk = session.execute(
+                  text(
+                      """
+                      select p.id, p.web_name, t.short_name as team, pos.short_name as position,
+                             p.now_cost, p.status, p.form, p.points_per_game, p.ep_next,
+                             p.selected_by_percent, p.total_points, p.chance_of_playing_next_round
+                      from players p
+                      join seasons s on s.id = p.season_id
+                      left join teams t on t.id = p.team_id
+                      left join positions pos on pos.id = p.position_id
+                      where s.is_current = true and p.web_name = 'van Dijk'
+                      """
+                  )
+              ).mappings().first()
+              print(f"\nVan Dijk: {dict(van_dijk) if van_dijk else 'NOT FOUND'}")
 
-              ingestion_job = execute_job(
-                  session,
-                  job_type=JobType.DATA_INGESTION,
-                  requested_by="claude-code (checking live GW2 points)",
-                  trigger_type=TriggerType.GITHUB_MANUAL,
-              )
-              print(f"\nFresh DATA_INGESTION: status={ingestion_job.status}, output={ingestion_job.output_json}")
-
-              sync_job = execute_job(
-                  session,
-                  job_type=JobType.MANAGER_SYNC,
-                  parameters={"fpl_manager_id": 918600},
-                  requested_by="claude-code (checking real post-deadline squad)",
-                  trigger_type=TriggerType.GITHUB_MANUAL,
-              )
-              print(f"\nFresh MANAGER_SYNC: status={sync_job.status}, output={sync_job.output_json}")
+              if van_dijk:
+                  fixtures = session.execute(
+                      text(
+                          """
+                          select g.fpl_event_id, f.next_fixture_difficulty, f.next_fixture_was_home
+                          from player_features f
+                          join gameweeks g on g.id = f.gameweek_id
+                          where f.player_id = :pid and g.finished = false
+                          order by g.fpl_event_id
+                          limit 8
+                          """
+                      ),
+                      {"pid": van_dijk["id"]},
+                  ).mappings().all()
+                  print("\nVan Dijk upcoming fixtures:")
+                  for row in fixtures:
+                      print(dict(row))
 
               snapshot_row = session.execute(
                   text(
