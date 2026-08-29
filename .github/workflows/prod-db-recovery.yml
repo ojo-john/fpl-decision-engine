@@ -127,6 +127,20 @@ jobs:
               ).mappings().first()
               print(f"\nNext deadline: {dict(next_deadline) if next_deadline else None}")
 
+              from app.jobs.service import execute_job
+              from packages.domain.jobs import JobType, TriggerType
+
+              ingestion_job = execute_job(
+                  session,
+                  job_type=JobType.DATA_INGESTION,
+                  requested_by="claude-code (Liverpool 2-2 finished, checking Virgil's real points)",
+                  trigger_type=TriggerType.GITHUB_MANUAL,
+              )
+              print(
+                  f"\nFresh DATA_INGESTION: status={ingestion_job.status}, "
+                  f"live_backfilled={ingestion_job.output_json.get('live_stats_backfilled_event_ids') if ingestion_job.output_json else None}"
+              )
+
               van_dijk = session.execute(
                   text(
                       """
@@ -142,6 +156,22 @@ jobs:
                   )
               ).mappings().first()
               print(f"\nVan Dijk: {dict(van_dijk) if van_dijk else 'NOT FOUND'}")
+
+              if van_dijk:
+                  gw2_stats = session.execute(
+                      text(
+                          """
+                          select pgs.total_points, pgs.minutes, pgs.goals_scored, pgs.assists,
+                                 pgs.clean_sheets, pgs.goals_conceded, pgs.bonus, pgs.bps,
+                                 pgs.yellow_cards, pgs.red_cards
+                          from player_gameweek_stats pgs
+                          join gameweeks g on g.id = pgs.gameweek_id
+                          where pgs.player_id = :pid and g.fpl_event_id = 2
+                          """
+                      ),
+                      {"pid": van_dijk["id"]},
+                  ).mappings().first()
+                  print(f"Van Dijk GW2 stats: {dict(gw2_stats) if gw2_stats else 'no row yet'}")
 
               if van_dijk:
                   fixtures = session.execute(
