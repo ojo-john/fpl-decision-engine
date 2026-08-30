@@ -141,6 +141,60 @@ jobs:
                   f"live_backfilled={ingestion_job.output_json.get('live_stats_backfilled_event_ids') if ingestion_job.output_json else None}"
               )
 
+              ingestion_job = execute_job(
+                  session,
+                  job_type=JobType.DATA_INGESTION,
+                  requested_by="claude-code (checking GW2 results after more games finished)",
+                  trigger_type=TriggerType.GITHUB_MANUAL,
+              )
+              print(
+                  f"\nFresh DATA_INGESTION: status={ingestion_job.status}, "
+                  f"live_backfilled={ingestion_job.output_json.get('live_stats_backfilled_event_ids') if ingestion_job.output_json else None}"
+              )
+
+              gw2 = session.execute(
+                  text(
+                      """
+                      select fpl_event_id, name, finished, deadline_time
+                      from gameweeks g join seasons s on s.id = g.season_id
+                      where s.is_current = true and g.fpl_event_id = 2
+                      """
+                  )
+              ).mappings().first()
+              print(f"\nGW2 status: {dict(gw2) if gw2 else None}")
+
+              squad_gw2_points = session.execute(
+                  text(
+                      """
+                      select p.web_name, pos.short_name as position, pgs.total_points,
+                             pgs.minutes, pgs.goals_scored, pgs.assists, pgs.clean_sheets,
+                             pgs.bonus, pgs.yellow_cards, pgs.red_cards
+                      from manager_squad_snapshots ms
+                      cross join lateral jsonb_array_elements_text(to_jsonb(ms.squad_player_ids)) as pid on true
+                      join players p on p.id = pid::uuid
+                      join positions pos on pos.id = p.position_id
+                      left join player_gameweek_stats pgs
+                        on pgs.player_id = p.id and pgs.gameweek_id = ms.as_of_gameweek_id
+                      where ms.is_current = true
+                      order by pos.short_name, p.web_name
+                      """
+                  )
+              ).mappings().all()
+              print("\nSquad GW2 real results:")
+              for row in squad_gw2_points:
+                  print(dict(row))
+
+              h2h_gw2 = session.execute(
+                  text(
+                      """
+                      select event, entry_1_id, entry_1_points, entry_2_id, entry_2_points, winner
+                      from h2h_matches
+                      where event = 2 and (entry_1_id = 918600 or entry_2_id = 918600)
+                      """
+                  )
+              ).mappings().first()
+              print(f"\nGW2 H2H result: {dict(h2h_gw2) if h2h_gw2 else None}")
+
               van_dijk = session.execute(
                   text(
                       """
