@@ -210,6 +210,34 @@ jobs:
               for row in squad_gw2_points:
                   print(dict(row))
 
+              bruno = session.execute(
+                  text(
+                      """
+                      select p.id, p.web_name, t.short_name as team, pos.short_name as position,
+                             p.now_cost, p.status, p.form, p.ep_next, p.selected_by_percent, p.total_points
+                      from players p
+                      join seasons s on s.id = p.season_id
+                      left join teams t on t.id = p.team_id
+                      left join positions pos on pos.id = p.position_id
+                      where s.is_current = true and p.web_name ilike '%bruno%guimar%'
+                      """
+                  )
+              ).mappings().all()
+              print(f"\nBruno candidates: {[dict(r) for r in bruno]}")
+
+              current_snapshot = session.execute(
+                  text(
+                      """
+                      select free_transfers_available, bank, chips_used_json
+                      from manager_squad_snapshots
+                      where is_current = true
+                      order by created_at desc
+                      limit 1
+                      """
+                  )
+              ).mappings().first()
+              print(f"\nCurrent snapshot: {dict(current_snapshot) if current_snapshot else None}")
+
               h2h_gw2 = session.execute(
                   text(
                       """
