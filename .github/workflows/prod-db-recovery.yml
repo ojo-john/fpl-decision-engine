@@ -163,6 +163,32 @@ jobs:
               ).mappings().first()
               print(f"\nGW2 status: {dict(gw2) if gw2 else None}")
 
+              if gw2:
+                  gw2_id = session.execute(
+                      text(
+                          "select id from gameweeks where fpl_event_id = 2 "
+                          "and season_id = (select id from seasons where is_current = true)"
+                      )
+                  ).scalar()
+                  fixtures_gw2 = session.execute(
+                      text(
+                          """
+                          select ht.short_name as home, at.short_name as away,
+                                 f.kickoff_time, f.finished, f.started,
+                                 f.home_score, f.away_score
+                          from fixtures f
+                          join teams ht on ht.id = f.home_team_id
+                          join teams at on at.id = f.away_team_id
+                          where f.gameweek_id = :gw_id
+                          order by f.kickoff_time
+                          """
+                      ),
+                      {"gw_id": gw2_id},
+                  ).mappings().all()
+                  print("\nGW2 fixtures:")
+                  for row in fixtures_gw2:
+                      print(dict(row))
+
               squad_gw2_points = session.execute(
                   text(
                       """
@@ -170,7 +196,7 @@ jobs:
                              pgs.minutes, pgs.goals_scored, pgs.assists, pgs.clean_sheets,
                              pgs.bonus, pgs.yellow_cards, pgs.red_cards
                       from manager_squad_snapshots ms
-                      cross join lateral jsonb_array_elements_text(to_jsonb(ms.squad_player_ids)) as pid on true
+                      cross join lateral jsonb_array_elements_text(ms.squad_player_ids) as pid
                       join players p on p.id = pid::uuid
                       join positions pos on pos.id = p.position_id
                       left join player_gameweek_stats pgs
