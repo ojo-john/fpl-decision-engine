@@ -219,7 +219,7 @@ jobs:
                       join seasons s on s.id = p.season_id
                       left join teams t on t.id = p.team_id
                       left join positions pos on pos.id = p.position_id
-                      where s.is_current = true and p.web_name ilike '%bruno%guimar%'
+                      where s.is_current = true and (p.web_name ilike '%bruno%' or p.second_name ilike '%bruno%')
                       """
                   )
               ).mappings().all()
