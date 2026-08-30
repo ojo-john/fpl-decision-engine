@@ -235,6 +235,25 @@ jobs:
                   for r in rows[:15]:
                       print(r)
 
+              hull_fixtures = session.execute(
+                  text(
+                      """
+                      select p.web_name, g.fpl_event_id, f.next_fixture_difficulty, f.next_fixture_was_home
+                      from players p
+                      join seasons s on s.id = p.season_id
+                      join teams t on t.id = p.team_id
+                      join player_features f on f.player_id = p.id
+                      join gameweeks g on g.id = f.gameweek_id
+                      where s.is_current = true and t.short_name = 'HUL' and g.finished = false
+                      order by p.web_name, g.fpl_event_id
+                      limit 40
+                      """
+                  )
+              ).mappings().all()
+              print("\nHull upcoming fixture difficulty (per player, since fixtures can differ if postponed):")
+              for row in hull_fixtures:
+                  print(dict(row))
+
               bruno = session.execute(
                   text(
                       """
