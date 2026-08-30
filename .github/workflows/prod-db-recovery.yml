@@ -210,6 +210,31 @@ jobs:
               for row in squad_gw2_points:
                   print(dict(row))
 
+              top_candidates = session.execute(
+                  text(
+                      """
+                      select pos.short_name as position, t.short_name as team, p.web_name,
+                             p.now_cost, p.form, p.ep_next, p.points_per_game, p.total_points,
+                             p.status, p.selected_by_percent
+                      from players p
+                      join seasons s on s.id = p.season_id
+                      join positions pos on pos.id = p.position_id
+                      join teams t on t.id = p.team_id
+                      where s.is_current = true and p.status = 'a' and p.now_cost <= 90
+                      order by pos.short_name, p.ep_next desc
+                      """
+                  )
+              ).mappings().all()
+              from collections import defaultdict
+              by_pos = defaultdict(list)
+              for row in top_candidates:
+                  by_pos[row["position"]].append(dict(row))
+              print("\nTop candidates by position (by ep_next):")
+              for pos_name, rows in by_pos.items():
+                  print(f"\n-- {pos_name} --")
+                  for r in rows[:15]:
+                      print(r)
+
               bruno = session.execute(
                   text(
                       """
