@@ -2,9 +2,14 @@
 
 This document covers day-to-day operational tasks for the FPL Decision
 Engine. As of Milestone 1, scope covers the job runner, database migrations,
-the CI/health/ingest/scheduled-dispatcher workflows, and data ingestion +
-rules versioning. It will grow further as modeling, optimization, and the
-frontend come online.
+the CI/health/ingest workflows, and data ingestion + rules versioning. It
+will grow further as modeling, optimization, and the frontend come online.
+
+**Note (2026-09-01): this document is known-stale** (see the project's own
+CLAUDE.md) — much of it still describes a Milestone-1 state where only
+`system_health`/`rules_sync`/`data_ingestion` had handlers. `ARCHITECTURE.md`
+is the maintained ground truth; verify anything here against the real code
+before relying on it.
 
 ## Rerunning a failed job
 
@@ -46,7 +51,7 @@ row that triggered it). Key fields to check when something looks wrong:
   new `ingestion_runs` row, since it's meant to be a full audit trail of
   every ingestion attempt, not a cache of "current state". (The `jobs` row
   above it can still be idempotency-keyed as usual — see
-  `scheduled-dispatcher.yml`.)
+  `tests/integration/test_data_ingestion_idempotency.py`.)
 - `ingestion_runs.overall_health`: the worst `EndpointHealth`
   (`healthy`/`degraded`/`blocked`) across bootstrap-static/fixtures/
   event-status for that run.
@@ -117,20 +122,19 @@ client.close()
 EOF
 ```
 
-### Scheduled dispatcher cadence
+### CI self-test workflows (superseded)
 
-`scheduled-dispatcher.yml` dispatches `data_ingestion` every 4 hours (cron
-`0 */4 * * *`, changed from Milestone 0's hourly `system_health` placeholder
-cadence) using a 4-hour-bucketed idempotency key. This is still a
-placeholder cadence, not real deadline-aware scheduling — see the README for
-details.
-
-**Important: this workflow (and `ingest.yml`) spin up their OWN empty, throwaway Postgres
-service container inside the GitHub Actions runner.** They have never touched, and structurally
-cannot touch, the real local database `docker-compose.yml`'s own `postgres` service serves —
-GitHub's runners have no network path to your machine. They exist to prove the
-idempotent-job/ephemeral-Postgres CI pattern works, not to keep your real data current. For real
-automation against your real database, see the next section.
+The old `scheduled-dispatcher.yml` CI self-test (ephemeral Postgres,
+4-hour-bucketed idempotency key proof for `data_ingestion`) was removed
+2026-09-01 once it became fully redundant with
+`tests/integration/test_job_idempotency.py`/
+`test_data_ingestion_idempotency.py`, which already run on every push via
+`ci.yml`. `ingest.yml` still spins up its OWN empty, throwaway Postgres
+service container inside the GitHub Actions runner — it has never touched,
+and structurally cannot touch, the real local database
+`docker-compose.yml`'s own `postgres` service serves. For real automation
+against a real database, see the next section and `ARCHITECTURE.md`'s
+"Cloud deployment" section (`scheduler-tick.yml`).
 
 ### Local scheduler — the real automation (`scripts/scheduler.py`)
 
@@ -141,7 +145,7 @@ the `api` service's own image, no extra build) — as long as your Docker stack 
   (`GAMEWEEK_REVIEW`, checked every 15 minutes, fires at most once per gameweek).
 - Syncs your league's real rival data every 6 hours (`LEAGUE_SYNC`).
 - Refreshes live player/price/status data every 4 hours (`DATA_INGESTION`) — the real equivalent
-  of what `scheduled-dispatcher.yml` above only ever simulates in CI.
+  of what the old `scheduled-dispatcher.yml` CI self-test only ever simulated.
 
 To opt out of background automation: `docker compose stop scheduler` after bringing the rest of
 the stack up, or comment the `scheduler` service block out of `docker-compose.yml` entirely. The
@@ -150,11 +154,10 @@ same either way — this is purely additive, on-demand triggering was never remo
 
 **Limitation, stated plainly**: this only runs while your own machine is on and Docker is up. It
 is a deliberate, zero-hosting-decision substitute for real automation, not a replacement for
-actually deploying this app somewhere with a real, always-on, publicly-reachable database — that
-remains a real, separate decision (which provider, cost, etc.) nobody has made yet. If this app
-is ever deployed that way, `scheduled-dispatcher.yml`/`ingest.yml` would need the same real
-`DATABASE_URL`-pointing treatment this script already gets locally, and this script's own loop
-could run as a normal background process there too rather than needing GitHub Actions at all.
+actually deploying this app somewhere with a real, always-on, publicly-reachable database. That
+decision has since been made — see `ARCHITECTURE.md`'s "Cloud deployment" section: `scheduler-tick.yml`
+now runs `run_tick()` directly against the real production database via `PROD_DATABASE_URL`,
+scheduled every 15 minutes.
 
 ## Running / rolling back a migration
 
@@ -267,8 +270,10 @@ anywhere beyond local Docker Compose (see `apps/api/auth.py`'s own
 docstring) -- rotating it means updating it in both the API's and
 `apps/web`'s environments at the same time (they must always match) and
 every existing browser session will need to log in again. Otherwise, not
-applicable yet: CI workflows (`ci.yml`, `health.yml`, `ingest.yml`,
-`scheduled-dispatcher.yml`) all use ephemeral, CI-local Postgres containers
-with fixed, non-sensitive placeholder credentials, and the FPL API endpoints
-hit by `packages.fpl_client` are all public and unauthenticated. This
-section will be filled in further once a real deployment target exists.
+applicable yet: CI workflows (`ci.yml`, `health.yml`, `ingest.yml`) all use
+ephemeral, CI-local Postgres containers with fixed, non-sensitive
+placeholder credentials, and the FPL API endpoints hit by
+`packages.fpl_client` are all public and unauthenticated. Workflows that
+touch the real production database (`scheduler-tick.yml`,
+`train-production.yml`, `prod-db-recovery.yml`, etc.) use a
+`PROD_DATABASE_URL` repository secret instead — see `ARCHITECTURE.md`.

@@ -1,5 +1,0 @@
-# Job scheduling configuration.
-#
-# Placeholder for Milestone 0. Real deadline-aware scheduling rules will be
-# populated starting Milestone 1, replacing the fixed hourly cron placeholder
-# currently in .github/workflows/scheduled-dispatcher.yml.

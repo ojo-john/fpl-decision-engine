@@ -64,7 +64,7 @@ tests/unit/ (60 files)  No DB
 tests/integration/ (60) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
 tests/fixtures/          Committed FPL API samples (fpl_api/) + a small real historical CSV set (historical/2023-24/)
-.github/workflows/        ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml (stale Milestone-1 CI self-test, ephemeral DB, NOT real scheduling -- see scheduler-tick.yml for that), historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), scheduler-tick.yml (real DB, see "Cloud deployment" section), prod-db-recovery.yml (real DB, diagnostic/recovery for connection-pool exhaustion AND orphaned-run cleanup, see "Cloud deployment" section), apply-player-note.yml (real DB, applies a reviewed scout-watch digest finding without needing the production APP_SHARED_TOKEN, see "Cloud deployment" section), run-transfer-optimization.yml (real DB, runs TRANSFER_OPTIMIZATION directly, bypassing Render's web dyno, see "Cloud deployment" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
+.github/workflows/        ci.yml, health.yml, ingest.yml, historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), scheduler-tick.yml (real DB, see "Cloud deployment" section), prod-db-recovery.yml (real DB, diagnostic/recovery for connection-pool exhaustion AND orphaned-run cleanup, see "Cloud deployment" section), apply-player-note.yml (real DB, applies a reviewed scout-watch digest finding without needing the production APP_SHARED_TOKEN, see "Cloud deployment" section), run-transfer-optimization.yml (real DB, runs TRANSFER_OPTIMIZATION directly, bypassing Render's web dyno, see "Cloud deployment" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
 .github/state/            current-squad.json, known-notes-snapshot.json (both consumed by scout-watch.yml; league-814682-watch.json consumed by league-watch.yml)
 ```
 
@@ -83,7 +83,7 @@ the job types that have an HTTP trigger.
 |---|---|---|---|---|
 | `SYSTEM_HEALTH` | `system_health.py` | ✅ | — | `health.yml` (manual) |
 | `RULES_SYNC` | `rules_sync.py` | ✅ | — | part of `DATA_INGESTION`'s own flow; `ingest.yml` |
-| `DATA_INGESTION` | `data_ingestion.py` | ✅ | `POST /data/refresh` | `make ingest`, `scheduled-dispatcher.yml` (cron `0 */4 * * *`), `ingest.yml` |
+| `DATA_INGESTION` | `data_ingestion.py` | ✅ | `POST /data/refresh` | `make ingest`, `ingest.yml`, `scheduler-tick.yml` |
 | `HISTORICAL_DATA_INGESTION` | `historical_data_ingestion.py` | ✅ | — | CLI / `historical-ingest.yml` (manual) only |
 | `MANAGER_SYNC` | `manager_sync.py` | ✅ | `POST /managers/sync` | |
 | `LEAGUE_SYNC` | `league_sync.py` | ✅ | `POST /leagues/sync` | |
@@ -1094,8 +1094,8 @@ new code needed, just running the existing pipeline.
     `MODEL_TRAINING` has ever had — mirrors `POST
     /models/start-probability-training`'s exact pattern — since `train.yml`
     only ever touches a throwaway CI database (see "Cloud deployment" above
-    for the identical, established reason `scheduled-dispatcher.yml`/
-    `ingest.yml` never touch the real one either), leaving no remote way to
+    for the identical, established reason `ingest.yml` never touches the
+    real one either), leaving no remote way to
     actually retrain against the real, live database without this.
 - **`START_PROBABILITY_MODEL_TRAINING`** (`app/jobs/handlers
   /start_probability_training.py`, `app/modeling/start_probability.py`): a

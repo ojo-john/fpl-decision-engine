@@ -36,7 +36,7 @@ config/          YAML config placeholders for future milestones
 scripts/run_job.py  CLI to execute a single job synchronously
 tests/           unit (no DB) / integration (real Postgres) / contract & e2e (stubs)
 tests/fixtures/fpl_api/ Trimmed, committed FPL API samples used by tests (never live network)
-.github/workflows/  ci.yml, health.yml, ingest.yml, scheduled-dispatcher.yml
+.github/workflows/  ci.yml, health.yml, ingest.yml
 ```
 
 Persistence is Postgres via **synchronous SQLAlchemy 2.0** (`psycopg[binary]`
@@ -219,14 +219,15 @@ reachable base URL: `http://localhost:8000` for local `npm run dev`,
 
 ## GitHub setup
 
-**No GitHub secrets are required.** All four workflows (`ci.yml`,
-`health.yml`, `ingest.yml`, `scheduled-dispatcher.yml`) spin up their own
-ephemeral, CI-local Postgres service container with fixed, non-sensitive
-placeholder credentials — there is no persistent hosted database yet for
-them to need real credentials for. `ingest.yml` and every ingestion job
-handler still never touch the real FPL API in CI in a way that could leak
-anything sensitive — there is nothing sensitive in these URLs (they're all
-public, unauthenticated endpoints).
+**No GitHub secrets are required** for `ci.yml`, `health.yml`, or
+`ingest.yml` — each spins up its own ephemeral, CI-local Postgres service
+container with fixed, non-sensitive placeholder credentials. `ingest.yml`
+and every ingestion job handler still never touch the real FPL API in CI in
+a way that could leak anything sensitive — there is nothing sensitive in
+these URLs (they're all public, unauthenticated endpoints). Workflows that
+touch the real production database (`scheduler-tick.yml`,
+`train-production.yml`, `prod-db-recovery.yml`, etc.) do need
+`PROD_DATABASE_URL` — see `ARCHITECTURE.md`'s "Cloud deployment" section.
 
 When a later milestone adds real FPL identifiers, set `FPL_MANAGER_ID` and
 `FPL_H2H_LEAGUE_ID` as GitHub Actions **variables** (not secrets) — they are
@@ -259,22 +260,14 @@ The run's full Markdown ingestion report is printed into the workflow's job
 summary and uploaded as a `job-summary` build artifact (same pattern as
 `health.yml`).
 
-### How the scheduled dispatcher works
+### Real scheduling
 
-`scheduled-dispatcher.yml` now dispatches `data_ingestion` (not
-`system_health`) every 4 hours (cron `0 */4 * * *` — still an explicit
-placeholder cadence, not real deadline-aware scheduling, which lands in a
-later milestone). Each run stands up an ephemeral Postgres container,
-applies migrations, then calls `scripts/run_job.py` **twice** with the same
-idempotency key (derived from the current UTC 4-hour bucket, e.g.
-`scheduled-ingest-2026-07-09T-3` for the 12:00-15:59 UTC window), and asserts
-the two calls returned the same `job_id` — proving the idempotency mechanism
-actually prevents duplicate `jobs` rows, not just in theory. Note this is
-`jobs`-table idempotency only: the underlying `ingestion_runs` row is never
-deduplicated this way (see "Rules versioning and data ingestion" above) —
-the second `scripts/run_job.py` call here never even reaches the handler,
-since `execute_job` short-circuits on the matching idempotency key before
-invoking it.
+The CI-only `scheduled-dispatcher.yml` self-test (ephemeral Postgres,
+idempotency-key proof) was removed once its coverage became fully redundant
+with `tests/integration/test_job_idempotency.py`/
+`test_data_ingestion_idempotency.py`, which already run on every push via
+`ci.yml`. Real deadline-aware scheduling against the live database is
+`scheduler-tick.yml` — see `ARCHITECTURE.md`'s "Cloud deployment" section.
 
 ## Running tests
 
