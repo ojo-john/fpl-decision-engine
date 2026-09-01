@@ -1672,6 +1672,25 @@ on the free plan, including after free-tier cold-start wake-ups. Local `docker-c
 overrides `command:` for the `api`/`scheduler` services, so this default `CMD` never runs there
 and local dev is unaffected.
 
+**Real security incident (2026-09-01): every public table had Row-Level Security disabled.**
+Supabase's own automated scanner flagged this CRITICAL — every one of the 56 public tables
+(`manager_squad_snapshots`, `push_subscriptions`, `rival_profiles`, `learning_reports`, all of
+them) was fully readable/writable/deletable via Supabase's auto-generated PostgREST API using
+just the `anon`/`authenticated` roles, a completely separate access path from this app's own
+FastAPI/`APP_SHARED_TOKEN` layer that was never intentionally exposed or used. Fixed by migration
+`0049` (`ENABLE ROW LEVEL SECURITY` on every public table, zero policies added). Confirmed safe
+before writing it, not assumed: this app's own `DATABASE_URL` connects as `postgres` (verified
+live via `select current_user`), which is both the table owner and a Supabase superuser — Postgres
+exempts the table owner from RLS restrictions unless `FORCE ROW LEVEL SECURITY` is also set
+(deliberately not set here), so this app's own direct Postgres access is completely unaffected
+while Supabase's PostgREST roles now get zero access (no policy grants them anything). This app
+has no legitimate use for the PostgREST API at all — it only ever talks to Postgres directly via
+SQLAlchemy — so "zero access for anyone but the owner" is the complete fix, not a partial one
+needing follow-up policy work. **A genuine remaining gap**: nothing automatically enforces this
+for a table added by a *future* migration — the same manual-discipline gap this repo already has
+for enum column widths (see `tests/unit/test_job_enums.py`'s own real-incident precedent) — a new
+migration that creates a table must remember to also enable RLS on it.
+
 **Real incident (2026-08-26): a killed `train-production.yml` run exhausted Supabase's connection
 pool for ~18 hours.** A `season_label: "all"` retrain genuinely exceeded the workflow's own
 180-minute `timeout-minutes` and was force-killed by GitHub Actions — **not** because `"all"`
