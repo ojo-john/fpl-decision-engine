@@ -235,6 +235,33 @@ jobs:
                   for r in rows[:15]:
                       print(r)
 
+              rls_status = session.execute(
+                  text(
+                      """
+                      select c.relname as table_name, c.relrowsecurity as rls_enabled,
+                             c.relforcerowsecurity as rls_forced,
+                             (select count(*) from pg_policies p where p.tablename = c.relname) as policy_count
+                      from pg_class c
+                      join pg_namespace n on n.oid = c.relnamespace
+                      where n.nspname = 'public' and c.relkind = 'r'
+                      order by c.relrowsecurity asc, c.relname
+                      """
+                  )
+              ).mappings().all()
+              print(f"\n{len(rls_status)} public tables -- RLS status:\n")
+              for row in rls_status:
+                  print(dict(row))
+
+              current_role = session.execute(text("select current_user, session_user")).mappings().first()
+              print(f"\nCurrent DB role (app's own DATABASE_URL): {dict(current_role)}")
+
+              anon_role_check = session.execute(
+                  text(
+                      "select rolname from pg_roles where rolname in ('anon', 'authenticated', 'service_role')"
+                  )
+              ).scalars().all()
+              print(f"\nSupabase API roles present: {anon_role_check}")
+
               hull_fixtures = session.execute(
                   text(
                       """
