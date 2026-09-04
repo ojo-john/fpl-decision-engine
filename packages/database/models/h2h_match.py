@@ -2,8 +2,8 @@
 
 Upsert-in-place semantics keyed on ``fpl_match_id`` — NOT audit/insert-only
 like ``rival_gameweek_snapshots``. A match record converges to one true
-state as the gameweek plays out (``winner``/``entry_*_points`` start ``NULL``
-and resolve once the gameweek finishes), the same convergence behavior as
+state as the gameweek plays out (``entry_*_points`` start ``NULL`` and
+resolve once the gameweek finishes), the same convergence behavior as
 ``Gameweek.finished`` flipping from ``False`` to ``True`` in place — there is
 exactly one current truth for "what happened in match X", not a sequence of
 observations worth preserving individually.
@@ -15,6 +15,22 @@ reinterpreted. FPL's raw response also includes redundant computed fields
 (e.g. ``entry_1_total``, ``tiebreak``) not modeled as their own columns here;
 those are preserved losslessly in ``raw_match_json`` for anything that needs
 them later without requiring a schema change.
+
+``winner`` is NOT stored verbatim, unlike the fields above — CORRECTED
+UNDERSTANDING (2026-09-04, confirmed live against real production data):
+FPL's own raw ``winner`` field is only ever populated for knockout-round
+matches. A real, decisive regular-season result (e.g. 62-53, with
+``entry_1_win=1``) still returns ``winner: null`` from FPL indefinitely,
+across every resync after the gameweek finishes — this is not a sync delay,
+it never resolves. ``app.jobs.handlers.league_sync._derive_winner`` trusts
+FPL's own value when present (a knockout tie may encode tiebreak-resolved
+info the win/draw/loss flags alone don't carry) and otherwise derives it
+from ``entry_1_win``/``entry_2_win``, which FPL does reliably set once a
+match has a real result. Note that no real application logic actually reads
+this column today — ``app.learning.outcome_ingestion`` derives outcomes
+directly from ``entry_1_points``/``entry_2_points`` instead — so this column
+existing at all is for any future consumer that wants "who won" without
+re-deriving it themselves.
 """
 
 import uuid
@@ -48,7 +64,8 @@ class H2HMatch(Base):
     entry_2_win: Mapped[int | None] = mapped_column(Integer)
     entry_2_draw: Mapped[int | None] = mapped_column(Integer)
     entry_2_loss: Mapped[int | None] = mapped_column(Integer)
-    winner: Mapped[int | None] = mapped_column(Integer)  # raw FPL manager id, NULL until resolved
+    # Derived, not raw verbatim -- see this module's own docstring for why.
+    winner: Mapped[int | None] = mapped_column(Integer)  # FPL manager id; NULL = undecided or draw
     is_knockout: Mapped[bool] = mapped_column(SABoolean, nullable=False)
     knockout_name: Mapped[str | None] = mapped_column(String)
     is_bye: Mapped[bool] = mapped_column(SABoolean, nullable=False)

@@ -2,10 +2,47 @@
 
 from datetime import UTC, datetime
 
-from app.jobs.handlers.league_sync import classify_picks_availability
+from app.jobs.handlers.league_sync import _derive_winner, classify_picks_availability
 from packages.domain.h2h import PicksAvailability
 from packages.domain.ingestion import EndpointHealth
 from packages.fpl_client.models import FetchResult
+
+
+def _match_row(**overrides: object) -> dict:
+    base = {
+        "entry_1_entry": 2001,
+        "entry_2_entry": 2002,
+        "entry_1_win": 0,
+        "entry_2_win": 0,
+        "winner": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_derive_winner_trusts_raw_winner_when_fpl_provides_it():
+    row = _match_row(winner=2001, entry_1_win=1)
+    assert _derive_winner(row) == 2001
+
+
+def test_derive_winner_falls_back_to_entry_1_win_when_raw_winner_is_null():
+    row = _match_row(winner=None, entry_1_win=1, entry_2_win=0)
+    assert _derive_winner(row) == 2001
+
+
+def test_derive_winner_falls_back_to_entry_2_win_when_raw_winner_is_null():
+    row = _match_row(winner=None, entry_1_win=0, entry_2_win=1)
+    assert _derive_winner(row) == 2002
+
+
+def test_derive_winner_is_none_for_a_genuine_draw():
+    row = _match_row(winner=None, entry_1_win=0, entry_2_win=0)
+    assert _derive_winner(row) is None
+
+
+def test_derive_winner_is_none_for_a_match_that_has_not_been_played_yet():
+    row = _match_row(winner=None, entry_1_win=None, entry_2_win=None)
+    assert _derive_winner(row) is None
 
 
 def _failed_fetch_result(http_status: int | None, error_message: str | None) -> FetchResult:

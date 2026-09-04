@@ -129,9 +129,12 @@ def test_league_sync_happy_path_with_partial_rival_failure(
     match_by_fpl_id = {m.fpl_match_id: m for m in matches}
     assert match_by_fpl_id[501].entry_1_id == LEAGUE_SELF_FPL_MANAGER_ID
     assert match_by_fpl_id[501].entry_2_id == LEAGUE_RIVAL_B_FPL_MANAGER_ID
+    # Fixture's own raw "winner" is null (matches real FPL behavior for a regular-season match --
+    # see H2HMatch's own docstring) -- this proves _derive_winner falls back to entry_1_win=1.
     assert match_by_fpl_id[501].winner == LEAGUE_SELF_FPL_MANAGER_ID
     assert match_by_fpl_id[502].entry_1_id == LEAGUE_RIVAL_C_FPL_MANAGER_ID
     assert match_by_fpl_id[502].entry_2_id == LEAGUE_RIVAL_D_FPL_MANAGER_ID
+    # A genuine draw (entry_1_draw=entry_2_draw=1, both win flags 0) -- correctly stays undecided.
     assert match_by_fpl_id[502].winner is None
 
     # Exactly 3 new snapshots: self (2001) was excluded, B/C/D were synced.

@@ -287,6 +287,25 @@ def _upsert_league_entries(
     )
 
 
+def _derive_winner(row: dict) -> int | None:
+    """FPL's own raw ``winner`` field is only ever populated for knockout-round matches (confirmed
+    live 2026-09-04: real, decisive regular-season matches -- e.g. a finished 62-53 result with
+    ``entry_1_win=1`` -- still return ``winner: null``, indefinitely, across every resync since).
+    Trust FPL's own value when it says something (knockout ties may encode tiebreak-resolved info
+    not visible in the win/draw/loss flags alone); otherwise derive it from ``entry_1_win``/
+    ``entry_2_win``, which FPL does reliably set to 0/1 once a match has a real result. Returns
+    ``None`` for a genuine draw or a match that hasn't happened yet -- both leave every win flag 0.
+    """
+    raw_winner = row.get("winner")
+    if raw_winner is not None:
+        return raw_winner
+    if row.get("entry_1_win") == 1:
+        return row["entry_1_entry"]
+    if row.get("entry_2_win") == 1:
+        return row["entry_2_entry"]
+    return None
+
+
 def _upsert_matches(session: Session, league_id: uuid.UUID, matches: list[dict], now: datetime) -> None:
     if not matches:
         return
@@ -307,7 +326,7 @@ def _upsert_matches(session: Session, league_id: uuid.UUID, matches: list[dict],
             "entry_2_win": row.get("entry_2_win"),
             "entry_2_draw": row.get("entry_2_draw"),
             "entry_2_loss": row.get("entry_2_loss"),
-            "winner": row.get("winner"),
+            "winner": _derive_winner(row),
             "is_knockout": row.get("is_knockout", False),
             "knockout_name": row.get("knockout_name"),
             "is_bye": row.get("is_bye", False),
