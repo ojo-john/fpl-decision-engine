@@ -22,6 +22,7 @@ from sqlalchemy import select, update
 
 from app.chips.scenario import (
     _WILDCARD_MAX_CANDIDATE_GAMEWEEKS,
+    _build_full_candidate_pool,
     evaluate_free_hit,
     evaluate_free_hit_candidate,
     evaluate_wildcard,
@@ -359,3 +360,58 @@ def test_evaluate_wildcard_and_free_hit_candidates_expose_their_winning_solution
         assert result.solution is not None
         assert len(result.solution.starting_player_ids) == 11
         assert result.solution.captain_player_id in result.solution.starting_player_ids
+
+
+def test_build_full_candidate_pool_excludes_zero_minute_players_once_season_has_started(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """Real incident (2026-09-05): a wildcard/free-hit full squad rebuild had zero screening for
+    real playing time, so a player with 0 minutes this season was still a live candidate --
+    confirmed live, every bench pick in a real production rebuild had 0 minutes/0 points. This
+    fixture already has earlier gameweeks finished (mid-season), so forcing one player to 0
+    minutes must exclude them from the rebuild pool.
+    """
+    season_id, stop_event = _seed_season_with_several_unfinished_gameweeks(
+        db_session, patched_fpl_client_optimization_with_active_gameweek
+    )
+    window_gameweek_ids = resolve_gameweeks_within_window(
+        db_session, season_id, stop_event, datetime.now(UTC)
+    )
+    gw1 = window_gameweek_ids[0]
+
+    zero_minute_player = db_session.execute(
+        select(Player).where(Player.season_id == season_id, Player.status == "a").limit(1)
+    ).scalar_one()
+    zero_minute_player.minutes = 0
+    db_session.commit()
+
+    candidates = _build_full_candidate_pool(db_session, season_id, gw1, champion=None)
+
+    assert zero_minute_player.id not in {c.player_id for c in candidates}
+
+
+def test_build_full_candidate_pool_includes_zero_minute_players_before_season_has_started(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """The exact case the fix above must never break: pre-season, every real player genuinely has
+    0 minutes -- excluding them would empty the entire rebuild pool. Forces every gameweek back to
+    unfinished to prove the exclusion is skipped entirely in that state.
+    """
+    season_id, stop_event = _seed_season_with_several_unfinished_gameweeks(
+        db_session, patched_fpl_client_optimization_with_active_gameweek
+    )
+    window_gameweek_ids = resolve_gameweeks_within_window(
+        db_session, season_id, stop_event, datetime.now(UTC)
+    )
+    gw1 = window_gameweek_ids[0]
+
+    db_session.execute(update(Gameweek).where(Gameweek.season_id == season_id).values(finished=False))
+    zero_minute_player = db_session.execute(
+        select(Player).where(Player.season_id == season_id, Player.status == "a").limit(1)
+    ).scalar_one()
+    zero_minute_player.minutes = 0
+    db_session.commit()
+
+    candidates = _build_full_candidate_pool(db_session, season_id, gw1, champion=None)
+
+    assert zero_minute_player.id in {c.player_id for c in candidates}

@@ -36,7 +36,11 @@ from app.jobs.runner import JobContext, JobResult, JobRunner
 from app.optimization.candidates import OptimizationCandidate
 from app.optimization.champion_loader import LoadedChampion, load_current_champion
 from app.optimization.constraints import get_captain_multiplier, load_optimization_constraints
-from app.optimization.gameweek_resolution import resolve_horizon_gameweeks, resolve_target_gameweek
+from app.optimization.gameweek_resolution import (
+    resolve_horizon_gameweeks,
+    resolve_most_recent_finished_gameweek_event,
+    resolve_target_gameweek,
+)
 from app.optimization.gate import check_optimization_gate
 from app.optimization.joint_squad_solver import solve_joint_squad_and_xi
 from app.optimization.persistence import build_run_player_rows_and_xi_points
@@ -72,7 +76,16 @@ def _build_candidates(
     to the same single, DB-free ``project_player`` estimate every candidate always used before
     this layer, rather than a horizon sum of zero for everyone (which would carry no ranking
     signal at all).
+
+    Once the season has at least one real finished gameweek, a player with zero minutes played
+    is also excluded — real incident (2026-09-05): the joint solver's own Phase 2 (minimize
+    bench cost) has zero incentive to prefer a bench player who might actually get minutes over
+    one who never plays at all, since bench points never enter its objective either way;
+    confirmed live, every bench pick in a real production build had 0 minutes/0 points this
+    season. Deliberately skipped pre-season (no finished gameweek yet), where every real player
+    would otherwise have 0 minutes and this would empty the entire candidate pool.
     """
+    season_has_started = resolve_most_recent_finished_gameweek_event(session, season_id) is not None
     players = (
         session.execute(select(Player).where(Player.season_id == season_id, Player.is_quarantined.is_(False)))
         .scalars()
@@ -88,6 +101,8 @@ def _build_candidates(
             continue
         position = positions_by_id.get(player.position_id)
         if position is None:
+            continue
+        if season_has_started and player.minutes == 0:
             continue
         # Hard-exclusion (i/s/u) is a static property of player.status alone -- identical for
         # every gameweek project_player_with_champion would ever check inside

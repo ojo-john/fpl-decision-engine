@@ -250,6 +250,25 @@ training row ever had. Confirmed live: champion model projected Haaland
 at 0.43 pts for a cold-start GW1 vs. FPL's own `ep_next` of 4.0 for the
 same player.
 
+**Zero-real-minutes exclusion (added 2026-09-05)**: real incident — a
+production Wildcard rebuild picked bench players with 0 minutes/0 points
+this season, because nothing upstream of `solve_joint_squad_and_xi`'s own
+Phase 2 (minimize bench cost, blind to bench points since they never enter
+its objective) screened for real playing time; a cheap player who never
+plays and one who might are treated identically as long as both are cheap
+enough. `_build_candidates` (`squad_optimization.py`) and
+`_build_full_candidate_pool` (`app/chips/scenario.py`, the Wildcard/Free
+Hit rebuild pool) both now exclude `Player.minutes == 0` candidates —
+**but only once the season has a real finished gameweek**
+(`resolve_most_recent_finished_gameweek_event(...) is not None`).
+Deliberately gated: pre-season (and `POST /optimize/preview`'s own
+cold-start-GW1 use case immediately above), every real player genuinely
+has 0 minutes, and an ungated filter would empty the entire candidate pool.
+This is a real, separate, upstream fix from `compute_bench_depth_warnings`
+above — that flags thin bench cover after a squad is already solved; this
+prevents an appearance-risk player from being a candidate at all once
+there's real season data to judge them by.
+
 **The cold-start check is per-player, not per-season** (post-review fix —
 originally `_is_cold_start_season` alone decided this for every player
 uniformly: zero `player_gameweek_stats` rows anywhere in the season. That

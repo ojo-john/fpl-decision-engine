@@ -10,9 +10,11 @@ import uuid
 from collections import Counter
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
+from app.jobs.handlers.squad_optimization import _build_candidates
 from app.jobs.service import execute_job
+from packages.database.models.gameweek import Gameweek
 from packages.database.models.optimization_run import OptimizationRun
 from packages.database.models.optimization_run_player import OptimizationRunPlayer
 from packages.database.models.player import Player
@@ -129,3 +131,53 @@ def test_squad_optimization_job_produces_legal_squad(db_session, patched_fpl_cli
     assert vice_rows[0].is_starting
     assert captain_rows[0].player_id == run_row.captain_player_id
     assert vice_rows[0].player_id == run_row.vice_captain_player_id
+
+
+def test_build_candidates_excludes_zero_minute_players_once_season_has_started(
+    db_session, patched_fpl_client_optimization
+):
+    """Real incident (2026-09-05): a player with 0 real minutes played this season was still a
+    live candidate for a squad rebuild once the season had genuinely started, because nothing
+    upstream of the solver's own bench-cost-minimization ever screened for real playing time.
+    ``patched_fpl_client_optimization``'s own bootstrap sample has every gameweek finished (a
+    realistic close-season snapshot) and every synthetic player with real nonzero minutes, so
+    this test forces exactly one player to 0 minutes directly to prove the exclusion fires.
+    """
+    ingestion_job = execute_job(db_session, job_type=JobType.DATA_INGESTION, trigger_type=TriggerType.LOCAL)
+    assert ingestion_job.status == JobStatus.SUCCEEDED
+    season_id = _season_id_for_label(db_session, ingestion_job.output_json["season_label"])
+
+    zero_minute_player = db_session.execute(
+        select(Player).where(Player.season_id == season_id, Player.status == "a").limit(1)
+    ).scalar_one()
+    zero_minute_player.minutes = 0
+    db_session.commit()
+
+    candidates = _build_candidates(db_session, season_id, [], champion=None)
+
+    assert zero_minute_player.id not in {c.player_id for c in candidates}
+
+
+def test_build_candidates_includes_zero_minute_players_before_season_has_started(
+    db_session, patched_fpl_client_optimization
+):
+    """The exact case the fix above must never break: pre-season (or GW1 before any gameweek has
+    finished), every real player genuinely has 0 minutes -- excluding them would empty the whole
+    candidate pool. Forces every gameweek back to unfinished (overriding
+    ``patched_fpl_client_optimization``'s own close-season default) to prove the exclusion is
+    skipped entirely in that state.
+    """
+    ingestion_job = execute_job(db_session, job_type=JobType.DATA_INGESTION, trigger_type=TriggerType.LOCAL)
+    assert ingestion_job.status == JobStatus.SUCCEEDED
+    season_id = _season_id_for_label(db_session, ingestion_job.output_json["season_label"])
+
+    db_session.execute(update(Gameweek).where(Gameweek.season_id == season_id).values(finished=False))
+    zero_minute_player = db_session.execute(
+        select(Player).where(Player.season_id == season_id, Player.status == "a").limit(1)
+    ).scalar_one()
+    zero_minute_player.minutes = 0
+    db_session.commit()
+
+    candidates = _build_candidates(db_session, season_id, [], champion=None)
+
+    assert zero_minute_player.id in {c.player_id for c in candidates}

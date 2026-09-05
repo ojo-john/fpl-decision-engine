@@ -104,6 +104,7 @@ from app.optimization.candidates import OptimizationCandidate
 from app.optimization.champion_loader import LoadedChampion
 from app.optimization.constraints import OptimizationConstraints
 from app.optimization.fixture_calendar import TeamFixtureCount, resolve_team_fixture_counts_for_gameweek
+from app.optimization.gameweek_resolution import resolve_most_recent_finished_gameweek_event
 from app.optimization.joint_squad_solver import JointSquadSolution, solve_joint_squad_and_xi
 from app.optimization.projection import project_player_with_champion
 from app.transfers.horizon_projection import compute_horizon_points
@@ -610,12 +611,14 @@ def _build_full_candidate_pool(
 
     Deliberately mirrors ``app.jobs.handlers.squad_optimization._build_candidates``
     exactly (non-quarantined players with a resolved position/team, champion-
-    aware single-gameweek projection, eligible-only) -- duplicated here
-    rather than imported, since that function is private to its own
-    job-handler module. A future layer may extract one shared helper for
-    both call sites; this layer only needs the computation to be correct,
-    not to eliminate this one small, documented duplication.
+    aware single-gameweek projection, eligible-only, zero-minutes-once-the-
+    season-has-started excluded) -- duplicated here rather than imported,
+    since that function is private to its own job-handler module. A future
+    layer may extract one shared helper for both call sites; this layer only
+    needs the computation to be correct, not to eliminate this one small,
+    documented duplication.
     """
+    season_has_started = resolve_most_recent_finished_gameweek_event(session, season_id) is not None
     players = (
         session.execute(select(Player).where(Player.season_id == season_id, Player.is_quarantined.is_(False)))
         .scalars()
@@ -631,6 +634,8 @@ def _build_full_candidate_pool(
             continue
         position = positions_by_id.get(player.position_id)
         if position is None:
+            continue
+        if season_has_started and player.minutes == 0:
             continue
         projection = project_player_with_champion(session, player, target_gameweek_id, champion)
         if not projection.is_eligible:
