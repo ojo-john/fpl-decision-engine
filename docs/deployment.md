@@ -22,7 +22,7 @@ workable combination below accepts two honest tradeoffs instead:
   in practice.
 - There is no free "persistent background worker" tier that keeps `scripts/scheduler.py`'s own
   local loop running in the cloud. Instead, `.github/workflows/scheduler-tick.yml` (a scheduled
-  GitHub Actions workflow, `*/15 * * * *`) calls a real HTTP endpoint
+  GitHub Actions workflow, `7,22,37,52 * * * *`) calls a real HTTP endpoint
   (`POST /internal/scheduler-tick`) on that same schedule, which runs the exact same real scheduling
   logic (`app.scheduling.tick.run_tick`) as the local loop -- see that module's own docstring for
   why this is safe and correct, not a separate, duplicated implementation.
@@ -147,7 +147,7 @@ account needed now -- the workflow file is already committed, it just needs one 
    secret**.
 2. Name: `APP_SHARED_TOKEN`. Value: the **exact same** random string you generated for Render's own
    `APP_SHARED_TOKEN` in step 2.3 above.
-3. That's it -- `scheduler-tick.yml` is already scheduled (`*/15 * * * *`, matching
+3. That's it -- `scheduler-tick.yml` is already scheduled (`7,22,37,52 * * * *`, matching
    `scripts/scheduler.py`'s own local tick interval) and needs no further setup. Confirm it's
    working: **Actions tab -> Scheduler tick -> Run workflow** (manual `workflow_dispatch` trigger,
    doesn't require waiting for the schedule) -- a green run confirms the whole chain end to end.

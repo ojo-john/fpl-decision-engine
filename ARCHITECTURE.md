@@ -1620,8 +1620,22 @@ authenticated (same `dependencies=[protected]` wiring every other router gets in
 endpoint that runs exactly one real tick, synchronously, by calling `app.scheduling.tick.run_tick`
 directly -- the EXACT same function `scripts/scheduler.py`'s own local loop calls, not a
 duplicated reimplementation. `.github/workflows/scheduler-tick.yml` (a scheduled GitHub Actions
-workflow, `*/15 * * * *`, see `docs/deployment.md` for the concrete setup) hits this endpoint every
-15 minutes once deployed, functionally replacing the local loop.
+workflow, `7,22,37,52 * * * *`, see `docs/deployment.md` for the concrete setup) hits this endpoint
+every 15 minutes once deployed, functionally replacing the local loop.
+
+**Revised 2026-09-05**: confirmed live via this workflow's own Actions run history that GitHub was
+firing the `schedule` trigger every ~1.5-4 hours in practice, not every 15 minutes as configured --
+and every single observed run landed exactly on `:00`/`:15`/`:30`/`:45`. This matches GitHub's own
+documented behavior: scheduled workflow runs can be delayed under high platform load, and round
+minute boundaries are the most oversubscribed times since so many other repos' own cron schedules
+also land there. Every run that DID fire still succeeded (via this workflow's own `curl --retry 2
+--retry-all-errors`, which also transparently absorbs Render's free-tier cold-start latency after
+15+ minutes of inactivity -- confirmed live, a single tick's first attempt timed out at 120s before
+succeeding on retry) -- so this was never a code-level failure, purely GitHub's own scheduler
+queue. Offset to `7,22,37,52 * * * *` per GitHub's own documented mitigation ("schedule your
+workflow to run at a different time of the hour"). No code-level fix exists for GitHub's own
+scheduler reliability; this reduces exposure to the specific oversubscribed-boundary cause, it
+does not guarantee true 15-minute cadence.
 
 **Revised 2026-08-26**: originally a free external cron service (cron-job.org) called this
 endpoint instead. Real incident: it silently stopped calling the endpoint entirely for 5+ real

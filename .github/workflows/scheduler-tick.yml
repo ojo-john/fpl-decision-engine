@@ -28,7 +28,17 @@ on:
     # app.scheduling.tick's own module docstring for why this cadence (run_tick's own real
     # interval logic, e.g. DATA_INGESTION every 4h, only actually triggers a job when something
     # is genuinely due, regardless of how often the tick itself is called).
-    - cron: "*/15 * * * *"
+    #
+    # Offset from round minutes (7/22/37/52, not 0/15/30/45) -- real incident (2026-09-05):
+    # confirmed live via this workflow's own run history that GitHub was firing this schedule
+    # every ~1.5-4 hours instead of every 15 minutes, every single time landing exactly on
+    # :00/:15/:30/:45. That matches GitHub's own documented behavior ("the schedule event can be
+    # delayed during periods of high load... high load times include the start of every hour... to
+    # decrease the chance of delay, schedule your workflow to run at a different time of the
+    # hour") -- :15/:30/:45 are just as oversubscribed as :00 since so many other repos' cron
+    # schedules also land on round numbers. No code-level fix exists for GitHub's own scheduler
+    # queue; this offset is GitHub's own recommended mitigation.
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch: {}
 
 jobs:
