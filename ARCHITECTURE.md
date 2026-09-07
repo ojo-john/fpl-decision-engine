@@ -85,8 +85,8 @@ the job types that have an HTTP trigger.
 | `RULES_SYNC` | `rules_sync.py` | ✅ | — | part of `DATA_INGESTION`'s own flow; `ingest.yml` |
 | `DATA_INGESTION` | `data_ingestion.py` | ✅ | `POST /data/refresh` | `make ingest`, `ingest.yml`, `scheduler-tick.yml` |
 | `HISTORICAL_DATA_INGESTION` | `historical_data_ingestion.py` | ✅ | — | CLI / `historical-ingest.yml` (manual) only |
-| `MANAGER_SYNC` | `manager_sync.py` | ✅ | `POST /managers/sync` | |
-| `LEAGUE_SYNC` | `league_sync.py` | ✅ | `POST /leagues/sync` | |
+| `MANAGER_SYNC` | `manager_sync.py` | ✅ | `POST /managers/sync` | `app.scheduling.tick.run_tick`, every 6h, gated on `FPL_MANAGER_ID` being configured (see "Local scheduler"/"Cloud deployment" below) |
+| `LEAGUE_SYNC` | `league_sync.py` | ✅ | `POST /leagues/sync` | `app.scheduling.tick.run_tick`, every 6h, gated on `FPL_H2H_LEAGUE_ID` being configured (see "Local scheduler"/"Cloud deployment" below) |
 | `TEAM_STRENGTH_SYNC` | `team_strength_sync.py` | ✅ | — | CLI (`scripts/run_job.py`) only, no scheduled trigger yet |
 | `FEATURE_GENERATION` | `feature_generation.py` | ✅ | — | `make features`, `feature-generation.yml`, `train.yml` |
 | `MODEL_TRAINING` | `model_training.py` | ✅ | `POST /models/train` (in-process, CI-DB use), `POST /models/train-production` (remote-dispatches `train-production.yml` instead — production-safe, see "Remote production retraining trigger" below) | `make train`, `train.yml`, `train-production.yml` (`workflow_dispatch`, real prod DB); **no longer** auto-triggered by `GAMEWEEK_REVIEW` — see "Modeling / learning loop" below |
@@ -1599,7 +1599,16 @@ calls `run_tick()`. Each real tick, checked against real state pulled from the d
   second tick correctly fired neither again.
 - **`LEAGUE_SYNC`** — every 6 hours (real rival picks only change post-deadline and don't shift
   intra-week once known, so this is more than sufficient cadence without wastefully re-hitting
-  FPL's public league API every 15-minute tick).
+  FPL's public league API every 15-minute tick). Gated on `get_settings().fpl_h2h_league_id`
+  being configured (`FPL_H2H_LEAGUE_ID` env var) — skipped, logged
+  (`scheduler.league_sync_skipped_no_league_configured`), not fatal, when unset.
+- **`MANAGER_SYNC`** — added 2026-09-07 closing a real gap: this job previously had NO automatic
+  trigger anywhere in the codebase at all, so the dashboard's own squad/bank/free-transfers state
+  (`ManagerSquadSnapshot`) could go stale indefinitely with nothing to refresh it outside a human
+  manually hitting `POST /managers/sync`. Same shape and cadence as `LEAGUE_SYNC` immediately
+  above (every 6 hours, same "only changes post-deadline" reasoning), gated on
+  `get_settings().fpl_manager_id` being configured (`FPL_MANAGER_ID` env var) — skipped, logged
+  (`scheduler.manager_sync_skipped_no_manager_configured`), not fatal, when unset.
 - **`DATA_INGESTION`** — every 4 hours, mirroring `scheduled-dispatcher.yml`'s own reasoned
   cadence for its CI self-test of the same job, applied here to the real thing.
 
@@ -1674,6 +1683,17 @@ cron-job.org's free tier did (see the "Known real gaps" entry on that incident b
 migration is also its real resolution). **A genuine remaining blind spot**: this alerting scheme
 still can't detect "the scheduler was never invoked at all" independent of GitHub Actions' own run
 history — only a failure of a job that DID run. Noted, not yet fixed.
+
+**Revised 2026-09-07**: confirmed live against the real production database that `LEAGUE_SYNC`
+had never once fired automatically since deployment — `FPL_H2H_LEAGUE_ID` is declared in
+`render.yaml` with `sync: false` (manual dashboard entry required, not derivable/committable), and
+was never actually set there. The only `LEAGUE_SYNC`/`MANAGER_SYNC` rows in production up to this
+point came from manual dispatches (`prod-db-recovery.yml`'s `run_tick_directly`, or a human hitting
+the API directly), not the real scheduler. Both `FPL_H2H_LEAGUE_ID` and `FPL_MANAGER_ID` (the
+latter newly load-bearing as of this same date — see `MANAGER_SYNC`'s new gate above) must be set
+as real environment variables in Render's dashboard for either automatic tick to ever fire; neither
+can be set from code/config in this repo. Not yet confirmed fixed — flagged for the deployer to
+action.
 
 This only works correctly because `run_tick` was already designed to be fully stateless between
 calls -- see `app.scheduling.tick`'s own module docstring: every "was it time yet" check derives

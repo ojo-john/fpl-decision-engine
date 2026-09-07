@@ -14,6 +14,15 @@ API directly and writing to a committed JSON file; or calling an LLM and opening
 automate unattended:
 
 - ``LEAGUE_SYNC`` -- real rival picks only change post-deadline; safe to poll periodically.
+- ``MANAGER_SYNC`` -- the user's own squad/bank/free-transfers state, same "only changes
+  post-deadline" reasoning as ``LEAGUE_SYNC`` above. Real gap this closes (found live,
+  2026-09-07): this previously had NO automatic trigger anywhere in this codebase at all --
+  every ``ManagerSquadSnapshot`` row that ever existed was created by a human manually hitting
+  ``POST /managers/sync`` or running ``scripts/run_job.py``, so the dashboard's own squad/bank
+  numbers could silently go stale for days with nothing to notice or fix it. Gated on
+  ``get_settings().fpl_manager_id`` being configured, identical in shape to ``LEAGUE_SYNC``'s
+  own ``fpl_h2h_league_id`` gate -- skipped (logged, not fatal) if unset, since a
+  single-manager deployment with no manager id configured yet has nothing real to sync.
 - ``GAMEWEEK_REVIEW`` -- triggered once, automatically, the moment a gameweek is both ``finished``
   and not already reviewed (checked via a real ``learning_reports`` row, not guessed) -- never
   re-run for a gameweek that already has one. ``GAMEWEEK_REVIEW`` itself hard-refuses
@@ -102,6 +111,10 @@ DATA_INGESTION_INTERVAL = timedelta(hours=4)
 # a few times a day is more than enough to catch a rival's picks becoming available shortly after
 # a deadline passes, without wastefully re-hitting FPL's public league API every tick.
 LEAGUE_SYNC_INTERVAL = timedelta(hours=6)
+
+# Same reasoning as LEAGUE_SYNC_INTERVAL above -- the user's own squad/bank/free-transfers state
+# only meaningfully changes post-deadline (a save, a price change, a completed transfer).
+MANAGER_SYNC_INTERVAL = timedelta(hours=6)
 
 
 @dataclass(frozen=True)
@@ -318,12 +331,14 @@ def run_tick() -> None:
             else set()
         )
         last_league_sync_at = _fetch_last_successful_run_at(session, JobType.LEAGUE_SYNC)
+        last_manager_sync_at = _fetch_last_successful_run_at(session, JobType.MANAGER_SYNC)
         last_data_ingestion_at = _fetch_last_successful_run_at(session, JobType.DATA_INGESTION)
     except Exception as exc:  # noqa: BLE001 - a failed check must not stop other checks this tick
         logger.warning("scheduler.tick_check_failed", extra={"error": str(exc)})
         due_event_ids = []
         has_authoritative_recommendation_event_ids = set()
         last_league_sync_at = None
+        last_manager_sync_at = None
         last_data_ingestion_at = None
     finally:
         session.close()
@@ -358,6 +373,16 @@ def run_tick() -> None:
             )
         else:
             logger.info("scheduler.league_sync_skipped_no_league_configured")
+
+    if is_interval_due(last_manager_sync_at, now, MANAGER_SYNC_INTERVAL):
+        fpl_manager_id = get_settings().fpl_manager_id
+        if fpl_manager_id:
+            logger.info("scheduler.triggering_manager_sync", extra={"fpl_manager_id": fpl_manager_id})
+            _run_job_safely(
+                JobType.MANAGER_SYNC, {"fpl_manager_id": int(fpl_manager_id)}, requested_by="scheduler"
+            )
+        else:
+            logger.info("scheduler.manager_sync_skipped_no_manager_configured")
 
     if is_interval_due(last_data_ingestion_at, now, DATA_INGESTION_INTERVAL):
         logger.info("scheduler.triggering_data_ingestion")

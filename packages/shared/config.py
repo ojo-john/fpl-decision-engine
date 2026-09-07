@@ -20,8 +20,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     environment: str = "development"
 
-    # Public, non-secret FPL identifiers. Unused until a later milestone wires
-    # up FPL API ingestion — kept here now as plain config placeholders.
+    # Public, non-secret FPL identifiers. Read by app.scheduling.tick.run_tick to gate the
+    # automatic MANAGER_SYNC/LEAGUE_SYNC ticks respectively -- unset (the default) means that
+    # tick is skipped, not that these fields are unused (see run_tick's own module docstring).
     fpl_manager_id: str | None = None
     fpl_h2h_league_id: str | None = None
 

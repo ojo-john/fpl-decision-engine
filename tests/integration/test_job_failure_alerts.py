@@ -33,10 +33,12 @@ from tests.integration.conftest import authed_client
 
 def _disable_league_sync(monkeypatch) -> None:
     """Same real gap test_api_internal.py's own tests already close for DATA_INGESTION-focused
-    tests -- reports no configured H2H league so run_tick's LEAGUE_SYNC branch is skipped instead
-    of making a real, unmocked network call to FPL's public league API."""
-    no_league = get_settings().model_copy(update={"fpl_h2h_league_id": None})
-    monkeypatch.setattr("app.scheduling.tick.get_settings", lambda: no_league)
+    tests -- reports no configured H2H league/manager id so run_tick's LEAGUE_SYNC and
+    MANAGER_SYNC branches are both skipped instead of making real, unmocked network calls to
+    FPL's public league/manager APIs. (.env.test sets both FPL_H2H_LEAGUE_ID and FPL_MANAGER_ID
+    for other tests' own use, so both would otherwise be "due" here.)"""
+    neither = get_settings().model_copy(update={"fpl_h2h_league_id": None, "fpl_manager_id": None})
+    monkeypatch.setattr("app.scheduling.tick.get_settings", lambda: neither)
 
 
 def _force_data_ingestion_due(monkeypatch) -> None:
