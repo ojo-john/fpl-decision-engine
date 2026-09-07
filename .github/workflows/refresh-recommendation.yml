@@ -1,0 +1,208 @@
+name: Refresh forward-looking recommendation (production, direct)
+
+# Real gap this closes (found live, 2026-09-07): nothing in this codebase ever automatically
+# regenerated a forward-looking recommendation (TRANSFER_OPTIMIZATION -> H2H_SIMULATION ->
+# CHIP_SIMULATION -> RECOMMENDATION_GENERATION) for the UPCOMING gameweek. app.scheduling.tick's
+# own run_tick only ever calls RECOMMENDATION_GENERATION retrospectively, as a prerequisite for
+# GAMEWEEK_REVIEW on a gameweek that just finished -- never proactively for what's next. Every
+# recommendation the dashboard ever showed for an upcoming gameweek was the result of a human
+# manually calling these 4 endpoints/jobs in order.
+#
+# Scheduled (not workflow_dispatch-only) specifically so this genuinely requires zero manual
+# action, matching the same real-automation bar as scheduler-tick.yml/prod-db-recovery.yml's
+# run_tick_directly. Runs directly against the real production database from a GitHub Actions
+# runner, bypassing Render's web dyno entirely -- same reasoning as run-transfer-optimization.yml
+# (TRANSFER_OPTIMIZATION alone regularly takes ~40 minutes; Render's own request/response cycle
+# and any external caller's timeout is exactly the failure mode that left 4 of 7 real
+# transfer_optimization_runs permanently stuck RUNNING before that workflow existed -- see its own
+# docstring for the full incident). A daily cadence (not tied to run_tick's 15-minute cycle) is a
+# deliberate choice: this is meaningfully more expensive per run than anything in run_tick, and a
+# recommendation only needs to be current by the time of the NEXT deadline, not every 15 minutes.
+#
+# Each of the 4 jobs is independently resilient (this app's own established "a job fails cleanly
+# with a real error_code/error_message, never crashes the runner" convention) -- e.g. off-season
+# (no unfinished gameweek), no scheduled H2H opponent yet for the next gameweek, or no rival_profile
+# synced yet for that opponent are all real, expected states, not failures worth alerting on. This
+# workflow logs each job's outcome and continues to the next step regardless, mirroring
+# app.scheduling.tick._run_job_safely's own "one job's failure must never block the others" design.
+
+on:
+  schedule:
+    # Once daily, offset off round minutes for the same reason scheduler-tick.yml is (GitHub's own
+    # documented scheduler-delay mitigation) -- doesn't need scheduler-tick.yml's own 15-minute
+    # precision since "current by the next deadline" has a multi-day budget, not a 15-minute one.
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  refresh-recommendation:
+    runs-on: ubuntu-latest
+    # Generous relative to TRANSFER_OPTIMIZATION alone already regularly taking ~40 minutes (see
+    # run-transfer-optimization.yml) -- H2H_SIMULATION/CHIP_SIMULATION/RECOMMENDATION_GENERATION
+    # are each individually much faster, but share this one runner's budget.
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      - name: Verify PROD_DATABASE_URL is configured
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::PROD_DATABASE_URL repository secret is not set -- see docs/deployment.md."
+            exit 1
+          fi
+
+      - name: Run the full forward-looking recommendation pipeline directly against the real database
+        run: |
+          uv run python - <<'EOF'
+          import json
+
+          from sqlalchemy import select
+
+          from app.jobs.service import execute_job
+          from packages.database.models.gameweek import Gameweek
+          from packages.database.models.h2h_match import H2HMatch
+          from packages.database.models.league import League
+          from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
+          from packages.database.models.rival_profile import RivalProfile
+          from packages.database.models.season import Season
+          from packages.database.session import SessionLocal
+          from packages.domain.jobs import JobType, TriggerType
+          from packages.shared.config import get_settings
+
+          REQUESTED_BY = "scheduled-recommendation-refresh"
+
+
+          def _report(label, job):
+              print(
+                  json.dumps(
+                      {
+                          "job_type": label,
+                          "job_id": str(job.id),
+                          "status": job.status.value if hasattr(job.status, "value") else job.status,
+                          "error_code": job.error_code,
+                          "error_message": job.error_message,
+                      },
+                      indent=2,
+                      default=str,
+                  )
+              )
+
+
+          session = SessionLocal()
+          try:
+              snapshot = session.execute(
+                  select(ManagerSquadSnapshot)
+                  .where(ManagerSquadSnapshot.is_current.is_(True))
+                  .order_by(ManagerSquadSnapshot.created_at.desc())
+                  .limit(1)
+              ).scalar_one_or_none()
+              if snapshot is None:
+                  raise SystemExit("No is_current manager squad snapshot found -- nothing to refresh against.")
+
+              transfer_job = execute_job(
+                  session,
+                  job_type=JobType.TRANSFER_OPTIMIZATION,
+                  parameters={"manager_squad_snapshot_id": str(snapshot.id), "horizon_gameweeks": 6},
+                  requested_by=REQUESTED_BY,
+                  trigger_type=TriggerType.GITHUB_SCHEDULE,
+              )
+              _report("TRANSFER_OPTIMIZATION", transfer_job)
+
+              # H2H_SIMULATION needs an explicit rival_profile_id (unlike the other 3 jobs here, it
+              # never auto-resolves one) -- resolved here from the real, currently-scheduled
+              # upcoming-gameweek opponent, skipped cleanly (not fatal to this run) if any part of
+              # that chain isn't available yet (off-season, opponent not yet known, or that
+              # opponent's rival_profile hasn't been built by LEAGUE_SYNC yet).
+              season_id = session.execute(
+                  select(Season.id).where(Season.is_current.is_(True))
+              ).scalar_one_or_none()
+              settings = get_settings()
+              fpl_manager_id = int(settings.fpl_manager_id) if settings.fpl_manager_id else None
+              fpl_league_id = int(settings.fpl_h2h_league_id) if settings.fpl_h2h_league_id else None
+
+              next_fpl_event_id = None
+              if season_id is not None:
+                  next_fpl_event_id = session.execute(
+                      select(Gameweek.fpl_event_id)
+                      .where(Gameweek.season_id == season_id, Gameweek.finished.is_(False))
+                      .order_by(Gameweek.deadline_time.asc())
+                      .limit(1)
+                  ).scalar_one_or_none()
+
+              if next_fpl_event_id is None or fpl_manager_id is None or fpl_league_id is None:
+                  print("H2H_SIMULATION skipped: off-season, or FPL_MANAGER_ID/FPL_H2H_LEAGUE_ID not configured.")
+              else:
+                  match = session.execute(
+                      select(H2HMatch.entry_1_id, H2HMatch.entry_2_id)
+                      .join(League, League.id == H2HMatch.league_id)
+                      .where(
+                          League.fpl_league_id == fpl_league_id,
+                          H2HMatch.event == next_fpl_event_id,
+                          (H2HMatch.entry_1_id == fpl_manager_id) | (H2HMatch.entry_2_id == fpl_manager_id),
+                      )
+                  ).first()
+                  if match is None:
+                      print(f"H2H_SIMULATION skipped: no scheduled h2h_match yet for event={next_fpl_event_id}.")
+                  else:
+                      opponent_fpl_manager_id = (
+                          match.entry_2_id if match.entry_1_id == fpl_manager_id else match.entry_1_id
+                      )
+                      rival_profile_id = session.execute(
+                          select(RivalProfile.id).where(
+                              RivalProfile.season_id == season_id,
+                              RivalProfile.fpl_manager_id == opponent_fpl_manager_id,
+                          )
+                      ).scalar_one_or_none()
+                      if rival_profile_id is None:
+                          print(
+                              f"H2H_SIMULATION skipped: no rival_profile yet for opponent={opponent_fpl_manager_id}."
+                          )
+                      else:
+                          h2h_job = execute_job(
+                              session,
+                              job_type=JobType.H2H_SIMULATION,
+                              parameters={
+                                  "manager_squad_snapshot_id": str(snapshot.id),
+                                  "rival_profile_id": str(rival_profile_id),
+                                  "target_fpl_event_id": next_fpl_event_id,
+                              },
+                              requested_by=REQUESTED_BY,
+                              trigger_type=TriggerType.GITHUB_SCHEDULE,
+                          )
+                          _report("H2H_SIMULATION", h2h_job)
+
+              # CHIP_SIMULATION: chip_types omitted deliberately -- evaluates all 4, but
+              # ChipSimulationJobRunner itself cheaply reports ALREADY_USED for any chip already
+              # played this season (derive_user_chip_windows) before ever running the expensive
+              # Monte Carlo evaluation, so there's no wasted compute re-evaluating a spent chip.
+              chip_job = execute_job(
+                  session,
+                  job_type=JobType.CHIP_SIMULATION,
+                  parameters={"manager_squad_snapshot_id": str(snapshot.id)},
+                  requested_by=REQUESTED_BY,
+                  trigger_type=TriggerType.GITHUB_SCHEDULE,
+              )
+              _report("CHIP_SIMULATION", chip_job)
+
+              # RECOMMENDATION_GENERATION last -- correlates whichever of the 3 runs above (plus any
+              # still-fresh SQUAD_OPTIMIZATION/LINEUP_OPTIMIZATION run) succeeded, and is the one
+              # step that actually flips is_authoritative onto the new, current gameweek.
+              recommendation_job = execute_job(
+                  session,
+                  job_type=JobType.RECOMMENDATION_GENERATION,
+                  parameters={},
+                  requested_by=REQUESTED_BY,
+                  trigger_type=TriggerType.GITHUB_SCHEDULE,
+              )
+              _report("RECOMMENDATION_GENERATION", recommendation_job)
+          finally:
+              session.close()
+          EOF
