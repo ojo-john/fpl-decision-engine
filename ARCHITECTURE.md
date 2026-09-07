@@ -64,7 +64,7 @@ tests/unit/ (60 files)  No DB
 tests/integration/ (60) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
 tests/fixtures/          Committed FPL API samples (fpl_api/) + a small real historical CSV set (historical/2023-24/)
-.github/workflows/        ci.yml, health.yml, ingest.yml, historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), scheduler-tick.yml (real DB, see "Cloud deployment" section), prod-db-recovery.yml (real DB, diagnostic/recovery for connection-pool exhaustion AND orphaned-run cleanup, see "Cloud deployment" section), apply-player-note.yml (real DB, applies a reviewed scout-watch digest finding without needing the production APP_SHARED_TOKEN, see "Cloud deployment" section), run-transfer-optimization.yml (real DB, runs TRANSFER_OPTIMIZATION directly, bypassing Render's web dyno, see "Cloud deployment" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
+.github/workflows/        ci.yml, health.yml, ingest.yml, historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), scheduler-tick.yml (real DB, see "Cloud deployment" section), prod-db-recovery.yml (real DB, diagnostic/recovery for connection-pool exhaustion AND orphaned-run cleanup, see "Cloud deployment" section), apply-player-note.yml (real DB, applies a reviewed scout-watch digest finding without needing the production APP_SHARED_TOKEN, see "Cloud deployment" section), run-transfer-optimization.yml (real DB, runs TRANSFER_OPTIMIZATION directly, bypassing Render's web dyno, see "Cloud deployment" section), refresh-recommendation.yml (real DB, daily, runs the full forward-looking recommendation pipeline directly, bypassing Render's web dyno, see "Cloud deployment" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
 .github/state/            current-squad.json, known-notes-snapshot.json (both consumed by scout-watch.yml; league-814682-watch.json consumed by league-watch.yml)
 ```
 
@@ -1819,6 +1819,27 @@ Same day, `apply-player-note.yml` was added for a related reason: applying a rev
 `.../role-notes`, which needs the real production `APP_SHARED_TOKEN` — this performs the
 identical insert directly against `PROD_DATABASE_URL` instead, so a digest finding can be applied
 without ever needing that token.
+
+**Real gap found and closed 2026-09-07: no forward-looking recommendation ever regenerated
+automatically.** `run_tick`'s own `RECOMMENDATION_GENERATION` trigger (see "Local scheduler"
+above) is purely retrospective — it only ever fires as a prerequisite for `GAMEWEEK_REVIEW` on a
+gameweek that just finished. Nothing anywhere proactively re-ran `TRANSFER_OPTIMIZATION` →
+`H2H_SIMULATION` → `CHIP_SIMULATION` → `RECOMMENDATION_GENERATION` for the UPCOMING gameweek —
+every recommendation the dashboard ever showed for a gameweek still to come was the result of a
+human manually triggering all 4 in order (confirmed live: after a real wildcard on GW3,
+`/recommendations/latest` kept showing GW3's now-stale review indefinitely, since nothing had ever
+regenerated one for GW4). `.github/workflows/refresh-recommendation.yml` closes this: a genuinely
+scheduled (not `workflow_dispatch`-only) workflow, once daily, running all 4 jobs directly against
+`PROD_DATABASE_URL` from a GitHub Actions runner — same bypass-Render-entirely pattern as
+`run-transfer-optimization.yml` immediately above, for the identical reason (`TRANSFER_OPTIMIZATION`
+alone regularly takes ~40 minutes, far past what a synchronous HTTP request/response cycle can
+safely carry without risking the exact stuck-`RUNNING` failure mode documented above). Resolves its
+own `manager_squad_snapshot_id` (most recent `is_current` snapshot) and, for `H2H_SIMULATION`
+specifically, its own `rival_profile_id` (looked up from the real, currently-scheduled
+`h2h_matches` row for the next unfinished gameweek) — the one input none of these 4 job handlers
+auto-resolve on their own. Each step is independently resilient and reports its own outcome
+regardless of the others' results (off-season, no scheduled opponent yet, or no `rival_profile`
+synced yet for that opponent are all real, expected, non-fatal states, not incidents).
 
 **Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
 (a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)
