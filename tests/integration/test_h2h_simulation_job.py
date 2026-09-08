@@ -36,6 +36,7 @@ invocations that would make an exact-value assertion flaky.
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
@@ -458,6 +459,63 @@ def test_h2h_simulation_full_strategy_comparison_persists_all_seven_candidates_w
         assert candidate_row.draw_probability == ep_optimal_row.draw_probability
         assert candidate_row.loss_probability == ep_optimal_row.loss_probability
         assert candidate_row.expected_margin == ep_optimal_row.expected_margin
+
+
+def test_h2h_simulation_calculated_hit_penalizes_win_probability_for_a_real_transfer_hit(
+    db_session, patched_fpl_client_optimization_with_active_gameweek, patched_fpl_client_league
+):
+    """Real bug this closes (found and fixed 2026-09-07): app.h2h.simulate had no notion of
+    transfers/hit costs at all -- a CALCULATED_HIT candidate whose recommended scenario genuinely
+    took a real hit had its win probability computed against the FULL, un-penalized squad score.
+
+    Identical squad/transfers, run twice, differing ONLY in ``free_transfers_available`` (2 vs
+    1): the same 2-transfer scenario (raw gain 10.0 over the horizon) costs ``hit_cost=0`` when 2
+    transfers are free, but a real ``hit_cost=4`` when only 1 is (one transfer beyond the free
+    allowance) -- still beating the 1-transfer scenario's own net gain (5.5, hit_cost=0) either
+    way (6.0 > 5.5 or 10.0 > 5.5), so CALCULATED_HIT is built and recommended in both cases. A
+    correctly-applied real -4 penalty must measurably lower CALCULATED_HIT's win probability
+    versus the identical, unpenalized squad -- comparing two real runs, not reaching into any
+    implementation internals, so this is real end-to-end behavior, not a mocked assertion.
+    """
+    season_id = _seed_players_with_active_gameweek(db_session)
+    _run_league_sync(db_session)
+    rival_profile = _rival_profile(db_session, season_id, LEAGUE_RIVAL_B_FPL_MANAGER_ID)
+    picks_json = _user_raw_picks_json(
+        starting_elements=_STRATEGY_STARTING_ELEMENTS,
+        bench_elements=_STRATEGY_BENCH_ELEMENTS,
+        captain_element=_STRATEGY_CAPTAIN_ELEMENT,
+        vice_captain_element=_STRATEGY_VICE_CAPTAIN_ELEMENT,
+    )
+
+    def _calculated_hit_win_probability(free_transfers_available: int, expected_hit_cost: int) -> Decimal:
+        snapshot = _create_manual_user_snapshot(
+            db_session,
+            season_id,
+            picks_json,
+            squad_elements=_STRATEGY_SQUAD_ELEMENT_IDS,
+            bank=_STRATEGY_BANK,
+            free_transfers_available=free_transfers_available,
+        )
+        transfer_job = _run_transfer_optimization(db_session, snapshot.id)
+        assert transfer_job.status == JobStatus.SUCCEEDED
+        assert transfer_job.output_json["recommended_transfers_count"] == 2
+        assert transfer_job.output_json["recommended_hit_cost"] == expected_hit_cost
+
+        job = _run_h2h_simulation(db_session, snapshot.id, rival_profile.id)
+        assert job.status == JobStatus.SUCCEEDED
+        run_id = uuid.UUID(job.output_json["h2h_simulation_run_id"])
+        candidates = _strategy_candidates_by_label(db_session, run_id)
+        assert H2HStrategyLabel.CALCULATED_HIT in candidates
+        return candidates[H2HStrategyLabel.CALCULATED_HIT].win_probability
+
+    unpenalized_win_probability = _calculated_hit_win_probability(
+        free_transfers_available=2, expected_hit_cost=0
+    )
+    penalized_win_probability = _calculated_hit_win_probability(
+        free_transfers_available=1, expected_hit_cost=4
+    )
+
+    assert penalized_win_probability < unpenalized_win_probability
 
 
 def test_h2h_simulation_strategy_comparison_skips_no_hit_and_calculated_hit_without_a_prior_transfer_run(

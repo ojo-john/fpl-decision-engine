@@ -2388,6 +2388,28 @@ the Makefile's `recommend`/`review-gameweek`/`backtest`/`full-pipeline`
 targets are now real, individual targets (previously combined into one
 stub target printing "not yet implemented" for all four, even though 3 of
 them already had working handlers).
+- **Resolved, real bug (found and fixed 2026-09-07): `H2H_SIMULATION`'s `CALCULATED_HIT`
+  candidate never accounted for a real transfer-hit point penalty.** `app.h2h.simulate` has no
+  notion of transfers/hit costs at all by design (it purely scores a squad) — the responsibility
+  to subtract a real `TransferOptimizationRunScenario.hit_cost` (e.g. -4 for one paid transfer
+  beyond the free allowance) before comparing win probabilities belonged to the caller
+  (`app.jobs.handlers.h2h_simulation`), and nothing there ever did it. `CALCULATED_HIT` always
+  cites the transfer optimizer's own recommended scenario as provenance — whenever that scenario
+  genuinely cleared a hit (`transfers_count` 1 or 2 exceeding `free_transfers_available`), its win
+  probability was silently computed against the FULL, un-penalized squad score, overstating it by
+  exactly `hit_cost` points. Caught live while manually verifying a real GW4 recommendation: the
+  user asked to double-check real transfer prices and pointed out "remember an extra transfer is
+  a -4" — `grep`ing the H2H simulation path for `hit_cost` at that point returned zero matches
+  anywhere, confirming the gap. Fixed via a new pure `app.h2h.simulate.apply_hit_cost_penalty`
+  (subtracts a candidate's own `hit_cost` from its sampled scores, applied AFTER the existing
+  `user_scores_by_squad` cache lookup, never baked into the cached raw draws — hit_cost is a
+  property of the transfer decision, not the squad's raw score) plus a new `_BuiltCandidate
+  .hit_cost` field threaded through from each scenario's own real column. In this app's own real
+  production GW4 case the recommended scenario's `hit_cost` happened to be 0 (exactly 2 free
+  transfers used), so this specific bug never affected a live recommendation shown to the user —
+  confirmed by a new regression test comparing the identical squad/transfers at
+  `free_transfers_available=2` (hit_cost 0) vs `=1` (hit_cost 4), proving win probability is
+  measurably lower once a real hit is correctly penalized.
 
 ## Methodology (how this doc was produced, and how to keep it honest)
 

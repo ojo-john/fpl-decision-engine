@@ -14,6 +14,7 @@ from app.h2h.simulate import (
     RivalTransferTargetInput,
     SimulationInputs,
     UserPlayerInput,
+    apply_hit_cost_penalty,
     simulate_matchup,
 )
 from packages.domain.h2h import RivalStateConfidence
@@ -270,3 +271,35 @@ def test_sample_count_is_respected():
     result = simulate_matchup(inputs, random.Random(9))
 
     assert result.sample_count == 123
+
+
+# --- apply_hit_cost_penalty ------------------------------------------------------------------
+# Real bug this closes (found and fixed 2026-09-07): nothing in the H2H simulation path ever
+# subtracted a real transfer-hit point penalty -- a CALCULATED_HIT candidate whose recommended
+# scenario genuinely took a hit had its win probability computed against the full, un-penalized
+# squad score, silently overstating it by exactly hit_cost points.
+
+
+def test_apply_hit_cost_penalty_zero_hit_cost_returns_scores_unchanged():
+    scores = (40, 55, 62)
+
+    assert apply_hit_cost_penalty(scores, 0) == scores
+
+
+def test_apply_hit_cost_penalty_subtracts_hit_cost_from_every_sample():
+    scores = (40, 55, 62)
+
+    assert apply_hit_cost_penalty(scores, 4) == (36, 51, 58)
+
+
+def test_apply_hit_cost_penalty_can_take_a_score_negative():
+    # A real, if extreme, possibility -- a poor sampled draw combined with a hit large enough
+    # (e.g. two paid transfers, -8) can genuinely leave a negative effective score; this must
+    # never be clamped to zero, since that would understate how bad a real double-hit can be.
+    scores = (2,)
+
+    assert apply_hit_cost_penalty(scores, 8) == (-6,)
+
+
+def test_apply_hit_cost_penalty_empty_scores_returns_empty():
+    assert apply_hit_cost_penalty((), 4) == ()

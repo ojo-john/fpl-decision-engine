@@ -104,6 +104,7 @@ from app.h2h.simulate import (
     RivalTransferTargetInput,
     SimulationInputs,
     UserPlayerInput,
+    apply_hit_cost_penalty,
     sample_rival_scores,
     sample_user_scores,
     summarize_matchup,
@@ -575,14 +576,24 @@ def _pick_swaps_for_scenario(session: Session, scenario_id: uuid.UUID) -> list[P
 
 @dataclass(frozen=True)
 class _BuiltCandidate:
-    """One strategy candidate's final (label, user-side squad, provenance scenario) -- BEFORE any
-    simulation happens. Simulating each against the one shared, precomputed rival distribution is
-    the caller's (``H2HSimulationJobRunner.run``'s) job, so every candidate is compared fairly.
+    """One strategy candidate's final (label, user-side squad, provenance scenario, hit cost) --
+    BEFORE any simulation happens. Simulating each against the one shared, precomputed rival
+    distribution is the caller's (``H2HSimulationJobRunner.run``'s) job, so every candidate is
+    compared fairly; that caller is also responsible for subtracting ``hit_cost`` from this
+    candidate's own sampled scores before computing win/loss (real bug, found and fixed
+    2026-09-07: ``app.h2h.simulate`` has no notion of transfers/hit costs at all — it purely
+    scores a squad — so a ``CALCULATED_HIT`` candidate whose real scenario cleared a hit
+    previously had its win probability computed against the FULL, un-penalized squad score,
+    silently overstating it by exactly ``hit_cost`` points whenever a real hit was involved).
     """
 
     strategy_label: H2HStrategyLabel
     user_players: tuple[UserPlayerInput, ...]
     transfer_optimization_run_scenario_id: uuid.UUID | None
+    # Real points given up to make this candidate's transfers (0 for every non-transfer candidate,
+    # and for NO_HIT/CALCULATED_HIT whenever the scenario stayed within free transfers) -- see the
+    # real bug this closes at this dataclass's own construction sites below.
+    hit_cost: int = 0
 
 
 def _build_strategy_candidates(
@@ -631,7 +642,12 @@ def _build_strategy_candidates(
         no_hit_scenario = _scenario_by_transfers_count(session, transfer_run.id, 0)
         if no_hit_scenario is not None:
             built.append(
-                _BuiltCandidate(H2HStrategyLabel.NO_HIT, tuple(ep_optimal_user_players), no_hit_scenario.id)
+                _BuiltCandidate(
+                    H2HStrategyLabel.NO_HIT,
+                    tuple(ep_optimal_user_players),
+                    no_hit_scenario.id,
+                    hit_cost=no_hit_scenario.hit_cost,
+                )
             )
 
     # CALCULATED_HIT: only generated when a prior run exists AND its own recommended
@@ -654,6 +670,7 @@ def _build_strategy_candidates(
                         H2HStrategyLabel.CALCULATED_HIT,
                         tuple(calculated_hit_user_players),
                         calculated_hit_scenario.id,
+                        hit_cost=calculated_hit_scenario.hit_cost,
                     )
                 )
 
@@ -919,7 +936,14 @@ class H2HSimulationJobRunner(JobRunner):
                         user_scores_by_squad[built.user_players] = sample_user_scores(
                             built.user_players, rng, base_inputs.sample_count
                         )
-                    user_scores = user_scores_by_squad[built.user_players]
+                    # Applied AFTER the cache lookup, never baked into the cached raw draws
+                    # themselves -- hit_cost is a property of this candidate's own transfer
+                    # decision, not of the squad's raw sampled score, and two candidates that
+                    # happen to share an identical squad (see comment above) always share
+                    # hit_cost=0 too in practice, so this never breaks that exact-tie guarantee.
+                    user_scores = apply_hit_cost_penalty(
+                        user_scores_by_squad[built.user_players], built.hit_cost
+                    )
                     summary = summarize_matchup(user_scores, rival_scores, rival_profile.overall_confidence)
                     this_final_captain = final_captain_player_id(built.user_players)
 

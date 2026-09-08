@@ -403,6 +403,27 @@ def sample_user_scores(
     return tuple(_simulate_user_draw(rng, user_players) for _ in range(sample_count))
 
 
+def apply_hit_cost_penalty(scores: tuple[int, ...], hit_cost: int) -> tuple[int, ...]:
+    """Subtract a real, one-time transfer-hit point penalty from every sampled score.
+
+    A hit (e.g. -4 for one paid transfer beyond the free allowance) reduces the manager's actual
+    gameweek score by exactly ``hit_cost`` points, once, in the gameweek the transfer is made --
+    this function has no notion of which candidate/scenario it's being applied to; the caller
+    decides that (see ``app.jobs.handlers.h2h_simulation``'s own ``_BuiltCandidate.hit_cost``,
+    which is 0 for every candidate except ``CALCULATED_HIT``/``NO_HIT`` when their cited
+    ``TransferOptimizationRunScenario`` genuinely cleared one).
+
+    Real bug this closes (found and fixed 2026-09-07): before this existed, nothing anywhere in
+    the H2H simulation path ever subtracted a real hit cost -- a ``CALCULATED_HIT`` candidate
+    whose recommended scenario took a real hit had its win probability computed against the
+    FULL, un-penalized squad score, silently overstating it by exactly ``hit_cost`` points
+    whenever a real hit was actually involved.
+    """
+    if hit_cost == 0:
+        return scores
+    return tuple(score - hit_cost for score in scores)
+
+
 def sample_player_draws(rng: random.Random, players: tuple[UserPlayerInput, ...]) -> tuple[int, ...]:
     """One drawn ``total_points`` value per player, for a SINGLE Monte Carlo sample -- not summed,
     and multiplier NOT applied (unlike ``_simulate_user_draw``/``sample_user_scores``, which return one
