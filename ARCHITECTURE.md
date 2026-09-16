@@ -2067,6 +2067,29 @@ league has real standings and the user is checking the app's own Rivals
 page directly), it can simply be deleted — it has no dependency from
 anything else in this codebase and nothing depends on it.
 
+**Resolved, real bug (found and fixed 2026-09-15): every run since the real standings
+transition weeks earlier had crashed with `KeyError: 'player_first_name'`.** FPL's real API
+uses TWO different shapes for a manager's name depending on which list a row comes from:
+`new_entries.results[]` (a manager who joined but has no H2H results yet) carries separate
+`player_first_name`/`player_last_name`, while `standings.results[]` (a real leaderboard row,
+once the season has started) carries one combined `player_name` field instead — confirmed live
+by fetching the real production league 814682 response directly. The script had only ever been
+written/tested against the pre-season `new_entries` shape and never actually exercised against a
+real populated `standings` response, so it silently failed on every single scheduled run from
+the moment standings genuinely went live (~2026-08-31) through 2026-09-14 — the real "standings
+are now live" notification the user was waiting for never posted, and `.github/state
+/league-814682-watch.json`'s `standings_ever_populated` stayed stuck at `false` the whole time.
+Fixed via a `manager_display_name(row)` helper that reads whichever shape a given row actually
+has, applied to both the `new_entries` and `standings` code paths. A second, related gap fixed
+in the same change: `newly_joined` was only ever checked against `new_entries`, but FPL moves
+entries OUT of `new_entries` permanently once standings populate — a manager whose first result
+posts between two runs would appear directly in `standings` with no `new_entries` row at all, so
+relying on `new_entries` alone would have silently stopped detecting new joiners the moment the
+season started. Now unions both sources. The state file's `standings_ever_populated` was also
+corrected directly to `true` (it demonstrably already happened weeks earlier) rather than left
+for the fixed workflow to report as if it just happened now — `known_manager_entry_ids` needed no
+correction, since it already matched all 6 real current league entries exactly.
+
 ## FPL Scout Watch (`.github/workflows/scout-watch.yml`)
 
 A second standalone scheduled workflow, same shape as League Watch but a

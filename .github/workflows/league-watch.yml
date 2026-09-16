@@ -56,6 +56,22 @@ jobs:
           import os
           from datetime import datetime, timezone
 
+          def manager_display_name(row):
+              """FPL's real API uses TWO different shapes for a manager's name depending on
+              which list a row comes from: ``new_entries.results[]`` (pre-standings, a manager who
+              joined but has no H2H results yet) carries separate ``player_first_name``/
+              ``player_last_name``, while ``standings.results[]`` (post-transition, a real
+              leaderboard row) carries one combined ``player_name`` field instead -- CONFIRMED
+              live against the real production league 814682 response (real bug, found and fixed
+              2026-09-15: every run since the real standings transition weeks earlier had crashed
+              with ``KeyError: 'player_first_name'`` trying to read standings rows the OLD,
+              new_entries-only way). Handles either shape so this never hard-fails again
+              regardless of which one a given row actually has.
+              """
+              if "player_name" in row:
+                  return row["player_name"]
+              return f"{row.get('player_first_name', '')} {row.get('player_last_name', '')}".strip()
+
           state_path = ".github/state/league-814682-watch.json"
           with open(state_path) as f:
               state = json.load(f)
@@ -64,11 +80,21 @@ jobs:
               live = json.load(f)
 
           known_ids = set(state["known_manager_entry_ids"])
-          live_new_entries = live.get("new_entries", {}).get("results", [])
-          live_entry_ids = {e["entry"] for e in live_new_entries}
-          newly_joined = [e for e in live_new_entries if e["entry"] not in known_ids]
 
+          # Real gap closed alongside the KeyError above: once a league's standings populate,
+          # FPL moves every settled entry OUT of new_entries permanently (confirmed live --
+          # new_entries.results is empty for this real, already-transitioned league) -- a
+          # manager whose first result posts between two runs would appear directly in
+          # standings with no new_entries row at all, so relying on new_entries alone would
+          # silently stop detecting new joiners the moment the season starts. Union both
+          # sources so a new manager is detected and adopted into known_manager_entry_ids
+          # regardless of which shape they currently have.
+          live_new_entries = live.get("new_entries", {}).get("results", [])
           standings_results = live.get("standings", {}).get("results", [])
+          live_entries_by_id = {e["entry"]: e for e in live_new_entries}
+          live_entries_by_id.update({r["entry"]: r for r in standings_results})
+          newly_joined = [e for e in live_entries_by_id.values() if e["entry"] not in known_ids]
+
           standings_now_populated = len(standings_results) > 0
           standings_transition = standings_now_populated and not state["standings_ever_populated"]
 
@@ -76,7 +102,7 @@ jobs:
 
           summary_lines = []
           if newly_joined:
-              names = ", ".join(f"{e['player_first_name']} {e['player_last_name']} ({e['entry_name']})" for e in newly_joined)
+              names = ", ".join(f"{manager_display_name(e)} ({e['entry_name']})" for e in newly_joined)
               summary_lines.append(f"**New manager(s) joined:** {names}")
           if standings_transition:
               summary_lines.append(
@@ -85,7 +111,7 @@ jobs:
                   f"you've been waiting for -- sync it in the app (POST /leagues/sync) to see rival "
                   f"differentials."
               )
-              lines = [f"- {r['entry_name']} ({r['player_first_name']} {r['player_last_name']}): "
+              lines = [f"- {r['entry_name']} ({manager_display_name(r)}): "
                        f"{r.get('total', '?')} pts" for r in standings_results]
               summary_lines.append("\n".join(lines))
 
@@ -98,7 +124,7 @@ jobs:
                   f.write("\n\n".join(summary_lines))
                   f.write(f"\n\n---\n_Checked {datetime.now(timezone.utc).isoformat()}_")
 
-              state["known_manager_entry_ids"] = sorted(known_ids | live_entry_ids)
+              state["known_manager_entry_ids"] = sorted(known_ids | set(live_entries_by_id.keys()))
               state["standings_ever_populated"] = state["standings_ever_populated"] or standings_now_populated
               state["last_checked_at"] = datetime.now(timezone.utc).isoformat()
               with open(state_path, "w") as f:
