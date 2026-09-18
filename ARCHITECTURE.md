@@ -88,7 +88,7 @@ the job types that have an HTTP trigger.
 | `MANAGER_SYNC` | `manager_sync.py` | ✅ | `POST /managers/sync` | `app.scheduling.tick.run_tick`, every 6h, gated on `FPL_MANAGER_ID` being configured (see "Local scheduler"/"Cloud deployment" below) |
 | `LEAGUE_SYNC` | `league_sync.py` | ✅ | `POST /leagues/sync` | `app.scheduling.tick.run_tick`, every 6h, gated on `FPL_H2H_LEAGUE_ID` being configured (see "Local scheduler"/"Cloud deployment" below) |
 | `TEAM_STRENGTH_SYNC` | `team_strength_sync.py` | ✅ | — | CLI (`scripts/run_job.py`) only, no scheduled trigger yet |
-| `FEATURE_GENERATION` | `feature_generation.py` | ✅ | — | `make features`, `feature-generation.yml`, `train.yml` |
+| `FEATURE_GENERATION` | `feature_generation.py` | ✅ | — | `make features`, `feature-generation.yml` (ephemeral-DB only, never production — see "Real gap" note below), `train.yml`; **as of 2026-09-18, also `refresh-recommendation.yml`, daily, current season only** (the first real, production-targeting automatic trigger this job type has ever had) |
 | `MODEL_TRAINING` | `model_training.py` | ✅ | `POST /models/train` (in-process, CI-DB use), `POST /models/train-production` (remote-dispatches `train-production.yml` instead — production-safe, see "Remote production retraining trigger" below) | `make train`, `train.yml`, `train-production.yml` (`workflow_dispatch`, real prod DB); **no longer** auto-triggered by `GAMEWEEK_REVIEW` — see "Modeling / learning loop" below |
 | `START_PROBABILITY_MODEL_TRAINING` | `start_probability_training.py` | ✅ | `POST /models/start-probability-training` | a SEPARATE, additive auxiliary classifier — never touches `model_versions`/the champion; see "Modeling / learning loop" below |
 | `PROJECTION_GENERATION` | — | ❌ | — | genuinely unbuilt; `project_player`/`project_player_with_champion` in `app/optimization/projection.py` are called directly by other jobs instead |
@@ -1896,6 +1896,50 @@ own precedent) plus `CHIP_SIMULATION`'s own real stale-job threshold (`app.jobs.
 .stale_job_reconciliation._STALE_THRESHOLDS`, 90 min — the most that job type could ever
 legitimately still be in-process) — `H2H_SIMULATION`/`RECOMMENDATION_GENERATION` are each
 real-world seconds-to-low-single-digit-minutes, negligible against either of those two.
+
+**Resolved, severe real bug (found and fixed 2026-09-18): `FEATURE_GENERATION` had never been
+automatically triggered anywhere in this codebase at all — every rolling-form/minutes feature the
+champion model's LIVE predictions run on had been frozen at GW1-era data for the entire rest of
+the season, for every player, silently.** `.github/workflows/feature-generation.yml` is
+`workflow_dispatch`-only AND spins up its own throwaway ephemeral Postgres service container
+(the exact same pattern as `historical-ingest.yml`/`ingest.yml`) — structurally, it has never been
+able to touch `PROD_DATABASE_URL` at all. The one real production `FEATURE_GENERATION` run
+(2026-08-27, ~11 minutes after `GAMEWEEK_REVIEW`/`RECOMMENDATION_GENERATION` first went live for
+GW1) was a one-off manual invocation that nothing ever turned into a recurring job.
+
+**How this was actually caught, and why it's worth recording**: not by code review or a scheduled
+audit — a user pushed back hard on one specific real GW5 transfer recommendation ("why would I
+take out Cherki for Anderson?"), which prompted a real investigation rather than a defensive
+answer. The first hypothesis (the champion model overweighting the newer `defensive_contribution
+_5gw` scoring feature) was tested rigorously with `sklearn.inspection.permutation_importance`
+against the real live champion model and a real 15,000-row evaluation set — and was DISPROVEN:
+`defensive_contribution_5gw` ranked only 5th of 24 features (importance 0.018), an order of
+magnitude behind `rolling_avg_points_3gw` (0.522) and `rolling_avg_minutes_3gw` (0.398). Pulling
+Cherki's own real feature row next showed why: `rolling_avg_minutes_3gw=27.00` — his EXACT real
+GW1 minutes value, not a genuine 3-game average (his real GW2-4 minutes were 81/65/45). Querying
+his full history confirmed every gameweek's row (GW2 through GW38) shared the identical
+`computed_at` timestamp. A system-wide query confirmed this wasn't Cherki-specific: **all 23,332
+current-season `player_features` rows across all 614 players shared that exact same timestamp**,
+and the real `jobs` table showed no successful `FEATURE_GENERATION` run since. This is the same
+real "an agent doing fresh research on request" discipline this document's own Methodology
+section describes — the finding survived because the investigation was pushed all the way to a
+concrete, falsifiable root cause instead of stopping at a plausible-sounding first theory.
+
+**Fix**: `refresh-recommendation.yml` (already the one real, daily, production-targeting pipeline
+— see its own section above) now runs `FEATURE_GENERATION` as its first step, scoped to the
+current season's label only (never `"all"` — finished historical seasons never change, so
+recomputing them daily would be pure waste). A failure here is logged, not fatal, matching every
+other step's existing resilience contract — the rest of the pipeline still runs against whatever
+features currently exist rather than blocking the whole refresh. This is the first real,
+production-targeting automatic trigger `FEATURE_GENERATION` has ever had.
+
+**Not yet independently verified**: whether this staleness also affected `MODEL_TRAINING` itself
+(the champion was trained on HISTORICAL seasons' own already-finalized `player_features`, which
+don't have this rolling-window problem the way a live, mid-season lookup does) — the bug described
+here is specifically about LIVE INFERENCE reading a stale CURRENT-season feature row, not about
+the champion's own training data being wrong. Left as a real, open question rather than assumed
+resolved by this fix; a full retrain against fresh features once the season has progressed further
+may still be worth doing, at the user's own discretion.
 
 **Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
 (a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)

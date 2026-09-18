@@ -19,12 +19,29 @@ name: Refresh forward-looking recommendation (production, direct)
 # deliberate choice: this is meaningfully more expensive per run than anything in run_tick, and a
 # recommendation only needs to be current by the time of the NEXT deadline, not every 15 minutes.
 #
-# Each of the 4 jobs is independently resilient (this app's own established "a job fails cleanly
-# with a real error_code/error_message, never crashes the runner" convention) -- e.g. off-season
-# (no unfinished gameweek), no scheduled H2H opponent yet for the next gameweek, or no rival_profile
+# Real, severe incident found and fixed 2026-09-18: FEATURE_GENERATION (the rolling-form/minutes/
+# fixture features the champion model's live predictions actually run on) had NEVER been
+# automatically triggered anywhere in this codebase. `.github/workflows/feature-generation.yml`
+# is workflow_dispatch-only AND spins up its own throwaway ephemeral Postgres service container
+# (same pattern as historical-ingest.yml/ingest.yml) -- it has never been able to touch
+# PROD_DATABASE_URL at all. The one real production FEATURE_GENERATION run (2026-08-27, right
+# after GW1) was a one-off manual invocation that was never turned into anything recurring.
+# Confirmed live: every one of 23,332 current-season player_features rows across all 614 players
+# shared that exact same computed_at timestamp -- every rolling-form/minutes feature had been
+# frozen at GW1-era data through GW2-4 and into GW5, for every player, silently. Caught only
+# because a user pushed back hard on one specific transfer recommendation (Cherki OUT for
+# Anderson) that looked wrong; investigating it traced back to this, not a model-weighting issue.
+# Now runs as the FIRST step of this same daily pipeline, for the current season only (not "all"
+# -- historical seasons never change once finished, so re-running them daily would be pure waste).
+#
+# Each job is independently resilient (this app's own established "a job fails cleanly with a
+# real error_code/error_message, never crashes the runner" convention) -- e.g. off-season (no
+# unfinished gameweek), no scheduled H2H opponent yet for the next gameweek, or no rival_profile
 # synced yet for that opponent are all real, expected states, not failures worth alerting on. This
 # workflow logs each job's outcome and continues to the next step regardless, mirroring
-# app.scheduling.tick._run_job_safely's own "one job's failure must never block the others" design.
+# app.scheduling.tick._run_job_safely's own "one job's failure must never block the others" design
+# -- including FEATURE_GENERATION itself: a failure there is logged and the rest of the pipeline
+# still runs against whatever features currently exist, rather than blocking the whole refresh.
 
 on:
   schedule:
@@ -49,7 +66,13 @@ jobs:
     # ._STALE_THRESHOLDS, 90 min -- the most this job type could ever legitimately still be
     # in-process) -- H2H_SIMULATION/RECOMMENDATION_GENERATION are each real-world seconds-to-a-
     # couple-minutes, negligible against either of those two.
-    timeout-minutes: 150
+    #
+    # Bumped again to 170 (2026-09-18, same incident as above) to add real room for the new
+    # FEATURE_GENERATION step below -- the one real observed run (all 6 historical seasons
+    # combined) took ~11.5 minutes; a single current-season-only run is a small fraction of that,
+    # but given generous margin anyway since this workflow has already been burned once by an
+    # under-provisioned budget.
+    timeout-minutes: 170
     env:
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
     steps:
@@ -107,6 +130,30 @@ jobs:
 
           session = SessionLocal()
           try:
+              # Real incident (2026-09-18, see this workflow's own module docstring): nothing
+              # anywhere ever re-ran FEATURE_GENERATION automatically, so every rolling-form/
+              # minutes feature the champion model's live predictions depend on had been frozen
+              # at GW1-era data for the entire rest of the season. Run for the CURRENT season
+              # only (never "all" -- finished historical seasons never change, so recomputing
+              # them daily would be pure waste) as the very first step, so every job below this
+              # one runs against genuinely fresh features. A failure here is logged, not fatal --
+              # the rest of the pipeline still runs against whatever features currently exist,
+              # same resilience contract as every other step in this file.
+              current_season_label = session.execute(
+                  select(Season.label).where(Season.is_current.is_(True))
+              ).scalar_one_or_none()
+              if current_season_label is None:
+                  print("FEATURE_GENERATION skipped: no current season found.")
+              else:
+                  feature_job = execute_job(
+                      session,
+                      job_type=JobType.FEATURE_GENERATION,
+                      parameters={"season_label": current_season_label},
+                      requested_by=REQUESTED_BY,
+                      trigger_type=TriggerType.GITHUB_SCHEDULE,
+                  )
+                  _report("FEATURE_GENERATION", feature_job)
+
               snapshot = session.execute(
                   select(ManagerSquadSnapshot)
                   .where(ManagerSquadSnapshot.is_current.is_(True))
