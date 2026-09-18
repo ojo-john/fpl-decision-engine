@@ -37,10 +37,19 @@ on:
 jobs:
   refresh-recommendation:
     runs-on: ubuntu-latest
-    # Generous relative to TRANSFER_OPTIMIZATION alone already regularly taking ~40 minutes (see
-    # run-transfer-optimization.yml) -- H2H_SIMULATION/CHIP_SIMULATION/RECOMMENDATION_GENERATION
-    # are each individually much faster, but share this one runner's budget.
-    timeout-minutes: 60
+    # Real incident (2026-09-18): the original 60-minute budget was sized only against
+    # TRANSFER_OPTIMIZATION's own ~40-minute precedent (see run-transfer-optimization.yml) and
+    # didn't leave real room for the other 3 jobs sharing this same sequential budget -- a real
+    # run took 37 minutes for TRANSFER_OPTIMIZATION alone, then got hard-killed by this job's own
+    # timeout mid-CHIP_SIMULATION, orphaning a RUNNING chip_optimization_runs row (real
+    # STALE_JOB_RECONCILIATION incident, not a code bug in either job). Raised to 150 minutes,
+    # grounded in this codebase's own already-established real thresholds: 60 min for
+    # TRANSFER_OPTIMIZATION alone (run-transfer-optimization.yml's own precedent) plus
+    # CHIP_SIMULATION's own real stale-job threshold (app.jobs.handlers.stale_job_reconciliation
+    # ._STALE_THRESHOLDS, 90 min -- the most this job type could ever legitimately still be
+    # in-process) -- H2H_SIMULATION/RECOMMENDATION_GENERATION are each real-world seconds-to-a-
+    # couple-minutes, negligible against either of those two.
+    timeout-minutes: 150
     env:
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
     steps:

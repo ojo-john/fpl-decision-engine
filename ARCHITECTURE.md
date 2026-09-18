@@ -1880,6 +1880,23 @@ auto-resolve on their own. Each step is independently resilient and reports its 
 regardless of the others' results (off-season, no scheduled opponent yet, or no `rival_profile`
 synced yet for that opponent are all real, expected, non-fatal states, not incidents).
 
+**Resolved, real bug (found and fixed 2026-09-18): the workflow's own `timeout-minutes: 60` was
+sized only against `TRANSFER_OPTIMIZATION`'s own ~40-minute precedent, with no real room left for
+the other 3 jobs sharing that same sequential budget.** A real run took 37 minutes for
+`TRANSFER_OPTIMIZATION` alone, then the GitHub Actions job itself was hard-killed by this
+workflow's own timeout mid-`CHIP_SIMULATION` — a real, direct instance of the exact "process
+killed externally" failure mode `STALE_JOB_RECONCILIATION` exists for (see that job's own module
+docstring), orphaning a `chip_optimization_runs` row in `RUNNING` (self-heals once
+`STALE_JOB_RECONCILIATION`'s own 90-minute `CHIP_SIMULATION` threshold elapses — no manual
+intervention needed, and a fresh `CHIP_SIMULATION` run started independently is unaffected by the
+orphaned one, since nothing gates on "no other run of this type is in progress"). Raised to 150
+minutes, grounded in this codebase's own already-established real thresholds rather than a
+round-number guess: 60 min for `TRANSFER_OPTIMIZATION` alone (`run-transfer-optimization.yml`'s
+own precedent) plus `CHIP_SIMULATION`'s own real stale-job threshold (`app.jobs.handlers
+.stale_job_reconciliation._STALE_THRESHOLDS`, 90 min — the most that job type could ever
+legitimately still be in-process) — `H2H_SIMULATION`/`RECOMMENDATION_GENERATION` are each
+real-world seconds-to-low-single-digit-minutes, negligible against either of those two.
+
 **Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
 (a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)
 -- with no loading state, a Render free-tier cold-start wake (30-60s after 15 minutes idle) rendered
