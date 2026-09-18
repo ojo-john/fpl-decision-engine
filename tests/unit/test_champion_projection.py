@@ -267,6 +267,74 @@ def test_tree_champion_nan_prediction_falls_back(monkeypatch):
     assert result.source == "ep_next"
 
 
+# --- 6b. Chance-of-playing adjustment: real gap closed 2026-09-17, applies to EVERY branch that
+# doesn't already carry project_player's own inline availability scaling.
+
+
+def test_tree_champion_prediction_is_discounted_for_a_doubtful_player(monkeypatch):
+    """Real bug this closes: a champion-predicted number for a real doubtful player (a genuine
+    75% chance of playing -- FPL's own stated 25% chance of scoring zero) previously carried NO
+    discount at all, since the champion branch never touched project_player's own availability
+    multiplier."""
+    player = _make_player(status="d", chance_of_playing_next_round=75, ep_next="8.8")
+    stub_model = _StubTreeModel(feature_names=["season_avg_points_to_date"], prediction=8.0)
+    champion = _make_champion(ModelFamily.DECISION_TREE, sklearn_model=stub_model)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: False)
+    monkeypatch.setattr(
+        "app.optimization.projection.compute_features_for_player_gameweek",
+        lambda *a, **k: _make_feature_row(player),
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, champion)
+
+    assert result.projected_points == pytest.approx(8.0 * 0.75)
+    assert result.source == "ml_champion_decision_tree_chance_of_playing_adjusted"
+    assert result.is_eligible is True
+
+
+def test_tree_champion_prediction_unaffected_for_a_fully_fit_player(monkeypatch):
+    player = _make_player(status="a", chance_of_playing_next_round=None, ep_next="8.8")
+    stub_model = _StubTreeModel(feature_names=["season_avg_points_to_date"], prediction=8.0)
+    champion = _make_champion(ModelFamily.DECISION_TREE, sklearn_model=stub_model)
+    monkeypatch.setattr("app.optimization.projection._is_cold_start_player", lambda *a, **k: False)
+    monkeypatch.setattr(
+        "app.optimization.projection.compute_features_for_player_gameweek",
+        lambda *a, **k: _make_feature_row(player),
+    )
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, champion)
+
+    assert result.projected_points == pytest.approx(8.0)
+    assert result.source == "ml_champion_decision_tree"
+
+
+def test_champion_none_fallback_for_doubtful_player_is_not_double_discounted(monkeypatch):
+    """project_player's own fallback branches already apply the availability multiplier
+    internally (source ending in "_availability_scaled") -- the new universal pass must detect
+    that and skip, never discounting the same doubtful player twice."""
+    player = _make_player(status="d", chance_of_playing_next_round=50, ep_next="10.0")
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, None)
+
+    assert result.projected_points == pytest.approx(5.0)  # scaled exactly once, not 2.5
+    assert result.source == "ep_next_availability_scaled"
+
+
+def test_chance_of_playing_and_availability_risk_note_both_apply_when_both_are_active(monkeypatch):
+    """The two are independent, legitimate real signals (FPL's own official doubt data versus a
+    judgment-based risk note) and must compound, not override each other."""
+    monkeypatch.setattr(
+        "app.optimization.projection.get_active_availability_risk_note",
+        lambda *a, **k: _FakeNote(Decimal("0.8"), reason="managing a knock"),
+    )
+    player = _make_player(status="d", chance_of_playing_next_round=50, ep_next="10.0")
+
+    result = project_player_with_champion(None, player, _TARGET_GAMEWEEK_ID, None)
+
+    assert result.projected_points == pytest.approx(10.0 * 0.5 * 0.8)
+    assert result.source == "ep_next_availability_scaled_availability_risk_noted"
+
+
 # --- 7. Cold-start player: never consults the champion model, blends ep_next with career avg ---
 # _is_cold_start_player is mocked directly here (same no-DB style as every other branch in
 # this file) -- these tests are about _cold_start_projection's own blend behavior once that

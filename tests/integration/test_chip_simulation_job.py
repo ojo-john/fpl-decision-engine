@@ -18,6 +18,7 @@ one and only unfinished gameweek) while still exercising a real, live
 ``AVAILABLE`` window end to end.
 """
 
+import random
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -25,6 +26,8 @@ from decimal import Decimal
 
 from sqlalchemy import select, update
 
+import app.jobs.handlers.chip_simulation as chip_simulation_module
+from app.chips.scenario import RecommendationResult
 from app.jobs.service import execute_job
 from packages.database.models.chip_optimization_run import ChipOptimizationRun
 from packages.database.models.chip_recommendation import ChipRecommendation
@@ -243,6 +246,202 @@ def test_chip_simulation_happy_path_all_four_chips_get_exactly_one_recommendatio
         else:
             # HOLD with only one (non-positive-gain) candidate never names a recommended candidate.
             assert recommendation.recommended_candidate_id is None
+
+
+def _make_chip_evaluation_context(season_id, bench: list[dict], player_by_element: dict[int, Player]):
+    """A minimal, valid ``_ChipEvaluationContext`` for testing ``_downgrade_bench_boost_for_
+    unreliable_bench`` directly -- only ``season_id``/``bench``/``player_by_element`` are actually
+    read by that function; every other field is a trivial, unused placeholder.
+    """
+    return chip_simulation_module._ChipEvaluationContext(
+        season_id=season_id,
+        starters=[],
+        bench=bench,
+        player_by_element=player_by_element,
+        positions_by_id={},
+        residuals=None,
+        champion=None,
+        constraints=None,
+        captain_multiplier=2,
+        current_squad_starting_player_ids=[],
+        current_squad_captain_player_id=uuid.uuid4(),
+        bank=0,
+        selling_prices={},
+        rng=random.Random(0),
+        fpl_manager_id=None,
+        now=datetime.now(UTC),
+    )
+
+
+def test_bench_boost_downgrades_to_hold_when_a_bench_player_has_zero_minutes(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """Real gap this closes (found live, 2026-09-17): Bench Boost's own gain estimate already
+    correctly reflects a genuine zero-minute player's near-zero individual projection, but a
+    positive average across the whole bench doesn't separately surface that one or more of those
+    4 players has never actually been selected to play this season -- a real reliability risk a
+    manager would want called out, not silently averaged away.
+
+    Calls ``_downgrade_bench_boost_for_unreliable_bench`` directly (not through the full job) with
+    a hand-built, unambiguously-positive ``USE_NOW`` recommendation -- this module's own real
+    Monte Carlo output for its fixture's specific last-gameweek fixture-count data is not a stable
+    thing to assert a specific sign against (see ``test_chip_simulation_happy_path_...``'s own
+    deliberately either/or verdict assertion), so this isolates exactly the real decision boundary
+    under test instead of depending on that incidental variance.
+    """
+    season_id = _seed_players_with_active_gameweek(db_session)
+    zero_minute_bench_player = db_session.execute(
+        select(Player).where(Player.season_id == season_id, Player.fpl_element_id == _BENCH_ELEMENT_IDS[0])
+    ).scalar_one()
+    zero_minute_bench_player.minutes = 0
+    db_session.commit()
+    bench_picks = [{"element": eid} for eid in _BENCH_ELEMENT_IDS]
+    player_by_element = {
+        eid: db_session.execute(
+            select(Player).where(Player.season_id == season_id, Player.fpl_element_id == eid)
+        ).scalar_one()
+        for eid in _BENCH_ELEMENT_IDS
+    }
+    ctx = _make_chip_evaluation_context(season_id, bench_picks, player_by_element)
+    use_now = RecommendationResult(
+        verdict=ChipVerdict.USE_NOW,
+        recommended_fpl_event_id=38,
+        recommended_gain_mean=9.0,
+        rationale="Use now.",
+    )
+
+    result = chip_simulation_module._downgrade_bench_boost_for_unreliable_bench(
+        db_session, ChipType.BBOOST, ctx, use_now
+    )
+
+    assert result.verdict == ChipVerdict.HOLD
+    assert result.recommended_fpl_event_id is None
+    assert result.recommended_gain_mean is None
+    assert zero_minute_bench_player.web_name in result.rationale
+    assert "0 minutes" in result.rationale
+
+
+def test_bench_boost_leaves_use_now_unchanged_when_every_bench_player_has_played(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    season_id = _seed_players_with_active_gameweek(db_session)
+    bench_picks = [{"element": eid} for eid in _BENCH_ELEMENT_IDS]
+    player_by_element = {
+        eid: db_session.execute(
+            select(Player).where(Player.season_id == season_id, Player.fpl_element_id == eid)
+        ).scalar_one()
+        for eid in _BENCH_ELEMENT_IDS
+    }
+    ctx = _make_chip_evaluation_context(season_id, bench_picks, player_by_element)
+    use_now = RecommendationResult(
+        verdict=ChipVerdict.USE_NOW,
+        recommended_fpl_event_id=38,
+        recommended_gain_mean=9.0,
+        rationale="Use now.",
+    )
+
+    result = chip_simulation_module._downgrade_bench_boost_for_unreliable_bench(
+        db_session, ChipType.BBOOST, ctx, use_now
+    )
+
+    assert result == use_now
+
+
+def test_bench_boost_zero_minutes_check_only_applies_to_bboost_not_other_chip_types(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    season_id = _seed_players_with_active_gameweek(db_session)
+    zero_minute_bench_player = db_session.execute(
+        select(Player).where(Player.season_id == season_id, Player.fpl_element_id == _BENCH_ELEMENT_IDS[0])
+    ).scalar_one()
+    zero_minute_bench_player.minutes = 0
+    db_session.commit()
+    bench_picks = [{"element": eid} for eid in _BENCH_ELEMENT_IDS]
+    player_by_element = {
+        eid: db_session.execute(
+            select(Player).where(Player.season_id == season_id, Player.fpl_element_id == eid)
+        ).scalar_one()
+        for eid in _BENCH_ELEMENT_IDS
+    }
+    ctx = _make_chip_evaluation_context(season_id, bench_picks, player_by_element)
+    use_now = RecommendationResult(
+        verdict=ChipVerdict.USE_NOW,
+        recommended_fpl_event_id=38,
+        recommended_gain_mean=9.0,
+        rationale="Use now.",
+    )
+
+    result = chip_simulation_module._downgrade_bench_boost_for_unreliable_bench(
+        db_session, ChipType.TRIPLE_CAPTAIN, ctx, use_now
+    )
+
+    assert result == use_now
+
+
+def test_bench_boost_zero_minutes_check_only_applies_to_use_now_not_hold(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    season_id = _seed_players_with_active_gameweek(db_session)
+    zero_minute_bench_player = db_session.execute(
+        select(Player).where(Player.season_id == season_id, Player.fpl_element_id == _BENCH_ELEMENT_IDS[0])
+    ).scalar_one()
+    zero_minute_bench_player.minutes = 0
+    db_session.commit()
+    bench_picks = [{"element": eid} for eid in _BENCH_ELEMENT_IDS]
+    player_by_element = {
+        eid: db_session.execute(
+            select(Player).where(Player.season_id == season_id, Player.fpl_element_id == eid)
+        ).scalar_one()
+        for eid in _BENCH_ELEMENT_IDS
+    }
+    ctx = _make_chip_evaluation_context(season_id, bench_picks, player_by_element)
+    hold = RecommendationResult(
+        verdict=ChipVerdict.HOLD,
+        recommended_fpl_event_id=45,
+        recommended_gain_mean=12.0,
+        rationale="Hold for GW45.",
+    )
+
+    result = chip_simulation_module._downgrade_bench_boost_for_unreliable_bench(
+        db_session, ChipType.BBOOST, ctx, hold
+    )
+
+    assert result == hold
+
+
+def test_bench_boost_zero_minutes_check_skipped_before_season_has_started(
+    db_session, patched_fpl_client_optimization_with_active_gameweek
+):
+    """The exact case the fix above must never break: pre-season, every real player genuinely has
+    0 minutes -- the downgrade would otherwise fire on every single Bench Boost evaluation for a
+    reason that isn't actually informative yet."""
+    season_id = _seed_players_with_active_gameweek(db_session)
+    db_session.execute(update(Gameweek).where(Gameweek.season_id == season_id).values(finished=False))
+    zero_minute_bench_player = db_session.execute(
+        select(Player).where(Player.season_id == season_id, Player.fpl_element_id == _BENCH_ELEMENT_IDS[0])
+    ).scalar_one()
+    zero_minute_bench_player.minutes = 0
+    db_session.commit()
+    bench_picks = [{"element": eid} for eid in _BENCH_ELEMENT_IDS]
+    player_by_element = {
+        eid: db_session.execute(
+            select(Player).where(Player.season_id == season_id, Player.fpl_element_id == eid)
+        ).scalar_one()
+        for eid in _BENCH_ELEMENT_IDS
+    }
+    ctx = _make_chip_evaluation_context(season_id, bench_picks, player_by_element)
+    use_now = RecommendationResult(
+        verdict=ChipVerdict.USE_NOW,
+        recommended_fpl_event_id=1,
+        recommended_gain_mean=9.0,
+        rationale="Use now.",
+    )
+
+    result = chip_simulation_module._downgrade_bench_boost_for_unreliable_bench(
+        db_session, ChipType.BBOOST, ctx, use_now
+    )
+
+    assert result == use_now
 
 
 def test_chip_simulation_chip_already_used_gets_already_used_verdict_and_no_candidates(

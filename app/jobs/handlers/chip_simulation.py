@@ -189,7 +189,11 @@ from app.optimization.fixture_calendar import (
     resolve_team_fixture_counts_for_gameweek,
     resolve_team_fixture_counts_for_gameweeks,
 )
-from app.optimization.gameweek_resolution import resolve_gameweeks_within_window, resolve_target_gameweek
+from app.optimization.gameweek_resolution import (
+    resolve_gameweeks_within_window,
+    resolve_most_recent_finished_gameweek_event,
+    resolve_target_gameweek,
+)
 from app.optimization.gate import GateResult, check_optimization_gate
 from app.optimization.lineup_solver import solve_lineup
 from app.optimization.projection import PROJECTION_FORMULA_VERSION, project_player_with_champion
@@ -1032,6 +1036,72 @@ def _persist_candidates_and_recommendation(
     )
 
 
+def _bench_zero_minute_player_names(bench: list[dict], player_by_element: dict[int, Player]) -> list[str]:
+    """Real bench players (by ``web_name``) with 0 minutes played this season so far.
+
+    Real gap this closes (found live, 2026-09-17): Bench Boost's own Monte Carlo ``gain_mean``
+    already correctly reflects a genuine zero-minute player's near-zero individual projection
+    (``project_player_with_champion`` naturally produces a low number for them) -- but a bench
+    of 4 can still show a superficially reasonable positive average gain while resting on one or
+    more players who realistically have never been selected to play at all this season, which a
+    single blended mean doesn't separately call out. Resolves straight off each pick's real
+    ``Player`` row; a pick whose element doesn't resolve is skipped (never crashes), mirroring
+    every other resolution loop in this module.
+    """
+    names = []
+    for pick in bench:
+        player = player_by_element.get(pick["element"])
+        if player is not None and player.minutes == 0:
+            names.append(player.web_name or f"element {player.fpl_element_id}")
+    return names
+
+
+def _downgrade_bench_boost_for_unreliable_bench(
+    session: Session, chip_type: ChipType, ctx: _ChipEvaluationContext, recommendation: RecommendationResult
+) -> RecommendationResult:
+    """Downgrades a Bench Boost ``USE_NOW`` verdict to ``HOLD`` when the CURRENT real bench (the
+    one that would actually be used if boosted right now) has one or more players with 0 real
+    minutes played this season -- see ``_bench_zero_minute_player_names`` for the real gap this
+    closes. Scoped to BBOOST only (the only chip with a literal "bench" concept) and to a genuine
+    ``USE_NOW`` verdict for the IMMEDIATE gameweek specifically (``rank_candidates_for_chip``'s own
+    contract guarantees ``USE_NOW``'s ``recommended_fpl_event_id`` is always the immediate week --
+    a HOLD-for-later verdict already reflects a DIFFERENT future gameweek, whose real bench
+    composition by then isn't something this check can honestly speak to, so it's left alone).
+
+    Gated on the season having genuinely started (mirrors
+    ``app.jobs.handlers.squad_optimization._build_candidates``'s own season-has-started-gated
+    0-minutes exclusion, added 2026-09-05, for the identical real reason) -- pre-season, every
+    real player genuinely has 0 minutes, so this check would otherwise fire on every single
+    Bench Boost evaluation for a reason that isn't actually informative yet.
+
+    Returns ``recommendation`` completely unchanged for every other case (not BBOOST, not
+    USE_NOW, pre-season, or a bench with no genuinely zero-minute player) -- this function is a
+    pure, no-op-by-default refinement, never a required step.
+    """
+    if chip_type != ChipType.BBOOST or recommendation.verdict != ChipVerdict.USE_NOW:
+        return recommendation
+    if resolve_most_recent_finished_gameweek_event(session, ctx.season_id) is None:
+        return recommendation
+
+    unreliable = _bench_zero_minute_player_names(ctx.bench, ctx.player_by_element)
+    if not unreliable:
+        return recommendation
+
+    names = ", ".join(unreliable)
+    plural = len(unreliable) != 1
+    return RecommendationResult(
+        verdict=ChipVerdict.HOLD,
+        recommended_fpl_event_id=None,
+        recommended_gain_mean=None,
+        rationale=(
+            f"Hold: {len(unreliable)} real bench player{'s' if plural else ''} ({names}) "
+            f"{'have' if plural else 'has'} played 0 minutes this season. Bench Boost's own gain "
+            "estimate already reflects their near-zero individual projection, but a bench this "
+            "unreliable is not worth spending a chip on regardless of the raw estimated average."
+        ),
+    )
+
+
 def _process_chip(
     session: Session,
     run_id: uuid.UUID,
@@ -1123,6 +1193,7 @@ def _process_chip(
         )
 
     recommendation = rank_candidates_for_chip(results)
+    recommendation = _downgrade_bench_boost_for_unreliable_bench(session, chip_type, ctx, recommendation)
     _persist_candidates_and_recommendation(
         session,
         run_id,

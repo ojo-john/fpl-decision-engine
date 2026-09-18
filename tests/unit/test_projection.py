@@ -36,9 +36,19 @@ def test_available_with_ep_next_unscaled():
     assert result.source == "ep_next"
 
 
-def test_chance_75_boundary_is_unscaled():
-    """Scaling triggers strictly below 75, so exactly 75 is untouched."""
-    player = _make_player(status="a", chance_of_playing_next_round=75, ep_next="10.0")
+def test_chance_75_boundary_is_scaled():
+    """Real bug, found and fixed 2026-09-17: exactly 75 used to be treated as "fully fit" (no
+    discount at all) -- a real, live doubtful player (75% chance of playing) had their
+    projection go completely unadjusted for a real, stated 25% chance of scoring zero. Scaling
+    now triggers AT OR below 75, so the boundary value itself is scaled too."""
+    player = _make_player(status="d", chance_of_playing_next_round=75, ep_next="10.0")
+    result = project_player(player)
+    assert result.projected_points == pytest.approx(7.5)
+    assert result.source == "ep_next_availability_scaled"
+
+
+def test_chance_76_just_above_boundary_is_unscaled():
+    player = _make_player(status="a", chance_of_playing_next_round=76, ep_next="10.0")
     result = project_player(player)
     assert result.projected_points == pytest.approx(10.0)
     assert result.source == "ep_next"

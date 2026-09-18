@@ -14,6 +14,7 @@ from app.optimization.champion_loader import load_current_champion
 from app.optimization.gameweek_resolution import resolve_target_gameweek
 from app.optimization.projection import (
     AVAILABILITY_RISK_NOTED_SUFFIX,
+    CHANCE_OF_PLAYING_ADJUSTED_SUFFIX,
     PROJECTION_FORMULA_VERSION,
     ROLE_BOOSTED_SUFFIX,
     PlayerProjection,
@@ -416,20 +417,27 @@ def _explain_projection(
     (see ``app.optimization.projection``'s own source strings) rather than re-deriving state,
     since the source string already IS the authoritative record of which path ran.
 
-    ``app.optimization.projection._apply_availability_risk_notes``/``_apply_role_boost_notes`` can
-    each append their own suffix to whatever source the underlying formula produced (in that
-    order -- risk suffix first, then role suffix, matching ``project_player_with_champion``'s own
-    call order) -- both stripped here before delegating to ``_explain_base_projection`` (so every
-    existing branch keeps matching exactly), then a note-specific sentence is appended per suffix
-    actually present, since a discounted/boosted number with no explanation of WHY would be more
-    confusing than the un-noted case."""
+    ``app.optimization.projection._apply_chance_of_playing_adjustment``/``_apply_availability_risk_notes``/
+    ``_apply_role_boost_notes`` can each append their own suffix to whatever source the underlying
+    formula produced, in that call order (chance-of-playing first/innermost, then risk, then role/
+    outermost, matching ``project_player_with_champion``'s own call order) -- all three stripped
+    here, outermost first, before delegating to ``_explain_base_projection`` (so every existing
+    branch keeps matching exactly), then a note-specific sentence is appended per suffix actually
+    present, since a discounted/boosted number with no explanation of WHY would be more confusing
+    than the un-noted case."""
     has_role_boost = projection.source.endswith(ROLE_BOOSTED_SUFFIX)
     source_without_role = (
         projection.source[: -len(ROLE_BOOSTED_SUFFIX)] if has_role_boost else projection.source
     )
     has_risk_note = source_without_role.endswith(AVAILABILITY_RISK_NOTED_SUFFIX)
-    base_source = (
+    source_without_risk = (
         source_without_role[: -len(AVAILABILITY_RISK_NOTED_SUFFIX)] if has_risk_note else source_without_role
+    )
+    has_chance_of_playing_note = source_without_risk.endswith(CHANCE_OF_PLAYING_ADJUSTED_SUFFIX)
+    base_source = (
+        source_without_risk[: -len(CHANCE_OF_PLAYING_ADJUSTED_SUFFIX)]
+        if has_chance_of_playing_note
+        else source_without_risk
     )
     base_projection = PlayerProjection(
         projection.player_id, projection.projected_points, base_source, projection.is_eligible
@@ -443,6 +451,8 @@ def _explain_projection(
         champion_model_family=champion_model_family,
         is_cold_start_season=is_cold_start_season,
     )
+    if has_chance_of_playing_note:
+        explanation = f"{explanation} Discounted for a reported reduced chance of playing this gameweek."
     if has_risk_note and availability_risk_reason is not None:
         explanation = f"{explanation} Flagged availability risk: {availability_risk_reason}"
     if has_role_boost and role_boost_reason is not None:

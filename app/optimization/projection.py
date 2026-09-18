@@ -68,9 +68,15 @@ _BASELINE_FEATURE_ROW_PREDICT_FNS = {
 # candidate pool (hard exclusion, not a down-weight).
 _HARD_EXCLUDE_STATUSES = {"i", "s", "u"}
 
-# chance_of_playing_next_round (%) below which we down-weight the projection.
-# Exactly 75 is NOT scaled (only strictly below it) — a player is presumed
-# fit enough at 75% to be worth full consideration.
+# chance_of_playing_next_round (%) AT OR below which we down-weight the projection.
+# Real bug, found and fixed 2026-09-17: this used to be a strict `<` (exactly 75 was NOT
+# scaled), on the reasoning that "a player is presumed fit enough at 75% to be worth full
+# consideration" -- but FPL's own "75% chance of playing" reading is a real, stated 25% chance
+# of scoring zero, and treating that identically to a fully fit player (multiplier 1.0, no
+# discount at all) silently overstated a real doubt's projection everywhere this feeds into
+# (transfers, lineup, chips, H2H) -- caught live reviewing a real recommendation for a real
+# player sitting at EXACTLY this threshold. Changed to `<=` so the boundary value itself is
+# also scaled, not just values strictly below it.
 _AVAILABILITY_SCALE_THRESHOLD = 75
 
 # _cold_start_projection's own two tunable constants -- both empirically validated against real
@@ -157,13 +163,13 @@ def project_player(player: Player) -> PlayerProjection:
     Statuses ``i``/``s``/``u`` are hard-excluded (``is_eligible=False``,
     ``projected_points=0.0``) regardless of any other field. Statuses ``d``
     (doubtful) and ``a`` (available) are never hard-excluded — only
-    down-weighted via the availability multiplier below the 75% threshold.
+    down-weighted via the availability multiplier at or below the 75% threshold.
     """
     if player.status in _HARD_EXCLUDE_STATUSES:
         return PlayerProjection(player.id, 0.0, "unavailable_status_excluded", is_eligible=False)
 
     chance = player.chance_of_playing_next_round
-    multiplier = (chance / 100) if chance is not None and chance < _AVAILABILITY_SCALE_THRESHOLD else 1.0
+    multiplier = (chance / 100) if chance is not None and chance <= _AVAILABILITY_SCALE_THRESHOLD else 1.0
 
     if player.ep_next is not None:
         base = float(player.ep_next)
@@ -175,6 +181,46 @@ def project_player(player: Player) -> PlayerProjection:
         return PlayerProjection(player.id, 0.0, "no_data_zero", is_eligible=True)
 
     return PlayerProjection(player.id, base * multiplier, source, is_eligible=True)
+
+
+# Appended to PlayerProjection.source whenever _apply_chance_of_playing_adjustment discounts it --
+# mirrors AVAILABILITY_RISK_NOTED_SUFFIX/ROLE_BOOSTED_SUFFIX's own convention.
+CHANCE_OF_PLAYING_ADJUSTED_SUFFIX = "_chance_of_playing_adjusted"
+
+
+def _apply_chance_of_playing_adjustment(player: Player, projection: PlayerProjection) -> PlayerProjection:
+    """Scale ``projection`` by ``chance_of_playing_next_round / 100``, if not already applied.
+
+    Real, significant gap this closes (found and fixed 2026-09-17): ``project_player``'s own
+    availability multiplier only ever applies within THAT function's own ep_next/points_per_game
+    fallback branches (source ending in ``_availability_scaled``) -- ``project_player_with_champion``'s
+    champion-ML-prediction branch (source ``ml_champion_*``) and ``_cold_start_projection``'s blend
+    branch (source ``cold_start_*``) both previously returned a doubtful player's raw prediction
+    completely unadjusted for a real, FPL-reported chance of not playing at all. Confirmed live: a
+    real starter with a genuine 75% chance of playing (a real, stated 25% chance of scoring zero)
+    had their champion-predicted points carry zero discount, since that player had real current-season
+    data and therefore used the champion path, never touching ``project_player``'s own multiplier.
+
+    Idempotent by construction -- a no-op whenever ``projection.source`` already contains
+    ``_availability_scaled`` (``project_player``'s own fallback branches already applied this exact
+    adjustment), so this is always safe to call as an additional universal pass regardless of which
+    branch produced ``projection``. Also a no-op for an already-ineligible projection, or when
+    ``chance_of_playing_next_round`` is unset or above the threshold -- mirrors every other
+    ``_apply_*`` note function's identical guard shape in this module.
+    """
+    if not projection.is_eligible or "_availability_scaled" in projection.source:
+        return projection
+
+    chance = player.chance_of_playing_next_round
+    if chance is None or chance > _AVAILABILITY_SCALE_THRESHOLD:
+        return projection
+
+    return PlayerProjection(
+        projection.player_id,
+        projection.projected_points * (chance / 100),
+        f"{projection.source}{CHANCE_OF_PLAYING_ADJUSTED_SUFFIX}",
+        is_eligible=True,
+    )
 
 
 def _predict_from_champion(
@@ -709,17 +755,22 @@ def project_player_with_champion(
        ``f"ml_champion_{champion.model_family.value}"`` so it's always
        possible to tell, after the fact, which players in a recommendation
        used the trained model versus the fallback formula.
-    7. Whatever the above produces (steps 2-6), THREE final passes apply, in this fixed order:
+    7. Whatever the above produces (steps 2-6), FOUR final passes apply, in this fixed order:
+       ``_apply_chance_of_playing_adjustment`` (a real, FPL-reported chance-of-playing discount,
+       no-op if ``project_player``'s own fallback branches already applied it -- see that
+       function's own docstring for the real gap this closes: the champion/cold-start branches
+       above previously carried NO discount at all for a real, live doubtful player), then
        ``_apply_start_probability_adjustment`` (a model-derived P(start) discount, no-op unless
        ``start_probability_model`` was explicitly passed in -- see that function's own docstring
        and ``app.optimization.start_probability_loader``), then any active
        ``player_availability_risk_notes`` (a discount — see ``_apply_availability_risk_notes``),
        then any active ``player_role_notes`` (a boost — see ``_apply_role_boost_notes``) for this
-       player/gameweek — so all three can compound if more than one applies at once (e.g. a
+       player/gameweek — so all four can compound if more than one applies at once (e.g. a
        player the auxiliary model rates as rotation-risk who is ALSO carrying a minor knock).
-       None of the three is skipped for the ``project_player`` fallback branches (2, 4, 5): a
-       model-derived start-probability discount, a flagged risk, or a confirmed role change are
-       each just as real whether or not a champion model happened to be available.
+       None of the four is skipped for the ``project_player`` fallback branches (2, 4, 5): a
+       chance-of-playing discount, a model-derived start-probability discount, a flagged risk, or
+       a confirmed role change are each just as real whether or not a champion model happened to
+       be available.
     """
     if player.status in _HARD_EXCLUDE_STATUSES:
         return PlayerProjection(player.id, 0.0, "unavailable_status_excluded", is_eligible=False)
@@ -749,6 +800,7 @@ def project_player_with_champion(
                     player.id, prediction, f"ml_champion_{champion.model_family.value}", is_eligible=True
                 )
 
+    projection = _apply_chance_of_playing_adjustment(player, projection)
     projection = _apply_start_probability_adjustment(
         session, player, target_gameweek_id, start_probability_model, projection
     )

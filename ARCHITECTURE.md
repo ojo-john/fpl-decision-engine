@@ -269,6 +269,27 @@ above — that flags thin bench cover after a squad is already solved; this
 prevents an appearance-risk player from being a candidate at all once
 there's real season data to judge them by.
 
+**Bench Boost weak-bench downgrade (added 2026-09-17), the analogous real gap for an
+ALREADY-OWNED bench** (not a candidate pool): the zero-real-minutes exclusion above only ever
+stops a fresh Wildcard/Free Hit rebuild from *picking* a ghost player — it has no bearing on a
+manager's real, existing bench, which `CHIP_SIMULATION`'s Bench Boost evaluator must take as
+given. Confirmed live: a real bench containing a player with 0 minutes played all season still
+produced a positive average `gain_mean` (correctly low individually, since their own projection
+is already near-zero, but summed alongside 3 other bench players with real, modest value) —
+numerically defensible, but a real reliability risk a raw mean doesn't separately surface, and
+the user's own instinct ("my bench is weak, no need for bench boost") was the correct read.
+`_downgrade_bench_boost_for_unreliable_bench` (`chip_simulation.py`) downgrades a genuine
+`USE_NOW` verdict to `HOLD` — scoped to Bench Boost only (the only chip with a literal "bench"
+concept) and to the immediate gameweek specifically (`rank_candidates_for_chip`'s own contract
+guarantees `USE_NOW`'s recommended event is always the immediate one; a `HOLD`-for-later verdict
+already names a *different* future gameweek whose bench composition by then isn't something this
+check can honestly speak to) — with an explicit rationale naming the exact real player(s)
+involved, e.g. "1 real bench player (Walle Egeli) has played 0 minutes this season." Gated on
+the season having genuinely started, mirroring the exclusion fix's own identical real reason
+(pre-season, every player has 0 minutes, so this would otherwise fire on every single evaluation).
+The underlying Monte Carlo candidates still persist in full for transparency — only the
+top-level recommendation is downgraded, never the underlying evaluated data.
+
 **The cold-start check is per-player, not per-season** (post-review fix —
 originally `_is_cold_start_season` alone decided this for every player
 uniformly: zero `player_gameweek_stats` rows anywhere in the season. That
@@ -710,6 +731,24 @@ there is no autonomous news-monitoring anywhere in this system** (it only
 ever talks to the official FPL API); a `player_availability_risk_notes`
 row is added by a human, or an agent doing fresh research on request, the
 same way a manager makes any other judgment call about their own squad.
+
+**Two real bugs found and fixed 2026-09-17, in the `chance_of_playing_next_round`-based scaling
+itself** (caught live reviewing a real recommendation for a real starter carrying a genuine
+75% chance of playing): (1) `_AVAILABILITY_SCALE_THRESHOLD`'s comparison used to be a strict `<`
+— exactly 75 was treated as "fully fit, no discount at all" on the reasoning that a player is
+"presumed fit enough at 75%", but FPL's own "75% chance of playing" reading is a real, stated
+25% chance of scoring zero; changed to `<=` so the boundary value itself is also scaled. (2) A
+much larger gap: that multiplier only ever applied inside `project_player`'s OWN ep_next/
+points_per_game fallback branches — `project_player_with_champion`'s champion-ML-prediction
+branch (source `ml_champion_*`, the path any player with real current-season data actually
+uses) and its cold-start-blend branch both previously returned a doubtful player's raw
+prediction with ZERO discount, since neither branch ever touched `project_player`'s internal
+multiplier at all. Fixed with a new `_apply_chance_of_playing_adjustment` — a fourth universal
+final pass (alongside start-probability/risk-note/role-boost), idempotent by construction
+(skips whenever `_availability_scaled` already appears in the source, i.e. `project_player`'s
+own fallback branches already applied it) so every branch gets this discount exactly once,
+appending `CHANCE_OF_PLAYING_ADJUSTED_SUFFIX` to `PlayerProjection.source` — stripped/explained
+in `_explain_projection` the same way the other two suffixes already are.
 
 - `packages/database/models/player_availability_risk_note.py`: each row is
   an independent note (NOT the single-active-row-per-invariant pattern
