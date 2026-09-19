@@ -55,6 +55,15 @@ jobs:
     timeout-minutes: 5
     env:
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      # Real bug found and fixed 2026-09-19 (see refresh-recommendation.yml's own identical fix):
+      # `run_tick_directly` calls app.scheduling.tick.run_tick() directly on this runner, a
+      # completely separate environment from Render -- without these, its own
+      # LEAGUE_SYNC/MANAGER_SYNC gates would misleadingly log "skipped, not configured" on every
+      # dispatch of this action even though both genuinely are configured (on Render). Sourced
+      # from repository VARIABLES, not secrets -- both are explicitly public, non-secret
+      # identifiers (see packages/shared/config.py's own docstring).
+      FPL_MANAGER_ID: ${{ vars.FPL_MANAGER_ID }}
+      FPL_H2H_LEAGUE_ID: ${{ vars.FPL_H2H_LEAGUE_ID }}
     steps:
       - uses: actions/checkout@v4
 

@@ -75,6 +75,17 @@ jobs:
     timeout-minutes: 170
     env:
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      # Real bug found and fixed 2026-09-19: this workflow runs on a GitHub Actions runner, a
+      # completely separate environment from Render -- packages.shared.config.get_settings()
+      # here has never had any way to see Render's own FPL_MANAGER_ID/FPL_H2H_LEAGUE_ID env vars
+      # (confirmed set there, confirmed working for run_tick's own MANAGER_SYNC/LEAGUE_SYNC
+      # ticks), so H2H_SIMULATION had silently skipped on every single real run of this workflow
+      # since it was created, logging "off-season, or FPL_MANAGER_ID/FPL_H2H_LEAGUE_ID not
+      # configured" every time even though both genuinely are. Sourced from repository VARIABLES
+      # (Settings -> Secrets and variables -> Actions -> Variables), not secrets -- both are
+      # explicitly public, non-secret identifiers (see packages/shared/config.py's own docstring).
+      FPL_MANAGER_ID: ${{ vars.FPL_MANAGER_ID }}
+      FPL_H2H_LEAGUE_ID: ${{ vars.FPL_H2H_LEAGUE_ID }}
     steps:
       - uses: actions/checkout@v4
 

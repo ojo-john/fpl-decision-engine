@@ -1941,6 +1941,26 @@ the champion's own training data being wrong. Left as a real, open question rath
 resolved by this fix; a full retrain against fresh features once the season has progressed further
 may still be worth doing, at the user's own discretion.
 
+**A second, related real bug found and fixed the very next day (2026-09-19), checking whether the
+first fix's own real production run had actually worked end to end**: `H2H_SIMULATION` had silently
+skipped on that run too — logging `"off-season, or FPL_MANAGER_ID/FPL_H2H_LEAGUE_ID not
+configured"` even though both genuinely are configured (on Render, confirmed working for
+`run_tick`'s own `MANAGER_SYNC`/`LEAGUE_SYNC` gates). Root cause: `refresh-recommendation.yml`
+runs on a GitHub Actions runner — a completely separate environment from Render — and its own
+`env:` block only ever set `DATABASE_URL`, so `packages.shared.config.get_settings()` on THIS
+runner had no way to see either value; it's never had access to Render's environment at all. This
+means `H2H_SIMULATION` had silently skipped on every single real run of this workflow since it was
+created, not just this one. The identical gap existed in `prod-db-recovery.yml`'s
+`run_tick_directly` action (same direct-`run_tick()`-on-a-bare-runner shape) — a real, live,
+misleading-diagnostic-tool risk, since a future `run_tick_directly` dispatch would incorrectly
+report `LEAGUE_SYNC`/`MANAGER_SYNC` as unconfigured even in real production. Fixed by adding
+`FPL_MANAGER_ID`/`FPL_H2H_LEAGUE_ID` to both workflows' `env:` blocks, sourced from GitHub Actions
+repository **variables** (not secrets — both are explicitly public, non-secret identifiers per
+`packages/shared/config.py`'s own docstring), requiring the user to set
+`Settings -> Secrets and variables -> Actions -> Variables -> FPL_MANAGER_ID` /
+`FPL_H2H_LEAGUE_ID` once (the exact same real values already configured on Render) before
+`H2H_SIMULATION` will actually run as part of this daily pipeline.
+
 **Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
 (a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)
 -- with no loading state, a Render free-tier cold-start wake (30-60s after 15 minutes idle) rendered
