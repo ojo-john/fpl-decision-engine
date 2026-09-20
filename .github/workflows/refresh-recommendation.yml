@@ -81,11 +81,12 @@ jobs:
       # (confirmed set there, confirmed working for run_tick's own MANAGER_SYNC/LEAGUE_SYNC
       # ticks), so H2H_SIMULATION had silently skipped on every single real run of this workflow
       # since it was created, logging "off-season, or FPL_MANAGER_ID/FPL_H2H_LEAGUE_ID not
-      # configured" every time even though both genuinely are. Sourced from repository VARIABLES
-      # (Settings -> Secrets and variables -> Actions -> Variables), not secrets -- both are
-      # explicitly public, non-secret identifiers (see packages/shared/config.py's own docstring).
-      FPL_MANAGER_ID: ${{ vars.FPL_MANAGER_ID }}
-      FPL_H2H_LEAGUE_ID: ${{ vars.FPL_H2H_LEAGUE_ID }}
+      # configured" every time even though both genuinely are. Sourced from repository SECRETS
+      # (Settings -> Secrets and variables -> Actions -> Secrets) -- both are actually public,
+      # non-secret identifiers (see packages/shared/config.py's own docstring), but configured as
+      # GitHub secrets here rather than variables since that's where they were actually set.
+      FPL_MANAGER_ID: ${{ secrets.FPL_MANAGER_ID }}
+      FPL_H2H_LEAGUE_ID: ${{ secrets.FPL_H2H_LEAGUE_ID }}
     steps:
       - uses: actions/checkout@v4
 

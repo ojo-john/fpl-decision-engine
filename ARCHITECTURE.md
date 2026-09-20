@@ -1954,12 +1954,12 @@ created, not just this one. The identical gap existed in `prod-db-recovery.yml`'
 `run_tick_directly` action (same direct-`run_tick()`-on-a-bare-runner shape) — a real, live,
 misleading-diagnostic-tool risk, since a future `run_tick_directly` dispatch would incorrectly
 report `LEAGUE_SYNC`/`MANAGER_SYNC` as unconfigured even in real production. Fixed by adding
-`FPL_MANAGER_ID`/`FPL_H2H_LEAGUE_ID` to both workflows' `env:` blocks, sourced from GitHub Actions
-repository **variables** (not secrets — both are explicitly public, non-secret identifiers per
-`packages/shared/config.py`'s own docstring), requiring the user to set
-`Settings -> Secrets and variables -> Actions -> Variables -> FPL_MANAGER_ID` /
-`FPL_H2H_LEAGUE_ID` once (the exact same real values already configured on Render) before
-`H2H_SIMULATION` will actually run as part of this daily pipeline.
+`FPL_MANAGER_ID`/`FPL_H2H_LEAGUE_ID` to both workflows' `env:` blocks. Both are actually public,
+non-secret identifiers per `packages/shared/config.py`'s own docstring — a repository *variable*
+would have been the more semantically correct GitHub Actions store — but the user configured them
+as repository **secrets** instead (`Settings -> Secrets and variables -> Actions -> Secrets`), so
+both workflows reference `secrets.FPL_MANAGER_ID`/`secrets.FPL_H2H_LEAGUE_ID` to match where they
+actually live, rather than requiring the values to be re-entered a third time in a different store.
 
 **Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
 (a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)
