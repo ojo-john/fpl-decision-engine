@@ -15,9 +15,11 @@ name: Refresh forward-looking recommendation (production, direct)
 # (TRANSFER_OPTIMIZATION alone regularly takes ~40 minutes; Render's own request/response cycle
 # and any external caller's timeout is exactly the failure mode that left 4 of 7 real
 # transfer_optimization_runs permanently stuck RUNNING before that workflow existed -- see its own
-# docstring for the full incident). A daily cadence (not tied to run_tick's 15-minute cycle) is a
-# deliberate choice: this is meaningfully more expensive per run than anything in run_tick, and a
-# recommendation only needs to be current by the time of the NEXT deadline, not every 15 minutes.
+# docstring for the full incident). A multi-day cadence (not tied to run_tick's 15-minute cycle,
+# see the real Actions-minutes incident under `on:` below for why it's Mon/Wed/Fri rather than
+# daily) is a deliberate choice either way: this is meaningfully more expensive per run than
+# anything in run_tick, and a recommendation only needs to be current by the time of the NEXT
+# deadline, not every 15 minutes.
 #
 # Real, severe incident found and fixed 2026-09-18: FEATURE_GENERATION (the rolling-form/minutes/
 # fixture features the champion model's live predictions actually run on) had NEVER been
@@ -45,10 +47,20 @@ name: Refresh forward-looking recommendation (production, direct)
 
 on:
   schedule:
-    # Once daily, offset off round minutes for the same reason scheduler-tick.yml is (GitHub's own
-    # documented scheduler-delay mitigation) -- doesn't need scheduler-tick.yml's own 15-minute
-    # precision since "current by the next deadline" has a multi-day budget, not a 15-minute one.
-    - cron: "17 6 * * *"
+    # Real incident (2026-09-21): this repo's real GitHub Actions usage hit 100% of the account's
+    # included 2,000 monthly minutes. A real per-workflow breakdown (summing actual run durations
+    # from the Actions API, since the billing UI doesn't break usage down by workflow) found THIS
+    # workflow alone responsible for ~935 of those minutes (53% of total usage) -- by far the
+    # single largest consumer, ahead of scheduler-tick.yml's own every-15-minute cadence (~427 min,
+    # 24%) despite running only once a day. Real cause: TRANSFER_OPTIMIZATION alone regularly
+    # takes ~40 minutes, plus CHIP_SIMULATION (10-25 min) and now FEATURE_GENERATION, stacked
+    # sequentially, every single day. Reduced from daily to Monday/Wednesday/Friday (every 2-3
+    # days, not scheduler-tick.yml's 15-minute precision) -- "current by the next deadline" was
+    # already the real requirement (see below), never actually "current within one day", so this
+    # loses nothing real while cutting this workflow's own monthly cost by more than half.
+    # Still offset off round minutes for the same reason scheduler-tick.yml is (GitHub's own
+    # documented scheduler-delay mitigation).
+    - cron: "17 6 * * 1,3,5"
   workflow_dispatch: {}
 
 jobs:

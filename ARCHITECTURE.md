@@ -1868,7 +1868,8 @@ every recommendation the dashboard ever showed for a gameweek still to come was 
 human manually triggering all 4 in order (confirmed live: after a real wildcard on GW3,
 `/recommendations/latest` kept showing GW3's now-stale review indefinitely, since nothing had ever
 regenerated one for GW4). `.github/workflows/refresh-recommendation.yml` closes this: a genuinely
-scheduled (not `workflow_dispatch`-only) workflow, once daily, running all 4 jobs directly against
+scheduled (not `workflow_dispatch`-only) workflow, Mon/Wed/Fri (originally daily — see the real
+Actions-minutes incident below for why it isn't anymore), running all 4 jobs directly against
 `PROD_DATABASE_URL` from a GitHub Actions runner — same bypass-Render-entirely pattern as
 `run-transfer-optimization.yml` immediately above, for the identical reason (`TRANSFER_OPTIMIZATION`
 alone regularly takes ~40 minutes, far past what a synchronous HTTP request/response cycle can
@@ -1960,6 +1961,28 @@ would have been the more semantically correct GitHub Actions store — but the u
 as repository **secrets** instead (`Settings -> Secrets and variables -> Actions -> Secrets`), so
 both workflows reference `secrets.FPL_MANAGER_ID`/`secrets.FPL_H2H_LEAGUE_ID` to match where they
 actually live, rather than requiring the values to be re-entered a third time in a different store.
+
+**Resolved, real bug (found 2026-09-21): this repo's real GitHub Actions usage hit 100% of the
+account's included 2,000 monthly minutes**, discovered when a `prod-db-recovery.yml` dispatch
+failed with zero steps run and no runner ever assigned — initially misdiagnosed as transient
+GitHub infrastructure flakiness (a real, corrected mistake — the actual cause is quota exhaustion,
+which fails in the exact same silent, zero-log way). A real per-workflow cost breakdown (summing
+actual run durations from the Actions API, since the billing UI itself doesn't break usage down by
+workflow) found: this workflow ~935 min (53% of total usage, by far the largest single consumer,
+across only 17 runs — `TRANSFER_OPTIMIZATION`'s own ~40-minute regular runtime plus
+`CHIP_SIMULATION`/`FEATURE_GENERATION` stacked sequentially, every single day, adds up fast);
+`scheduler-tick.yml` ~427 min (24%, despite running every 15 minutes — cheap per run, but volume
+adds up); `prod-db-recovery.yml` ~270 min (15%, entirely this session's own real diagnostic
+dispatches — a real, direct cost of the `diag-temp-*` throwaway-branch investigation pattern used
+extensively throughout this project's history, worth defaulting to FPL's free public API directly
+instead whenever a diagnostic doesn't genuinely need database access). Fixed by reducing this
+workflow's own cadence from daily to Mon/Wed/Fri (see the `on:` block's own comment) — the single
+highest-leverage change, since "current by the next deadline" was already the real requirement,
+never actually "current within one day". `scheduler-tick.yml`'s own 15-minute cadence was
+deliberately left unchanged — a smaller, secondary contributor, and its own per-tick cost is
+already near the practical minimum (a single `POST /internal/scheduler-tick` call; the real,
+meaningful expense lives in the jobs it triggers, gated by their own multi-hour intervals, not in
+the tick frequency itself).
 
 **Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
 (a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)
