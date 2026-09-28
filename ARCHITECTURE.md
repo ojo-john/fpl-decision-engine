@@ -1984,6 +1984,25 @@ already near the practical minimum (a single `POST /internal/scheduler-tick` cal
 meaningful expense lives in the jobs it triggers, gated by their own multi-hour intervals, not in
 the tick frequency itself).
 
+**Fix (2026-09-27): the workflow now skips its entire run during real gameweek gaps (international
+breaks, blank/end-of-season periods) instead of firing on its Mon/Wed/Fri schedule regardless.**
+This season's own real GW5 → GW6 deadline gap is 22 days (2026-09-18 → 2026-10-10, a genuine
+international break) — nothing about a real recommendation changes meaningfully day to day during
+a gap that long, so running the full ~170-minute pipeline on its normal cadence through one would
+fire ~7-8 times for zero new real information each time, pure waste against the same real
+Actions-minutes budget the Mon/Wed/Fri reduction above was already fighting for. The very first
+thing the embedded script now does (before even `FEATURE_GENERATION`) is query the current
+season's next unfinished gameweek's `deadline_time`; if none exists (off-season) or that deadline
+is `>= 7` days away, the entire run exits cleanly via `raise SystemExit(0)` with an explanatory
+`print`, skipping every downstream job including `FEATURE_GENERATION` (no point refreshing features
+nothing downstream will consume yet). The 7-day threshold is deliberately set ABOVE what a normal
+week ever produces at this workflow's own 2-3-day (Mon/Wed/Fri) polling cadence — a ~7-day deadline
+gap polled every 2-3 days never actually presents a next-deadline gap wider than ~4-5 days at any
+single poll, so this never suppresses a normal week, only a genuinely longer real break. Verified
+against `.env.test`: the real (unmodified) test fixture's current-season deadline correctly does
+NOT trigger the skip and the full pipeline runs as before; a rolled-back simulated 10-day-out
+deadline correctly does trigger it.
+
 **Frontend cold-start UX**: every page under `apps/web/app/(app)/` is `dynamic = "force-dynamic"`
 (a real per-request server-side fetch against the backend, e.g. the Dashboard's own `DeadlineCard`)
 -- with no loading state, a Render free-tier cold-start wake (30-60s after 15 minutes idle) rendered

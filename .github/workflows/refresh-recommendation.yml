@@ -119,6 +119,7 @@ jobs:
         run: |
           uv run python - <<'EOF'
           import json
+          from datetime import UTC, datetime
 
           from sqlalchemy import select
 
@@ -134,6 +135,20 @@ jobs:
           from packages.shared.config import get_settings
 
           REQUESTED_BY = "scheduled-recommendation-refresh"
+
+          # Real gap closed 2026-09-27: this season's own real GW5 -> GW6 deadline gap is 22 days
+          # (2026-09-18 -> 2026-10-10, an international break) -- nothing about a real
+          # recommendation changes meaningfully day to day during a gap that long, so running the
+          # full ~170-minute pipeline on its normal Mon/Wed/Fri cadence during one would fire it
+          # ~7-8 times for zero new real information each time, pure waste against the same real
+          # Actions-minutes budget the Mon/Wed/Fri reduction above was already fighting for.
+          # Skips the ENTIRE pipeline, including FEATURE_GENERATION -- no point refreshing features
+          # nothing downstream will consume yet. 7 days is deliberately ABOVE what a normal
+          # week-to-week cycle ever produces at this workflow's own 2-3-day polling cadence (a
+          # ~7-day deadline gap polled every 2-3 days never actually presents a next-deadline gap
+          # wider than ~4-5 days at any single poll -- only a genuinely longer real gap does), so
+          # this never suppresses a normal week, only real breaks/blank periods.
+          _SKIP_THRESHOLD_DAYS = 7
 
 
           def _report(label, job):
@@ -154,6 +169,26 @@ jobs:
 
           session = SessionLocal()
           try:
+              next_deadline = session.execute(
+                  select(Gameweek.deadline_time)
+                  .join(Season, Season.id == Gameweek.season_id)
+                  .where(Season.is_current.is_(True), Gameweek.finished.is_(False))
+                  .order_by(Gameweek.deadline_time.asc())
+                  .limit(1)
+              ).scalar_one_or_none()
+              if next_deadline is None:
+                  print("Entire pipeline skipped: no unfinished gameweek found (off-season).")
+                  raise SystemExit(0)
+              days_until_deadline = (next_deadline - datetime.now(UTC)).days
+              if days_until_deadline >= _SKIP_THRESHOLD_DAYS:
+                  print(
+                      f"Entire pipeline skipped: next deadline ({next_deadline.isoformat()}) is "
+                      f"{days_until_deadline} days away -- at or beyond the {_SKIP_THRESHOLD_DAYS}-day "
+                      "threshold, most likely an international break or other blank period. Will "
+                      "resume on the normal Mon/Wed/Fri schedule once within the threshold."
+                  )
+                  raise SystemExit(0)
+
               # Real incident (2026-09-18, see this workflow's own module docstring): nothing
               # anywhere ever re-ran FEATURE_GENERATION automatically, so every rolling-form/
               # minutes feature the champion model's live predictions depend on had been frozen
