@@ -24,21 +24,30 @@ name: Scheduler tick
 # secret-masking works.
 on:
   schedule:
-    # Every 15 minutes -- matches scripts/scheduler.py's own local tick interval and
-    # app.scheduling.tick's own module docstring for why this cadence (run_tick's own real
-    # interval logic, e.g. DATA_INGESTION every 4h, only actually triggers a job when something
-    # is genuinely due, regardless of how often the tick itself is called).
+    # Reduced from every 15 minutes to hourly (2026-10-03, real GitHub Actions quota-exhaustion
+    # incident -- see refresh-recommendation.yml's own `on:` block for the full cost breakdown;
+    # this workflow alone was ~427 min/month, 24% of the account's total usage, entirely from
+    # volume rather than per-run cost). NOT reduced further (e.g. twice a week, which was
+    # considered and rejected) -- app.jobs.handlers.deadline_reminder's own `REMINDER_WINDOW`
+    # (6 hours) means DEADLINE_REMINDER fires exactly once per gameweek, the first tick where
+    # `deadline - now <= 6h`, with no catch-up if every tick misses that window. Real deadlines no
+    # longer land only on weekends (games now spread across Mon-Fri some weeks), so any schedule
+    # that skips days -- or runs less often than every ~6h -- can silently skip that window
+    # entirely for a gameweek whose deadline falls in the gap, with no retry and no alert. Hourly
+    # keeps a comfortable 6x safety margin under that 6-hour window (robust even if a single tick
+    # is skipped/cancelled/delayed) while still cutting this workflow's own run volume 4x (from 96
+    # runs/day to 24/day). DATA_INGESTION (4h)/MANAGER_SYNC/LEAGUE_SYNC (6h) are self-pacing floors,
+    # not hard windows -- a less-frequent tick only delays them, never skips them entirely -- so
+    # they aren't the binding constraint here; DEADLINE_REMINDER's hard window is.
     #
-    # Offset from round minutes (7/22/37/52, not 0/15/30/45) -- real incident (2026-09-05):
-    # confirmed live via this workflow's own run history that GitHub was firing this schedule
-    # every ~1.5-4 hours instead of every 15 minutes, every single time landing exactly on
-    # :00/:15/:30/:45. That matches GitHub's own documented behavior ("the schedule event can be
-    # delayed during periods of high load... high load times include the start of every hour... to
-    # decrease the chance of delay, schedule your workflow to run at a different time of the
-    # hour") -- :15/:30/:45 are just as oversubscribed as :00 since so many other repos' cron
-    # schedules also land on round numbers. No code-level fix exists for GitHub's own scheduler
-    # queue; this offset is GitHub's own recommended mitigation.
-    - cron: "7,22,37,52 * * * *"
+    # Offset from round minutes (not :00) -- real incident (2026-09-05): confirmed live via this
+    # workflow's own run history that GitHub was firing this schedule late during periods of high
+    # load, every single time landing exactly on round minutes. That matches GitHub's own
+    # documented behavior ("the schedule event can be delayed during periods of high load...high
+    # load times include the start of every hour...to decrease the chance of delay, schedule your
+    # workflow to run at a different time of the hour"). No code-level fix exists for GitHub's own
+    # scheduler queue; this offset is GitHub's own recommended mitigation.
+    - cron: "7 * * * *"
   workflow_dispatch: {}
 
 jobs:

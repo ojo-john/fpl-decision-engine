@@ -64,7 +64,7 @@ tests/unit/ (60 files)  No DB
 tests/integration/ (60) Real Postgres, monkeypatched FPL client(s)
 tests/contract/, tests/e2e/  Genuinely empty stubs (their own READMEs say so honestly)
 tests/fixtures/          Committed FPL API samples (fpl_api/) + a small real historical CSV set (historical/2023-24/)
-.github/workflows/        ci.yml, health.yml, ingest.yml, historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), scheduler-tick.yml (real DB, see "Cloud deployment" section), prod-db-recovery.yml (real DB, diagnostic/recovery for connection-pool exhaustion AND orphaned-run cleanup, see "Cloud deployment" section), apply-player-note.yml (real DB, applies a reviewed scout-watch digest finding without needing the production APP_SHARED_TOKEN, see "Cloud deployment" section), run-transfer-optimization.yml (real DB, runs TRANSFER_OPTIMIZATION directly, bypassing Render's web dyno, see "Cloud deployment" section), refresh-recommendation.yml (real DB, daily, runs the full forward-looking recommendation pipeline directly, bypassing Render's web dyno, see "Cloud deployment" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
+.github/workflows/        ci.yml, health.yml, ingest.yml, historical-ingest.yml, feature-generation.yml, train.yml, train-production.yml (real DB, see "Local scheduler" section), scheduler-tick.yml (real DB, see "Cloud deployment" section), prod-db-recovery.yml (real DB, diagnostic/recovery for connection-pool exhaustion AND orphaned-run cleanup, see "Cloud deployment" section), apply-player-note.yml (real DB, applies a reviewed scout-watch digest finding without needing the production APP_SHARED_TOKEN, see "Cloud deployment" section), run-transfer-optimization.yml (real DB, runs TRANSFER_OPTIMIZATION directly, bypassing Render's web dyno, see "Cloud deployment" section), refresh-recommendation.yml (real DB, Mon/Wed/Fri with an international-break skip, runs the full forward-looking recommendation pipeline directly, bypassing Render's web dyno, see "Cloud deployment" section), league-watch.yml, scout-watch.yml (both standalone -- see their own sections below)
 .github/state/            current-squad.json, known-notes-snapshot.json (both consumed by scout-watch.yml; league-814682-watch.json consumed by league-watch.yml)
 ```
 
@@ -1638,7 +1638,7 @@ calls `run_tick()`. Each real tick, checked against real state pulled from the d
   second tick correctly fired neither again.
 - **`LEAGUE_SYNC`** — every 6 hours (real rival picks only change post-deadline and don't shift
   intra-week once known, so this is more than sufficient cadence without wastefully re-hitting
-  FPL's public league API every 15-minute tick). Gated on `get_settings().fpl_h2h_league_id`
+  FPL's public league API on every tick). Gated on `get_settings().fpl_h2h_league_id`
   being configured (`FPL_H2H_LEAGUE_ID` env var) — skipped, logged
   (`scheduler.league_sync_skipped_no_league_configured`), not fatal, when unset.
 - **`MANAGER_SYNC`** — added 2026-09-07 closing a real gap: this job previously had NO automatic
@@ -1687,8 +1687,10 @@ authenticated (same `dependencies=[protected]` wiring every other router gets in
 endpoint that runs exactly one real tick, synchronously, by calling `app.scheduling.tick.run_tick`
 directly -- the EXACT same function `scripts/scheduler.py`'s own local loop calls, not a
 duplicated reimplementation. `.github/workflows/scheduler-tick.yml` (a scheduled GitHub Actions
-workflow, `7,22,37,52 * * * *`, see `docs/deployment.md` for the concrete setup) hits this endpoint
-every 15 minutes once deployed, functionally replacing the local loop.
+workflow, see `docs/deployment.md` for the concrete setup) hits this endpoint hourly once deployed
+(originally every 15 minutes; reduced 2026-10-03, see the "Real gap found and closed 2026-09-07"
+section's own dedicated note on why hourly and not less frequent), functionally replacing the
+local loop.
 
 **Revised 2026-09-05**: confirmed live via this workflow's own Actions run history that GitHub was
 firing the `schedule` trigger every ~1.5-4 hours in practice, not every 15 minutes as configured --
@@ -1699,10 +1701,11 @@ also land there. Every run that DID fire still succeeded (via this workflow's ow
 --retry-all-errors`, which also transparently absorbs Render's free-tier cold-start latency after
 15+ minutes of inactivity -- confirmed live, a single tick's first attempt timed out at 120s before
 succeeding on retry) -- so this was never a code-level failure, purely GitHub's own scheduler
-queue. Offset to `7,22,37,52 * * * *` per GitHub's own documented mitigation ("schedule your
-workflow to run at a different time of the hour"). No code-level fix exists for GitHub's own
-scheduler reliability; this reduces exposure to the specific oversubscribed-boundary cause, it
-does not guarantee true 15-minute cadence.
+queue. Offset off round minutes (`7,22,37,52 * * * *` at the time, now `7 * * * *` since the
+2026-10-03 reduction to hourly) per GitHub's own documented mitigation ("schedule your workflow to
+run at a different time of the hour"). No code-level fix exists for GitHub's own scheduler
+reliability; this reduces exposure to the specific oversubscribed-boundary cause, it does not
+guarantee true cadence.
 
 **Revised 2026-08-26**: originally a free external cron service (cron-job.org) called this
 endpoint instead. Real incident: it silently stopped calling the endpoint entirely for 5+ real
@@ -1978,11 +1981,28 @@ extensively throughout this project's history, worth defaulting to FPL's free pu
 instead whenever a diagnostic doesn't genuinely need database access). Fixed by reducing this
 workflow's own cadence from daily to Mon/Wed/Fri (see the `on:` block's own comment) — the single
 highest-leverage change, since "current by the next deadline" was already the real requirement,
-never actually "current within one day". `scheduler-tick.yml`'s own 15-minute cadence was
-deliberately left unchanged — a smaller, secondary contributor, and its own per-tick cost is
-already near the practical minimum (a single `POST /internal/scheduler-tick` call; the real,
-meaningful expense lives in the jobs it triggers, gated by their own multi-hour intervals, not in
-the tick frequency itself).
+never actually "current within one day". `scheduler-tick.yml`'s own 15-minute cadence was initially
+left unchanged (a smaller, secondary contributor); revisited and reduced on 2026-10-03 — see the
+dedicated section below.
+
+**Resolved (2026-10-03): `scheduler-tick.yml` reduced from every 15 minutes to hourly, but
+deliberately NOT further (e.g. to a day-skipping schedule like Mon/Wed/Fri or twice a week), after
+checking the real trigger logic rather than assuming the same fix as the workflow above would
+apply.** `app.jobs.handlers.deadline_reminder.DeadlineReminderJobRunner` is checked every tick
+(not interval-gated like `DATA_INGESTION`/`MANAGER_SYNC`/`LEAGUE_SYNC`) and sends at most ONE push
+per gameweek, the first tick where `deadline_time - now <= REMINDER_WINDOW` (hardcoded to 6
+hours) — with no catch-up mechanism if every tick misses that window, since a `SUCCEEDED`
+`DEADLINE_REMINDER` row for that `fpl_event_id` permanently marks it as already-reminded. Real
+gameweek deadlines no longer land only on weekends (fixture rearrangements/cup replays spread
+games across Mon-Fri some weeks), so any schedule that skips entire days — or runs less often than
+roughly every 6 hours — can silently and permanently skip the reminder for a gameweek whose
+deadline happens to fall inside the gap between two ticks, with no error, no retry, and no alert
+(a real, user-facing miss, not just data staleness). Hourly keeps a 6x safety margin under that
+6-hour window (robust even if a single tick is skipped, cancelled, or delayed) while still cutting
+this workflow's own run volume 4x (96 runs/day → 24/day). `DATA_INGESTION` (4h)/`MANAGER_SYNC`/
+`LEAGUE_SYNC` (6h) are self-pacing floors derived fresh from the `jobs` table each tick (see
+`app.scheduling.tick`'s own `is_interval_due`) — a less-frequent tick only delays them, never skips
+them entirely — so they were never the binding constraint; `DEADLINE_REMINDER`'s hard window is.
 
 **Fix (2026-09-27): the workflow now skips its entire run during real gameweek gaps (international
 breaks, blank/end-of-season periods) instead of firing on its Mon/Wed/Fri schedule regardless.**
