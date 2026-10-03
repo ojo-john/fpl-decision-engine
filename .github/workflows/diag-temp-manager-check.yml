@@ -1,0 +1,91 @@
+name: DIAG TEMP manager check
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Query real manager squad snapshot + latest recommendation
+        run: |
+          uv run python - <<'EOF'
+          from sqlalchemy import select
+          from packages.database.models.manager_squad_snapshot import ManagerSquadSnapshot
+          from packages.database.models.transfer_optimization_run import TransferOptimizationRun
+          from packages.database.models.transfer_optimization_run_scenario import TransferOptimizationRunScenario
+          from packages.database.models.transfer_optimization_run_move import TransferOptimizationRunMove
+          from packages.database.models.job import Job
+          from packages.database.models.player import Player
+          from packages.database.session import SessionLocal
+          from packages.domain.jobs import JobType
+
+          session = SessionLocal()
+          try:
+              snapshot = session.execute(
+                  select(ManagerSquadSnapshot)
+                  .where(ManagerSquadSnapshot.is_current.is_(True))
+                  .order_by(ManagerSquadSnapshot.created_at.desc())
+                  .limit(1)
+              ).scalar_one_or_none()
+              print(f"SNAPSHOT: id={snapshot.id}, free_transfers_available={snapshot.free_transfers_available}, "
+                    f"bank={snapshot.bank}, created_at={snapshot.created_at}, source={snapshot.source}")
+
+              run = session.execute(
+                  select(TransferOptimizationRun)
+                  .where(TransferOptimizationRun.manager_squad_snapshot_id == snapshot.id)
+                  .order_by(TransferOptimizationRun.started_at.desc())
+                  .limit(1)
+              ).scalar_one_or_none()
+              if run is None:
+                  print("NO TransferOptimizationRun found for this snapshot.")
+              else:
+                  print(f"RUN: id={run.id}, status={run.run_status}, transfers_count={run.recommended_transfers_count}, "
+                        f"hit_cost={run.recommended_hit_cost}, net_gain={run.recommended_net_horizon_points_gain}, "
+                        f"started_at={run.started_at}, completed_at={run.completed_at}")
+
+                  scenarios = session.execute(
+                      select(TransferOptimizationRunScenario)
+                      .where(TransferOptimizationRunScenario.transfer_optimization_run_id == run.id)
+                      .order_by(TransferOptimizationRunScenario.transfers_count.asc())
+                  ).scalars().all()
+                  print("SCENARIOS:")
+                  for s in scenarios:
+                      marker = " <-- RECOMMENDED" if s.is_recommended else ""
+                      print(f"  transfers={s.transfers_count}, raw_gain={s.raw_horizon_points_gain}, "
+                            f"hit_cost={s.hit_cost}, net_gain={s.net_horizon_points_gain}{marker}")
+
+                  recommended = next((s for s in scenarios if s.is_recommended), None)
+                  if recommended and recommended.transfers_count > 0:
+                      moves = session.execute(
+                          select(TransferOptimizationRunMove)
+                          .where(TransferOptimizationRunMove.transfer_optimization_run_scenario_id == recommended.id)
+                          .order_by(TransferOptimizationRunMove.move_index.asc())
+                      ).scalars().all()
+                      print("RECOMMENDED MOVES:")
+                      for m in moves:
+                          p_out = session.get(Player, m.player_out_id)
+                          p_in = session.get(Player, m.player_in_id)
+                          print(f"  OUT: {p_out.web_name} (sell {m.player_out_selling_price_snapshot/10}m) -> "
+                                f"IN: {p_in.web_name} (cost {m.player_in_cost_snapshot/10}m), "
+                                f"gain_over_horizon={m.projected_points_gain_over_horizon}")
+
+              print("\nMANAGER_SYNC last 5 jobs:")
+              for j in session.execute(
+                  select(Job.status, Job.created_at, Job.error_code, Job.error_message)
+                  .where(Job.job_type == JobType.MANAGER_SYNC)
+                  .order_by(Job.created_at.desc())
+                  .limit(5)
+              ).all():
+                  print(f"  {j}")
+          finally:
+              session.close()
+          EOF
