@@ -1,6 +1,10 @@
 import { backendClient } from "@/lib/api-client";
 import { Card, ErrorState } from "@/components/ui";
-import { RUN_STATUS_LABELS, TRANSFER_ACTION_LABELS as ACTION_LABELS } from "@/lib/ui-labels";
+import {
+  RUN_STATUS_LABELS,
+  TRANSFER_ACTION_LABELS as ACTION_LABELS,
+  transfersCountActionKey,
+} from "@/lib/ui-labels";
 
 export const dynamic = "force-dynamic";
 
@@ -54,13 +58,8 @@ export default async function TransfersPage({ params }: { params: Promise<{ runI
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <h2 style={{ margin: 0, fontSize: "0.95rem" }}>
-                {ACTION_LABELS[
-                  scenario.transfers_count === 0
-                    ? "roll"
-                    : scenario.transfers_count === 1
-                      ? "one_transfer"
-                      : "two_transfers"
-                ] ?? `${scenario.transfers_count} transfer(s)`}
+                {ACTION_LABELS[transfersCountActionKey(scenario.transfers_count)] ??
+                  `${scenario.transfers_count} transfer(s)`}
                 {scenario.is_recommended && " (recommended)"}
               </h2>
               <span style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>

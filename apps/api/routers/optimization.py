@@ -58,7 +58,26 @@ from packages.database.models.transfer_optimization_run_scenario import Transfer
 from packages.domain.jobs import JobStatus, JobType, TriggerType
 from packages.domain.optimization import TargetGameweekStatus
 
-_RECOMMENDED_ACTION_BY_TRANSFERS_COUNT = {0: "roll", 1: "one_transfer", 2: "two_transfers"}
+_TRANSFERS_COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five"}
+
+
+def _recommended_action_for_transfers_count(transfers_count: int) -> str:
+    """Maps a scenario's transfer count to the ``recommended_action`` string the frontend keys
+    off of (``apps/web/lib/ui-labels.ts``'s ``TRANSFER_ACTION_LABELS``).
+
+    Real bug fixed 2026-10-06: this used to be a plain ``{0: ..., 1: ..., 2: ...}`` dict, which
+    would raise ``KeyError`` the moment ``app.transfers.scenario_search`` ever recommended a
+    3+-transfer scenario (now possible — see that module's own docstring on evaluating up to
+    ``free_transfers_available``, not a hardcoded 0/1/2 ceiling). Generalized to any count up to
+    ``scenario_search.MAX_TRANSFERS_TO_EVALUATE_CEILING`` (5); a count beyond that is a real
+    caller contract violation, not a value this function should silently paper over.
+    """
+    if transfers_count == 0:
+        return "roll"
+    if transfers_count == 1:
+        return "one_transfer"
+    return f"{_TRANSFERS_COUNT_WORDS[transfers_count]}_transfers"
+
 
 # Same "capped read, not full pagination" convention as apps.api.routers.managers/learning/
 # leagues -- this system's own run volume (one manager, on-demand triggers) never approaches
@@ -411,7 +430,7 @@ def _load_transfer_run_response(
         )
 
     assert run.recommended_transfers_count is not None  # a SUCCEEDED run always sets this
-    recommended_action = _RECOMMENDED_ACTION_BY_TRANSFERS_COUNT[run.recommended_transfers_count]
+    recommended_action = _recommended_action_for_transfers_count(run.recommended_transfers_count)
 
     return TransferOptimizationRunOut(
         transfer_optimization_run_id=run.id,
@@ -477,7 +496,7 @@ def list_transfer_optimization_runs(
             manager_squad_snapshot_id=row.manager_squad_snapshot_id,
             run_status=row.run_status.value,
             recommended_action=(
-                _RECOMMENDED_ACTION_BY_TRANSFERS_COUNT[row.recommended_transfers_count]
+                _recommended_action_for_transfers_count(row.recommended_transfers_count)
                 if row.recommended_transfers_count is not None
                 else None
             ),

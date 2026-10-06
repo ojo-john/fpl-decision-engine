@@ -94,7 +94,7 @@ the job types that have an HTTP trigger.
 | `PROJECTION_GENERATION` | — | ❌ | — | genuinely unbuilt; `project_player`/`project_player_with_champion` in `app/optimization/projection.py` are called directly by other jobs instead |
 | `SQUAD_OPTIMIZATION` | `squad_optimization.py` | ✅ | `POST /optimize/initial-squad` | |
 | `LINEUP_OPTIMIZATION` | `lineup_optimization.py` | ✅ | `POST /optimize/lineup` | |
-| `TRANSFER_OPTIMIZATION` | `transfer_optimization.py` | ✅ | `POST /optimize/transfers` | |
+| `TRANSFER_OPTIMIZATION` | `transfer_optimization.py` | ✅ | `POST /optimize/transfers` | evaluates 0..N transfers, N derived from free transfers available (up to 5) -- see "Known real gaps" below for the 2026-10-06 fix that made N dynamic instead of a hardcoded 0/1/2 |
 | `CHIP_SIMULATION` | `chip_simulation.py` | ✅ | `POST /optimize/chips` | evaluates all 4 chips independently -- see "Joint chip scheduling (Phase 1)" below for why that alone can produce contradictory recommendations |
 | `CHIP_SCHEDULE_OPTIMIZATION` | `chip_schedule_optimization.py` | ✅ | `POST /optimize/chips/schedule` | the joint chip scheduler (fresh, full-season, path-dependent), see below |
 | `H2H_SIMULATION` | `h2h_simulation.py` | ✅ | `POST /h2h/simulate` | |
@@ -2418,6 +2418,43 @@ called out in `app/jobs/handlers/league_sync.py`'s own docstring, which now
 documents it directly.
 
 ## Known real gaps (as of this doc)
+
+- **Resolved, real bug (found and fixed 2026-10-06): `TRANSFER_OPTIMIZATION` only ever evaluated
+  0/1/2-transfer scenarios, hardcoded, regardless of how many free transfers a manager actually
+  had banked.** FPL allows rolling free transfers up to a maximum of 5 — a manager sitting on 4
+  banked transfers would never see a 3- or 4-transfer scenario at all, not because it was
+  evaluated and rejected as worse, but because `app.transfers.scenario_search` never considered
+  the possibility. Caught live: a real manager with 4 free transfers asked why only 2 were being
+  recommended. Root cause confirmed by reading the actual search code
+  (`evaluate_transfer_scenarios` only ever called `_best_one_transfer_moves`/
+  `_best_two_transfer_moves`), not assumed. Naive brute-force doesn't generalize past 2 transfers
+  either: `C(15, 2) = 105` OUT pairs against an IN space up to `IN_CANDIDATE_SHORTLIST_SIZE**2 =
+  625` (~65K evaluations, the old 2-transfer approach) becomes `C(15, 3) = 455` against up to
+  `25**3` (~7.1M) for 3 transfers, and `C(15, 4) = 1365` against `25**4` (~533M) for 4 — neither
+  viable as a nested loop in plain Python. **Fix**: `scenario_search.py` now solves one MIP per
+  transfer count `K` (maximize total squad `horizon_points` subject to squad-size/position-shape/
+  team-limit/budget legality and "exactly `K` current-squad players replaced"), the same
+  `pulp`/CBC approach this codebase already uses for the much larger Wildcard squad-selection
+  problem (`app.optimization.joint_squad_solver`) — globally optimal per `K`, not a greedy
+  approximation, and proven fast at a scale well beyond what this needs. Evaluates `K` from 0 up
+  to `min(max(free_transfers_available, 2), MAX_TRANSFERS_TO_EVALUATE_CEILING)` (5, FPL's real
+  rollover max) — preserves the exact pre-fix behavior for the common case (≤2 free transfers
+  always shows at least the 2-transfer "is a hit worth it" option), extends naturally beyond it.
+  Verified against every pre-existing unit test unchanged (identical results for K=1/K=2), plus
+  new tests covering the free-transfer-driven extension, the ceiling cap, joint budget across 3
+  transfers, and — specifically — that the MIP's per-position equality constraints actually
+  reject an illegal combination that would otherwise score higher (dropping 2 defenders for 2
+  elite midfielders, breaking the squad's real position shape).
+
+  Two more real bugs found while scoping this fix, both would have crashed/mislabeled the moment
+  a 3+-transfer scenario was ever recommended: `apps/api/routers/optimization.py`'s
+  `_RECOMMENDED_ACTION_BY_TRANSFERS_COUNT` was a plain `{0: ..., 1: ..., 2: ...}` dict with no
+  entry beyond 2 (`KeyError` on any 3+ recommendation) — replaced with
+  `_recommended_action_for_transfers_count`, a function covering the full 0-5 range. The frontend
+  (`apps/web/app/(app)/transfers/[runId]/page.tsx`) had a ternary that mapped ANY
+  `transfers_count >= 2` to the literal string `"two_transfers"` — a real 3-transfer scenario
+  would have been mislabeled "Two transfers" in the UI; replaced with
+  `transfersCountActionKey` (`apps/web/lib/ui-labels.ts`), mirroring the backend function.
 
 - `PROJECTION_GENERATION` job type: enum member only, no handler, deliberately -- no defined
   consumer/table for it to write to (`project_player`/`project_player_with_champion` are

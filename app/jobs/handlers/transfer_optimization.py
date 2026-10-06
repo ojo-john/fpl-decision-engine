@@ -1,4 +1,10 @@
-"""TRANSFER_OPTIMIZATION job: evaluate 0/1/2-transfer scenarios for an existing manager squad.
+"""TRANSFER_OPTIMIZATION job: evaluate 0..N-transfer scenarios for an existing manager squad.
+
+``N`` is derived from the snapshot's own ``free_transfers_available`` by
+``app.transfers.scenario_search`` (see that module's own docstring for the
+2026-10-06 fix making this dynamic rather than a hardcoded 0/1/2) — this
+handler itself needs no knowledge of ``N``, since it just persists whatever
+``scenarios`` dict comes back.
 
 Milestone 4 Layer 3 — wires Layer 1 (manager squad snapshot: free transfers,
 bank, selling prices) and Layer 2 (candidate pool construction, horizon
@@ -123,7 +129,7 @@ def _persist_scenarios_and_moves(
     recommended: TransferScenario,
     selling_prices: dict[uuid.UUID, int],
 ) -> None:
-    """Persist all 3 scenario rows and their moves, flagging exactly one as recommended."""
+    """Persist every scenario row and its moves, flagging exactly one as recommended."""
     scenario_rows: dict[int, TransferOptimizationRunScenario] = {}
     for count, scenario in scenarios.items():
         scenario_row = TransferOptimizationRunScenario(
@@ -159,7 +165,7 @@ def _persist_scenarios_and_moves(
 
 @register_handler(JobType.TRANSFER_OPTIMIZATION)
 class TransferOptimizationJobRunner(JobRunner):
-    """Evaluates ROLL/1-transfer/2-transfer scenarios for a manager's current squad."""
+    """Evaluates ROLL plus every 1..N-transfer scenario for a manager's current squad."""
 
     def run(self, ctx: JobContext) -> JobResult:
         session = SessionLocal()
