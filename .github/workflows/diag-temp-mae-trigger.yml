@@ -1,0 +1,58 @@
+name: DIAG TEMP MAE retraining trigger check
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Check real learning_reports/learning_signals retraining-trigger history
+        run: |
+          uv run python - <<'EOF'
+          from sqlalchemy import select
+
+          from packages.database.models.gameweek import Gameweek
+          from packages.database.models.learning_report import LearningReport
+          from packages.database.models.learning_signal import LearningSignal
+          from packages.database.session import SessionLocal
+
+          session = SessionLocal()
+          try:
+              reports = session.execute(
+                  select(LearningReport, Gameweek.fpl_event_id)
+                  .join(Gameweek, Gameweek.id == LearningReport.gameweek_id)
+                  .order_by(Gameweek.fpl_event_id.asc())
+              ).all()
+              print(f"Found {len(reports)} learning_reports row(s).\n")
+              for report, fpl_event_id in reports:
+                  print(
+                      f"GW{fpl_event_id}: retraining_triggered={report.retraining_triggered}, "
+                      f"created_at={report.created_at}"
+                  )
+
+              print("\nAll ROLLING_PROJECTION_MAE learning_signals rows:")
+              mae_signals = session.execute(
+                  select(LearningSignal, Gameweek.fpl_event_id)
+                  .join(Gameweek, Gameweek.id == LearningSignal.as_of_gameweek_id)
+                  .where(LearningSignal.signal_type == "rolling_projection_mae")
+                  .order_by(Gameweek.fpl_event_id.asc())
+              ).all()
+              for signal, fpl_event_id in mae_signals:
+                  print(
+                      f"GW{fpl_event_id}: value={signal.value}, sample_count={signal.sample_count}, "
+                      f"window_size_gameweeks={signal.window_size_gameweeks}, "
+                      f"threshold_breached={signal.threshold_breached}, "
+                      f"threshold_config={signal.threshold_config_snapshot_json}"
+                  )
+          finally:
+              session.close()
+          EOF
