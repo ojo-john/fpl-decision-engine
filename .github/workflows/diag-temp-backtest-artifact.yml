@@ -1,0 +1,59 @@
+name: DIAG TEMP backtest artifact check
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Inspect the real random_forest model_versions row and try to load its artifact directly
+        run: |
+          uv run python - <<'EOF'
+          import io
+          import traceback
+
+          import joblib
+          from sqlalchemy import select
+
+          from packages.database.models.model_version import ModelVersion
+          from packages.database.session import SessionLocal
+          from packages.domain.modeling import ModelFamily
+
+          session = SessionLocal()
+          try:
+              rows = session.execute(
+                  select(ModelVersion)
+                  .where(ModelVersion.model_family == ModelFamily.RANDOM_FOREST)
+                  .order_by(ModelVersion.trained_at.desc())
+              ).scalars().all()
+              print(f"Found {len(rows)} random_forest model_versions row(s).")
+              for row in rows:
+                  artifact_bytes = row.artifact_bytes
+                  print(
+                      f"\nid={row.id}, trained_at={row.trained_at}, lifecycle_state={row.lifecycle_state}, "
+                      f"is_champion={row.is_champion}, artifact_uri={row.artifact_uri}, "
+                      f"artifact_checksum_sha256={row.artifact_checksum_sha256}, "
+                      f"feature_version={row.feature_version}"
+                  )
+                  if artifact_bytes is None:
+                      print("  artifact_bytes is NULL in the DB.")
+                      continue
+                  print(f"  artifact_bytes real length: {len(artifact_bytes)} bytes")
+                  try:
+                      model = joblib.load(io.BytesIO(artifact_bytes))
+                      print(f"  joblib.load SUCCEEDED: {type(model).__name__}")
+                  except Exception:
+                      print("  joblib.load FAILED, full traceback:")
+                      traceback.print_exc()
+          finally:
+              session.close()
+          EOF
