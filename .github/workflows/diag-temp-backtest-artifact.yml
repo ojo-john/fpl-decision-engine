@@ -15,7 +15,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync
-      - name: Inspect the real random_forest model_versions row and try to load its artifact directly
+      - name: Inspect every model_versions row's artifact_bytes status
         run: |
           uv run python - <<'EOF'
           import io
@@ -26,34 +26,29 @@ jobs:
 
           from packages.database.models.model_version import ModelVersion
           from packages.database.session import SessionLocal
-          from packages.domain.modeling import ModelFamily
 
           session = SessionLocal()
           try:
               rows = session.execute(
-                  select(ModelVersion)
-                  .where(ModelVersion.model_family == ModelFamily.RANDOM_FOREST)
-                  .order_by(ModelVersion.trained_at.desc())
+                  select(ModelVersion).order_by(ModelVersion.trained_at.desc())
               ).scalars().all()
-              print(f"Found {len(rows)} random_forest model_versions row(s).")
+              print(f"Found {len(rows)} model_versions row(s) total.\n")
               for row in rows:
                   artifact_bytes = row.artifact_bytes
+                  champion_marker = " <-- CURRENT CHAMPION" if row.is_champion else ""
                   print(
-                      f"\nid={row.id}, trained_at={row.trained_at}, lifecycle_state={row.lifecycle_state}, "
-                      f"is_champion={row.is_champion}, artifact_uri={row.artifact_uri}, "
-                      f"artifact_checksum_sha256={row.artifact_checksum_sha256}, "
-                      f"feature_version={row.feature_version}"
+                      f"id={row.id}, family={row.model_family.value}, trained_at={row.trained_at}, "
+                      f"lifecycle_state={row.lifecycle_state.value}, is_champion={row.is_champion}, "
+                      f"artifact_bytes={'NULL' if artifact_bytes is None else f'{len(artifact_bytes)} bytes'}"
+                      f"{champion_marker}"
                   )
-                  if artifact_bytes is None:
-                      print("  artifact_bytes is NULL in the DB.")
-                      continue
-                  print(f"  artifact_bytes real length: {len(artifact_bytes)} bytes")
-                  try:
-                      model = joblib.load(io.BytesIO(artifact_bytes))
-                      print(f"  joblib.load SUCCEEDED: {type(model).__name__}")
-                  except Exception:
-                      print("  joblib.load FAILED, full traceback:")
-                      traceback.print_exc()
+                  if row.is_champion and artifact_bytes is not None:
+                      try:
+                          model = joblib.load(io.BytesIO(artifact_bytes))
+                          print(f"  CHAMPION joblib.load SUCCEEDED: {type(model).__name__}")
+                      except Exception:
+                          print("  CHAMPION joblib.load FAILED:")
+                          traceback.print_exc()
           finally:
               session.close()
           EOF
