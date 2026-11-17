@@ -7,42 +7,98 @@ from app.transfers.free_transfers import derive_free_transfers_available
 CAP = 5  # 1 + max_extra_free_transfers(4), matching the real 2025-26 rules.
 
 
-def test_empty_history_defaults_to_one():
+def _row(event: int, transfers: int = 0, cost: int = 0) -> dict:
+    return {"event": event, "event_transfers": transfers, "event_transfers_cost": cost}
+
+
+def test_derive_emptyHistory_returnsOne():
     assert derive_free_transfers_available([], [], cap=CAP) == 1
 
 
-def test_consecutive_zero_transfer_gameweeks_accrue_and_cap():
-    # free: 1 -> 2 -> 3 -> 4 -> 5 -> 5 (capped, doesn't exceed CAP)
-    rows = [{"event": event, "event_transfers": 0, "event_transfers_cost": 0} for event in range(1, 6)]
+def test_derive_onlySquadSelectionGameweek_returnsOne():
+    # GW1 is squad selection: GW2 starts with exactly 1 free transfer, not 2.
+    assert derive_free_transfers_available([_row(1)], [], cap=CAP) == 1
+
+
+def test_derive_midSeasonJoiner_firstRowIsSquadSelection():
+    # Joined at GW5: GW5 is their squad selection, GW6 has 1, GW7 has 2.
+    assert derive_free_transfers_available([_row(5), _row(6)], [], cap=CAP) == 2
+
+
+def test_derive_consecutiveZeroTransferGameweeks_accrueAndCap():
+    # After GW1..GW8 with no transfers: GW2=1, GW3=2, GW4=3, GW5=4, GW6..GW9=5 (capped).
+    rows = [_row(event) for event in range(1, 9)]
     assert derive_free_transfers_available(rows, [], cap=CAP) == 5
 
 
-def test_wildcard_gameweek_freezes_counter():
-    # GW1: 0 transfers -> free goes 1 -> 2.
-    # GW2: wildcard played (many transfers, no cost) -> counter frozen at 2, untouched.
-    # GW3: 0 transfers -> free goes 2 -> 3 (continuing from the frozen value, not from GW2's transfers).
-    rows = [
-        {"event": 1, "event_transfers": 0, "event_transfers_cost": 0},
-        {"event": 2, "event_transfers": 11, "event_transfers_cost": 0},
-        {"event": 3, "event_transfers": 0, "event_transfers_cost": 0},
-    ]
+def test_derive_beforeCapReached_isNotInflatedByOne():
+    # After GW1..GW3 with no transfers, GW4 has 3 (GW2=1, GW3=2, GW4=3) -- not 4.
+    rows = [_row(event) for event in range(1, 4)]
+    assert derive_free_transfers_available(rows, [], cap=CAP) == 3
+
+
+def test_derive_wildcardGameweek_freezesCounter():
+    # GW2 has 1. GW2 wildcard: frozen at 1. GW3 has 1, unused -> GW4 has 2.
+    rows = [_row(1), _row(2, transfers=11), _row(3)]
     chips = [{"name": "wildcard", "event": 2, "time": "2025-08-22T10:00:00Z"}]
-    assert derive_free_transfers_available(rows, chips, cap=CAP) == 3
+    assert derive_free_transfers_available(rows, chips, cap=CAP) == 2
 
 
-def test_hit_taking_gameweek_reduces_free_transfers():
-    # free starts at 1. GW1: event_transfers=3 > free(1) -> hit of 2 extra transfers.
-    # free = max(1-3, 0) = 0, then +1 accrual = 1.
-    rows = [{"event": 1, "event_transfers": 3, "event_transfers_cost": -8}]
+def test_derive_realManager918600History_matchesFplAppCountOfTwo():
+    # Real GW1-10 history for manager 918600 (2026-27), checked against the
+    # FPL app's own count of 2 free transfers for GW11.
+    rows = [
+        _row(1),
+        _row(2, transfers=1),
+        _row(3),
+        _row(4),
+        _row(5),
+        _row(6),
+        _row(7, transfers=4),
+        _row(8),
+        _row(9, transfers=2),
+        _row(10),
+    ]
+    chips = [
+        {"name": "wildcard", "event": 3, "time": "2026-09-12T10:00:00Z"},
+        {"name": "3xc", "event": 7, "time": "2026-10-10T10:00:00Z"},
+    ]
+    assert derive_free_transfers_available(rows, chips, cap=CAP) == 2
+
+
+def test_derive_hitTakingGameweek_reducesFreeTransfers():
+    # GW2 has 1; 3 transfers is a 2-transfer hit (FPL reports cost=8). Left with 0, GW3 has 1.
+    rows = [_row(1), _row(2, transfers=3, cost=8)]
     assert derive_free_transfers_available(rows, [], cap=CAP) == 1
 
 
-def test_cross_validation_mismatch_logs_warning_and_does_not_raise(caplog):
-    # Actual FPL hit cost for event_transfers=2 with free=1 should be -4, not the
-    # -100 fabricated here -- this should log a warning, not raise.
-    rows = [{"event": 1, "event_transfers": 2, "event_transfers_cost": -100}]
+def test_derive_hitCostMismatch_logsWarningAndDoesNotRaise(caplog):
+    # GW2: 2 transfers with 1 free should cost 4, not the fabricated 100.
+    rows = [_row(1), _row(2, transfers=2, cost=100)]
     with caplog.at_level(logging.WARNING):
         result = derive_free_transfers_available(rows, [], cap=CAP)
 
-    assert result == 1  # max(1-2,0)=0, +1 accrual capped = 1 -- replay still completes normally
-    assert any("mismatch" in record.message for record in caplog.records)
+    assert (result, any("mismatch" in r.message for r in caplog.records)) == (1, True)
+
+
+def test_derive_realRivalHistoryWithHit_matchesObservedCostWithoutWarning(caplog):
+    # Real GW1-10 history for H2H rival 4085230 (2026-27): a real 1-transfer hit in GW7,
+    # reported by FPL as event_transfers_cost=4. Only consistent with 2 free transfers in GW7
+    # (the old inflated replay said 3, i.e. no hit), so this pins both fixes.
+    rows = [
+        _row(1),
+        _row(2),
+        _row(3),
+        _row(4, transfers=3),
+        _row(5, transfers=1),
+        _row(6),
+        _row(7, transfers=3, cost=4),
+        _row(8, transfers=1),
+        _row(9, transfers=1),
+        _row(10),
+    ]
+    chips = [{"name": "3xc", "event": 8, "time": "2026-10-17T10:00:00Z"}]
+    with caplog.at_level(logging.WARNING):
+        result = derive_free_transfers_available(rows, chips, cap=CAP)
+
+    assert (result, [r.message for r in caplog.records]) == (2, [])

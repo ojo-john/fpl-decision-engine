@@ -135,11 +135,11 @@ _RICH_HISTORY_ROWS = [
     _row(2, 0, 0),
     _row(3, 1, 0),
     _row(4, 0, 0),
-    _row(5, 2, -4),
+    _row(5, 2, 4),
     _row(6, 0, 0),
     _row(7, 1, 0),
     _row(8, 0, 0),
-    _row(9, 3, -8),
+    _row(9, 3, 8),
     _row(10, 0, 0),
 ]
 # Chip played at event 15 -- outside the 1-10 history window below, so it

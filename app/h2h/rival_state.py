@@ -285,7 +285,9 @@ def _own_transfer_distribution(observed: list[dict]) -> tuple[float, float, floa
     no_transfer = sum(1 for r in observed if r.get("event_transfers", 0) == 0) / n
     one_transfer = sum(1 for r in observed if r.get("event_transfers", 0) == 1) / n
     multi_transfer = sum(1 for r in observed if r.get("event_transfers", 0) >= 2) / n
-    hit_taken = sum(1 for r in observed if (r.get("event_transfers_cost") or 0) < 0) / n
+    # FPL reports event_transfers_cost as a POSITIVE hit cost (4 per extra transfer). This was
+    # `< 0` until 2026-11-17, so no real rival's hit was ever counted.
+    hit_taken = sum(1 for r in observed if (r.get("event_transfers_cost") or 0) > 0) / n
     return no_transfer, one_transfer, multi_transfer, hit_taken
 
 
@@ -370,7 +372,7 @@ def _tendency_features(
             observed
         )
         hit_tolerance: float | None = sum(
-            1 for r in observed if (r.get("event_transfers_cost") or 0) < 0
+            1 for r in observed if (r.get("event_transfers_cost") or 0) > 0
         ) / len(observed)
     else:
         transfers_per_gameweek = None
