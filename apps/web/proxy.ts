@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isValidSessionCookieValue, SESSION_COOKIE_NAME } from "@/lib/session";
 
-// Gates every route except /login and /api/session behind the signed session
-// cookie (Milestone 8 Layer 1/2). Named `proxy.ts` per Next.js 16's rename of
-// the "Middleware" file convention -- same mechanism, new name.
-const PUBLIC_PATHS = ["/login", "/api/session"];
+// Gates every route except /login, /api/session and the GitHub sign-in routes
+// (/api/auth/github and its /callback) behind the signed session cookie
+// (Milestone 8 Layer 1/2). Named `proxy.ts` per Next.js 16's rename of the
+// "Middleware" file convention -- same mechanism, new name.
+const PUBLIC_PATHS = ["/login", "/api/session", "/api/auth/github"];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

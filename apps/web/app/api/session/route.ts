@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  createSessionCookieValue,
-  isCorrectSharedToken,
-  SESSION_COOKIE_NAME,
-  SESSION_MAX_AGE_SECONDS,
-} from "@/lib/session";
+import { isCorrectSharedToken, SESSION_COOKIE_NAME, setSessionCookie } from "@/lib/session";
 
 /** POST /api/session: log in with the shared token, set the signed session cookie. */
 export async function POST(request: NextRequest) {
@@ -20,15 +15,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Incorrect token." }, { status: 401 });
   }
 
-  const cookieValue = await createSessionCookieValue(expected);
   const response = NextResponse.json({ ok: true });
-  response.cookies.set(SESSION_COOKIE_NAME, cookieValue, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: SESSION_MAX_AGE_SECONDS,
-    path: "/",
-  });
+  await setSessionCookie(response, expected);
   return response;
 }
 

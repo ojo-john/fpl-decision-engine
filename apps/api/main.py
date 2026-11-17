@@ -3,7 +3,7 @@
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from apps.api.auth import require_shared_token
+from apps.api.auth import require_authorized_caller
 from apps.api.routers import (
     chips,
     data,
@@ -39,9 +39,9 @@ def create_app() -> FastAPI:
     )
 
     # health stays unauthenticated (see apps.api.auth's own docstring); every
-    # other router requires the shared token.
+    # other router requires the shared token or an allowlisted GitHub token.
     app.include_router(health.router)
-    protected = Depends(require_shared_token)
+    protected = Depends(require_authorized_caller)
     app.include_router(players.router, dependencies=[protected])
     app.include_router(gameweeks.router, dependencies=[protected])
     # chips.router shares optimization.router's "/optimize" prefix and must be included
