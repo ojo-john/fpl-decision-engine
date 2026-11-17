@@ -16,6 +16,14 @@ Real FPL mechanics, in the exact order applied per gameweek:
 3. The remaining count (after spending) accrues by 1 for the next gameweek,
    again capped at ``cap``.
 
+The manager's FIRST history row (normally GW1, later for a mid-season
+joiner) is their initial squad selection: unlimited free changes, and it
+neither consumes nor accrues the counter -- the next gameweek starts with
+exactly 1 free transfer. (A real bug, fixed 2026-11-17: this row used to be
+replayed like any other gameweek, accruing a phantom +1, so every manager's
+count was one too high whenever the cap didn't absorb it. Never caught by
+the hit-cost cross-validation because the real manager never took a hit.)
+
 A wildcard/free-hit gameweek is a special case: it grants unlimited free
 transfers for that gameweek only, and — critically — neither consumes nor
 accrues the ongoing free-transfer counter. That gameweek is skipped entirely
@@ -33,8 +41,9 @@ _CHIP_NAMES_FREEZING_TRANSFERS = ("wildcard", "freehit")
 def derive_free_transfers_available(current_rows: list[dict], chip_rows: list[dict], cap: int) -> int:
     """Forward-replay ``history().current[]``/``chips[]`` to derive free transfers available now.
 
-    ``cap`` is ``1 + rules.max_extra_free_transfers`` (5 today). Defaults to
-    1 (the fresh-season baseline) if ``current_rows`` is empty. Never
+    ``cap`` is ``1 + rules.max_extra_free_transfers`` (5 today). Returns 1
+    (the fresh-season baseline) if ``current_rows`` is empty or holds only the
+    squad-selection gameweek. Never
     raises: a cross-validation mismatch between this replay's implied hit
     cost and the observed ``event_transfers_cost`` for a gameweek is logged
     as a warning only — an unmodeled edge case (e.g. an FPL rule change, or a
@@ -43,8 +52,11 @@ def derive_free_transfers_available(current_rows: list[dict], chip_rows: list[di
     """
     chip_events = {c["event"] for c in chip_rows if c["name"] in _CHIP_NAMES_FREEZING_TRANSFERS}
 
+    # Free transfers available going into the gameweek after squad selection.
     free = 1
-    for row in sorted(current_rows, key=lambda r: r["event"]):
+    ordered_rows = sorted(current_rows, key=lambda r: r["event"])
+    # ordered_rows[0] is the squad-selection gameweek (see module docstring) -- skipped.
+    for row in ordered_rows[1:]:
         if row["event"] in chip_events:
             # Wildcard/free-hit: unlimited free transfers this gameweek only;
             # the ongoing counter is frozen (neither consumed nor accrued).

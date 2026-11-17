@@ -2443,6 +2443,22 @@ documents it directly.
 
 ## Known real gaps (as of this doc)
 
+- **Resolved, real bug (found and fixed 2026-11-17): every derived free-transfer count was one too
+  high.** `app.transfers.free_transfers.derive_free_transfers_available` replayed the manager's
+  first `history().current[]` row (the squad-selection gameweek -- GW1, or a mid-season joiner's
+  first gameweek) like a normal gameweek, accruing a phantom +1, so GW2 started at 2 instead of 1.
+  Caught when the real manager's FPL app showed 2 free transfers for GW11 while
+  `TRANSFER_OPTIMIZATION` reported `free_transfers_available=3` (and recommended 3 "free"
+  transfers). The replay's own hit-cost cross-validation never caught it because that manager had
+  never taken a hit, and the existing unit tests had been written against the inflated values. Now
+  skips the first row, so the next gameweek starts at exactly 1. Affects both callers --
+  `MANAGER_SYNC` (`app/jobs/handlers/manager_sync.py`, the user's own snapshot) and
+  `app/h2h/rival_state.py` (every rival's derived state, hence `H2H_SIMULATION`) -- so existing
+  snapshots keep the old inflated value until the next `MANAGER_SYNC`/`LEAGUE_SYNC` re-derives it.
+  Regression test: `tests/unit/test_free_transfers.py::test_derive_realManager918600History_matchesFplAppCountOfTwo`.
+  Note: FPL's authenticated `my-team/{id}` endpoint reports the real count directly
+  (`transfers.limit`) but needs the manager's FPL session, which this system deliberately doesn't hold.
+
 - **Resolved, real bug (found and fixed 2026-10-06): `TRANSFER_OPTIMIZATION` only ever evaluated
   0/1/2-transfer scenarios, hardcoded, regardless of how many free transfers a manager actually
   had banked.** FPL allows rolling free transfers up to a maximum of 5 — a manager sitting on 4
