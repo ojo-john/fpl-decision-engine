@@ -1434,10 +1434,19 @@ new code needed, just running the existing pipeline.
 
 ## API (`apps/api`)
 
-Single FastAPI app, single shared-secret auth (`apps/api/auth.py`,
-`require_shared_token`, `secrets.compare_digest`, fails closed with 401) on
-every router except `health.py`. No user table — deliberate, this is a
-single-manager system. CORS via `Settings.cors_allowed_origins_list`
+Single FastAPI app, one auth dependency (`apps/api/auth.py`,
+`require_authorized_caller`) on every router except `health.py`. It accepts
+two Bearer credentials: the shared `APP_SHARED_TOKEN` (`secrets.compare_digest`),
+or a GitHub access token (e.g. `gh auth token`) whose owner's **numeric** GitHub
+user id is in `GITHUB_AUTH_ALLOWED_USER_IDS` (`Settings.github_auth_allowed_user_ids`,
+empty by default = GitHub auth disabled). GitHub tokens are recognized by prefix
+(`gho_`/`ghp_`/`github_pat_`/`ghu_`/`ghs_`) — nothing else is ever sent to GitHub —
+and verified via `GET https://api.github.com/user` in `apps/api/github_identity.py`
+(`GithubIdentityResolver`: explicit 5s connect/10s read timeouts, successful lookups
+cached in-process for 5 min keyed by the token's SHA-256, rejections never cached).
+Outcomes: wrong/missing token 401, GitHub rejects the token 401, valid GitHub user
+not allowlisted 403, GitHub unreachable/5xx/malformed 503 (fails closed, never
+passes through). No user table — deliberate, this is a single-manager system. CORS via `Settings.cors_allowed_origins_list`
 (empty/fail-closed by default). Routers: `players`, `gameweeks`, `optimize`
 (squad/lineup/transfers, plus `chips` sharing the same `/optimize` prefix —
 watch route registration order in `main.py`, the catch-all `GET
@@ -1485,6 +1494,21 @@ Next.js App Router. Two distinct API-calling paths:
   route (GET/POST/DELETE) — the browser never holds the real token, only a
   signed session cookie (`lib/session.ts`, HMAC-SHA256, `proxy.ts` gates
   every non-public path).
+
+Two ways to obtain that session cookie on `/login`, both ending in the same
+`lib/session.ts` `setSessionCookie`: typing `APP_SHARED_TOKEN` (`POST
+/api/session`), or "Sign in with GitHub" — a GitHub OAuth App web flow
+(`app/api/auth/github/route.ts` → GitHub → `app/api/auth/github/callback/route.ts`,
+logic in `lib/github-oauth.ts`). The start route stores a random `state` +
+sanitized `next` path (`safeNextPath`, same-origin relative only — no open
+redirect) in a 10-minute httpOnly `fpl_oauth_state` cookie; the callback
+rejects a mismatched state, exchanges the code, reads `GET /user`, and issues
+the session cookie only if the numeric user id is in
+`GITHUB_AUTH_ALLOWED_USER_IDS`; every failure redirects to `/login?error=<code>`
+with no cookie set. No OAuth scopes requested; the GitHub token is discarded
+after that one call. The button renders only when `GITHUB_OAUTH_CLIENT_ID` is
+set. `/api/auth/github` (and its `/callback`) are in `proxy.ts`'s
+`PUBLIC_PATHS`. Setup: `docs/deployment.md` "Sign in with GitHub".
 
 Both share one generated `lib/api-types.ts` (from the backend's own
 OpenAPI schema — regenerate after *any* `apps/api` schema/router change,

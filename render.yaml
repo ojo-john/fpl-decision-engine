@@ -56,6 +56,8 @@ services:
         sync: false # A real mailto: or https: contact URI, required by the Web Push spec.
       - key: GITHUB_ACTIONS_TRIGGER_TOKEN
         sync: false # Milestone 9 Layer 5 (the FPL dashboard's own "Retrain model" button) -- a fine-grained GitHub PAT scoped to `Actions: write` on this repo only. See docs/deployment.md.
+      - key: GITHUB_AUTH_ALLOWED_USER_IDS
+        sync: false # Optional: comma-separated numeric GitHub user ids (`gh api user --jq .id`) allowed to call this API with their own GitHub token instead of APP_SHARED_TOKEN. Not a secret. Unset = disabled. See docs/deployment.md "Sign in with GitHub".
       # --- Real, non-secret values, safe to commit as-is (match this repo's own local .env defaults). ---
       - key: LOG_LEVEL
         value: INFO

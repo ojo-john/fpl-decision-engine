@@ -15,6 +15,8 @@
  * runtimes Next.js middleware can run under.
  */
 
+import type { NextResponse } from "next/server";
+
 export const SESSION_COOKIE_NAME = "fpl_session";
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
@@ -70,6 +72,18 @@ export async function isValidSessionCookieValue(
 
   const expectedSignature = await sign(issuedAt, secret);
   return timingSafeEqual(signature, expectedSignature);
+}
+
+/** Sets the signed session cookie on a response -- shared by the token login and GitHub sign-in. */
+export async function setSessionCookie(response: NextResponse, secret: string): Promise<void> {
+  const cookieValue = await createSessionCookieValue(secret);
+  response.cookies.set(SESSION_COOKIE_NAME, cookieValue, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: SESSION_MAX_AGE_SECONDS,
+    path: "/",
+  });
 }
 
 /** Same constant-time-ish comparison used for the login form's password check. */

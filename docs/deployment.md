@@ -136,6 +136,30 @@ URL) produced by the step before it.
 5. **Go back to Render** and update `CORS_ALLOWED_ORIGINS` to this real Vercel URL (replacing the
    placeholder from step 2.3), then redeploy the Render service so the change takes effect.
 
+### 3b. Sign in with GitHub (optional)
+
+Lets you log in with your GitHub account instead of typing `APP_SHARED_TOKEN`, and lets a CLI
+(e.g. `curl -H "Authorization: Bearer $(gh auth token)" ...`) call the deployed API directly. The
+shared token keeps working either way -- this is additive. Access is limited to the numeric GitHub
+user ids you list; ids, not logins, because a login can be renamed and re-registered.
+
+1. Find your GitHub user id: `gh api user --jq .id` (or `https://api.github.com/users/<login>`).
+2. **API (Render)**: set `GITHUB_AUTH_ALLOWED_USER_IDS` to that id, then redeploy. The API now also
+   accepts that account's own GitHub token as a Bearer token. It's verified against GitHub's
+   `GET /user` and cached for 5 minutes. If GitHub can't be reached, the request gets a 503
+   rather than being let through.
+3. **Web (Vercel)**: create a GitHub OAuth App (GitHub -> Settings -> Developer settings -> OAuth
+   Apps -> New OAuth App). Homepage URL: your Vercel URL. **Authorization callback URL**:
+   `https://<your-vercel-url>/api/auth/github/callback` (must match exactly -- Vercel preview
+   deployments on other hostnames won't work with it, use the token there). Generate a client
+   secret, then set three Vercel env vars and redeploy:
+   - `GITHUB_OAUTH_CLIENT_ID` -- the OAuth App's client id.
+   - `GITHUB_OAUTH_CLIENT_SECRET` -- the client secret (a real secret).
+   - `GITHUB_AUTH_ALLOWED_USER_IDS` -- the same id(s) as step 2.
+   The "Sign in with GitHub" button appears on `/login` once `GITHUB_OAUTH_CLIENT_ID` is set. The
+   app requests no OAuth scopes (public profile only) and discards the GitHub token right after
+   reading your user id.
+
 ### 4. GitHub Actions (scheduler)
 
 **Revised 2026-08-26** -- previously cron-job.org; replaced after it silently stopped calling

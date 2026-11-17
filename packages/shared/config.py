@@ -70,6 +70,20 @@ class Settings(BaseSettings):
     # this app's own repo, but a fork/redeploy elsewhere would need its own value.
     github_repo: str = "ojo-john/fpl-decision-engine"
 
+    # Comma-separated numeric GitHub user ids (not logins -- logins can be renamed and re-registered)
+    # allowed to call the API with their own GitHub token instead of app_shared_token -- see
+    # apps.api.auth. Empty (the default) disables GitHub-token auth entirely (fail closed). Not a
+    # secret: a GitHub user id is public (`gh api user --jq .id`).
+    github_auth_allowed_user_ids: str = ""
+
+    @property
+    def github_auth_allowed_user_ids_set(self) -> frozenset[int]:
+        # int() raising on a malformed entry is deliberate: a typo'd allowlist should fail loudly
+        # on the first authenticated request rather than silently allow nobody (or the wrong id).
+        return frozenset(
+            int(part.strip()) for part in self.github_auth_allowed_user_ids.split(",") if part.strip()
+        )
+
     @property
     def cors_allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
