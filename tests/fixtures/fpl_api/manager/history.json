@@ -45,7 +45,7 @@
       "bank": 10,
       "value": 1008,
       "event_transfers": 3,
-      "event_transfers_cost": -4,
+      "event_transfers_cost": 4,
       "points_on_bench": 10
     },
     {

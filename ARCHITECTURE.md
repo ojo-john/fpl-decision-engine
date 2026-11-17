@@ -2456,6 +2456,16 @@ documents it directly.
   `app/h2h/rival_state.py` (every rival's derived state, hence `H2H_SIMULATION`) -- so existing
   snapshots keep the old inflated value until the next `MANAGER_SYNC`/`LEAGUE_SYNC` re-derives it.
   Regression test: `tests/unit/test_free_transfers.py::test_derive_realManager918600History_matchesFplAppCountOfTwo`.
+  **Second bug fixed alongside it: hit costs had the wrong sign everywhere they were checked.**
+  FPL reports `event_transfers_cost` as a positive number (a -4 hit reads as `4`; confirmed live
+  on rival 4085230's real GW7 row), but the replay's cross-validation expected `-4` (so every
+  real hit logged a false "mismatch" and the check could never confirm anything), and
+  `app/h2h/rival_state.py`'s two hit detectors (`hit_taken` → `predicted_hit_probability`, and
+  `hit_tolerance` in the rival tendency summary) tested `< 0`, so **no real rival's hit was ever
+  counted** -- every rival was modeled as never taking hits. All now use the positive convention;
+  the synthetic test data (`tests/unit/test_rival_state.py`, `tests/fixtures/fpl_api/manager/
+  history.json`) had been written with negative costs and was corrected to match real FPL.
+  `app/learning/outcome_ingestion.py` already read the raw positive value and was unaffected.
   Note: FPL's authenticated `my-team/{id}` endpoint reports the real count directly
   (`transfers.limit`) but needs the manager's FPL session, which this system deliberately doesn't hold.
 

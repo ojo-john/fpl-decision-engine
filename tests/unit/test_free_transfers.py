@@ -67,15 +67,38 @@ def test_derive_realManager918600History_matchesFplAppCountOfTwo():
 
 
 def test_derive_hitTakingGameweek_reducesFreeTransfers():
-    # GW2 has 1; 3 transfers is a 2-transfer hit (-8). Left with 0, GW3 has 1.
-    rows = [_row(1), _row(2, transfers=3, cost=-8)]
+    # GW2 has 1; 3 transfers is a 2-transfer hit (FPL reports cost=8). Left with 0, GW3 has 1.
+    rows = [_row(1), _row(2, transfers=3, cost=8)]
     assert derive_free_transfers_available(rows, [], cap=CAP) == 1
 
 
 def test_derive_hitCostMismatch_logsWarningAndDoesNotRaise(caplog):
-    # GW2: 2 transfers with 1 free should cost -4, not the fabricated -100.
-    rows = [_row(1), _row(2, transfers=2, cost=-100)]
+    # GW2: 2 transfers with 1 free should cost 4, not the fabricated 100.
+    rows = [_row(1), _row(2, transfers=2, cost=100)]
     with caplog.at_level(logging.WARNING):
         result = derive_free_transfers_available(rows, [], cap=CAP)
 
     assert (result, any("mismatch" in r.message for r in caplog.records)) == (1, True)
+
+
+def test_derive_realRivalHistoryWithHit_matchesObservedCostWithoutWarning(caplog):
+    # Real GW1-10 history for H2H rival 4085230 (2026-27): a real 1-transfer hit in GW7,
+    # reported by FPL as event_transfers_cost=4. Only consistent with 2 free transfers in GW7
+    # (the old inflated replay said 3, i.e. no hit), so this pins both fixes.
+    rows = [
+        _row(1),
+        _row(2),
+        _row(3),
+        _row(4, transfers=3),
+        _row(5, transfers=1),
+        _row(6),
+        _row(7, transfers=3, cost=4),
+        _row(8, transfers=1),
+        _row(9, transfers=1),
+        _row(10),
+    ]
+    chips = [{"name": "3xc", "event": 8, "time": "2026-10-17T10:00:00Z"}]
+    with caplog.at_level(logging.WARNING):
+        result = derive_free_transfers_available(rows, chips, cap=CAP)
+
+    assert (result, [r.message for r in caplog.records]) == (2, [])

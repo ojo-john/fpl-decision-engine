@@ -9,7 +9,7 @@ Real FPL mechanics, in the exact order applied per gameweek:
 1. The free transfers carried into this gameweek are capped at ``cap``
    (``1 + rules.max_extra_free_transfers``, 5 under 2025-26 rules).
 2. Some number of transfers (``event_transfers``) are spent. Any spent beyond
-   the capped available count cost ``-4`` points each (a "hit") — this
+   the capped available count cost 4 points each (a "hit") — this
    module doesn't return that cost, but cross-validates its own implied
    formula against the observed ``event_transfers_cost`` for each gameweek,
    as a sanity check on the whole replay.
@@ -64,7 +64,10 @@ def derive_free_transfers_available(current_rows: list[dict], chip_rows: list[di
 
         free = min(free, cap)
         event_transfers = row["event_transfers"]
-        expected_cost = -_HIT_COST_PER_TRANSFER * max(0, event_transfers - free)
+        # FPL reports event_transfers_cost as a POSITIVE number (4 per extra transfer), not a
+        # negative points delta -- confirmed against real history (a -4 hit reads as 4). This
+        # compared against -4 until 2026-11-17, so every real hit logged a false mismatch.
+        expected_cost = _HIT_COST_PER_TRANSFER * max(0, event_transfers - free)
         observed_cost = row.get("event_transfers_cost", expected_cost)
         if expected_cost != observed_cost:
             logger.warning(
