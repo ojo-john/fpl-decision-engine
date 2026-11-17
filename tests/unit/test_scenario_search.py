@@ -379,9 +379,10 @@ def test_missing_selling_price_for_squad_member_is_rejected():
 
 
 def test_scenarios_extend_up_to_free_transfers_available():
-    """4 free transfers, 4 independent beneficial same-position swaps -- before this fix,
-    scenarios never went past {0, 1, 2} regardless of free_transfers_available; this confirms
-    the search now actually reaches scenarios[4] and recommends it.
+    """4 free transfers, 4 independent beneficial same-position swaps -- before the 2026-10-06
+    fix, scenarios never went past {0, 1, 2} regardless of free_transfers_available; this
+    confirms the search reaches scenarios[4] and recommends it. (scenarios[5] also exists since
+    2026-11-17's one-hit lookahead, but has no 5th player to swap here.)
     """
     squad = [
         _candidate("GKP", _TEAM_A, cost=40, horizon_points=5.0),
@@ -407,7 +408,7 @@ def test_scenarios_extend_up_to_free_transfers_available():
         transfer_hit_cost_magnitude=4,
     )
 
-    assert set(scenarios.keys()) == {0, 1, 2, 3, 4}
+    assert set(scenarios.keys()) == {0, 1, 2, 3, 4, 5}
     assert scenarios[4].raw_horizon_points_gain == pytest.approx(40.0)  # 4 swaps x +10 each
     assert scenarios[4].hit_cost == 0
     assert recommended.transfers_count == 4
@@ -487,3 +488,46 @@ def test_three_transfer_respects_joint_budget_across_all_three():
 
     assert scenarios[3].moves == []
     assert scenarios[3].raw_horizon_points_gain == 0.0
+
+
+# --- Hit lookahead: always one transfer beyond the free ones ---------------------------------
+
+
+def _three_swap_inputs(third_swap_gain: float) -> dict:
+    """3-player squad (DEF/MID/FWD); swaps 1 and 2 gain +20 each, swap 3 gains ``third_swap_gain``."""
+    out_def = _candidate("DEF", _TEAM_A, cost=50, horizon_points=10.0)
+    out_mid = _candidate("MID", _TEAM_B, cost=50, horizon_points=10.0)
+    out_fwd = _candidate("FWD", _TEAM_C, cost=50, horizon_points=10.0)
+    return dict(
+        squad_candidates=[out_def, out_mid, out_fwd],
+        in_shortlists_by_position={
+            "DEF": [_candidate("DEF", _TEAM_D, cost=50, horizon_points=30.0)],
+            "MID": [_candidate("MID", _TEAM_ARS, cost=50, horizon_points=30.0)],
+            "FWD": [_candidate("FWD", _TEAM_CHE, cost=50, horizon_points=10.0 + third_swap_gain)],
+        },
+        selling_prices={c.player_id: 50 for c in (out_def, out_mid, out_fwd)},
+        team_limit=5,
+        bank=0,
+        free_transfers_available=2,
+        transfer_hit_cost_magnitude=4,
+    )
+
+
+def test_evaluate_twoFreeTransfers_alsoEvaluatesThirdTransferWithHit():
+    scenarios, _ = evaluate_transfer_scenarios(**_three_swap_inputs(third_swap_gain=12.0))
+
+    assert (max(scenarios.keys()), scenarios[3].hit_cost) == (3, 4)
+
+
+def test_evaluate_twoFree_thirdSwapWorthMoreThanHit_recommendsTakingHit():
+    # 3 transfers: raw 52, net 48 (one -4 hit) beats 2 free transfers' 40.
+    _, recommended = evaluate_transfer_scenarios(**_three_swap_inputs(third_swap_gain=12.0))
+
+    assert (recommended.transfers_count, recommended.net_horizon_points_gain) == (3, pytest.approx(48.0))
+
+
+def test_evaluate_twoFree_thirdSwapWorthLessThanHit_staysWithFreeTransfers():
+    # 3 transfers: raw 43, net 39 (one -4 hit) loses to 2 free transfers' 40.
+    _, recommended = evaluate_transfer_scenarios(**_three_swap_inputs(third_swap_gain=3.0))
+
+    assert recommended.transfers_count == 2

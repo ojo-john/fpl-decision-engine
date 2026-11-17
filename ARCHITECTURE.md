@@ -94,7 +94,7 @@ the job types that have an HTTP trigger.
 | `PROJECTION_GENERATION` | — | ❌ | — | genuinely unbuilt; `project_player`/`project_player_with_champion` in `app/optimization/projection.py` are called directly by other jobs instead |
 | `SQUAD_OPTIMIZATION` | `squad_optimization.py` | ✅ | `POST /optimize/initial-squad` | |
 | `LINEUP_OPTIMIZATION` | `lineup_optimization.py` | ✅ | `POST /optimize/lineup` | |
-| `TRANSFER_OPTIMIZATION` | `transfer_optimization.py` | ✅ | `POST /optimize/transfers` | evaluates 0..N transfers, N derived from free transfers available (up to 5) -- see "Known real gaps" below for the 2026-10-06 fix that made N dynamic instead of a hardcoded 0/1/2 |
+| `TRANSFER_OPTIMIZATION` | `transfer_optimization.py` | ✅ | `POST /optimize/transfers` | evaluates 0..N transfers, N = free transfers available + 1 (so one hit is always weighed; min 2, max 5) -- see "Known real gaps" below for the 2026-10-06 fix that made N dynamic instead of a hardcoded 0/1/2, and the 2026-11-17 one-hit lookahead |
 | `CHIP_SIMULATION` | `chip_simulation.py` | ✅ | `POST /optimize/chips` | evaluates all 4 chips independently -- see "Joint chip scheduling (Phase 1)" below for why that alone can produce contradictory recommendations |
 | `CHIP_SCHEDULE_OPTIMIZATION` | `chip_schedule_optimization.py` | ✅ | `POST /optimize/chips/schedule` | the joint chip scheduler (fresh, full-season, path-dependent), see below |
 | `H2H_SIMULATION` | `h2h_simulation.py` | ✅ | `POST /h2h/simulate` | |
@@ -2490,6 +2490,13 @@ documents it directly.
   to `min(max(free_transfers_available, 2), MAX_TRANSFERS_TO_EVALUATE_CEILING)` (5, FPL's real
   rollover max) — preserves the exact pre-fix behavior for the common case (≤2 free transfers
   always shows at least the 2-transfer "is a hit worth it" option), extends naturally beyond it.
+  **Revised 2026-11-17:** now `min(max(free_transfers_available + 1, 2), 5)`
+  (`scenario_search._HIT_LOOKAHEAD_TRANSFERS = 1`). With exactly `N` free transfers banked the
+  old formula stopped at `N`, so a hit was never weighed for anyone holding 2+ -- caught live
+  for a real manager with 2 free transfers whose 3rd-best move was worth far more than its
+  4-point hit over the 6-GW horizon. Each `K` is scored net of the hit, so the extra scenario
+  only wins when it genuinely beats every free option; the recommendation is otherwise
+  unchanged (the 3 integration tests touched only gained a 4th, non-recommended scenario row).
   Verified against every pre-existing unit test unchanged (identical results for K=1/K=2), plus
   new tests covering the free-transfer-driven extension, the ceiling cap, joint budget across 3
   transfers, and — specifically — that the MIP's per-position equality constraints actually

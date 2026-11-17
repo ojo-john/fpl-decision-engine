@@ -52,6 +52,13 @@ MAX_TRANSFERS_TO_EVALUATE_CEILING = 5
 # me" 2-transfer option, same as before this change, even at 0 or 1 free transfers.
 _MIN_TRANSFERS_TO_EVALUATE = 2
 
+# Always evaluate this many transfers BEYOND the free ones, so a hit is weighed rather than never
+# seen. Added 2026-11-17: with 2 free transfers the search stopped at 2, so a 3rd move worth
+# far more than its 4-point hit over the horizon was invisible to the recommendation. Each
+# K is scored net of ``transfer_hit_cost_magnitude`` per transfer beyond the free ones, so a hit
+# scenario only wins when it genuinely beats every free option.
+_HIT_LOOKAHEAD_TRANSFERS = 1
+
 
 class InvalidScenarioSearchInputError(ValueError):
     """Raised when ``evaluate_transfer_scenarios`` is called with input that violates its contract.
@@ -72,7 +79,9 @@ class TransferMove:
 
 @dataclass(frozen=True)
 class TransferScenario:
-    transfers_count: int  # 0 through min(max(free_transfers_available, 2), MAX_TRANSFERS_TO_EVALUATE_CEILING)
+    transfers_count: (
+        int  # 0 through min(max(free_transfers_available + 1, 2), MAX_TRANSFERS_TO_EVALUATE_CEILING)
+    )
     moves: list[TransferMove]  # empty for transfers_count == 0, or if no legal move exists
     raw_horizon_points_gain: float
     hit_cost: int  # points lost to hits, as a positive number
@@ -215,7 +224,10 @@ def _best_k_transfer_moves(
 
 
 def _max_transfers_to_evaluate(free_transfers_available: int) -> int:
-    return min(max(free_transfers_available, _MIN_TRANSFERS_TO_EVALUATE), MAX_TRANSFERS_TO_EVALUATE_CEILING)
+    return min(
+        max(free_transfers_available + _HIT_LOOKAHEAD_TRANSFERS, _MIN_TRANSFERS_TO_EVALUATE),
+        MAX_TRANSFERS_TO_EVALUATE_CEILING,
+    )
 
 
 def evaluate_transfer_scenarios(
@@ -229,10 +241,9 @@ def evaluate_transfer_scenarios(
 ) -> tuple[dict[int, TransferScenario], TransferScenario]:
     """Evaluate the ROLL/0-transfer scenario plus the best 1..N-transfer scenarios.
 
-    ``N = min(max(free_transfers_available, 2), MAX_TRANSFERS_TO_EVALUATE_CEILING)`` — always at
-    least 2 (so a manager with 0 or 1 free transfers still sees what taking a hit would cost,
-    matching this module's behavior before 2026-10-06), extended up to how many free transfers
-    are actually banked, capped at FPL's real 5-transfer rollover maximum.
+    ``N = min(max(free_transfers_available + 1, 2), MAX_TRANSFERS_TO_EVALUATE_CEILING)`` — always
+    at least 2, and always one transfer beyond the free ones (``_HIT_LOOKAHEAD_TRANSFERS``) so a
+    -4 hit is weighed rather than never seen, capped at 5.
 
     Returns ``({0: scenario, 1: scenario, ..., N: scenario}, recommended_scenario)``.
 

@@ -404,9 +404,9 @@ def test_optimize_transfers_happy_path(db_session, patched_fpl_client_optimizati
     assert body["bank"] == 20
     assert body["recommended_action"] in {"roll", "one_transfer", "two_transfers"}
 
-    assert len(body["scenarios"]) == 3
+    assert len(body["scenarios"]) == 4  # 0/1/2 free + 1 hit lookahead
     transfers_counts = sorted(s["transfers_count"] for s in body["scenarios"])
-    assert transfers_counts == [0, 1, 2]
+    assert transfers_counts == [0, 1, 2, 3]
     recommended = [s for s in body["scenarios"] if s["is_recommended"]]
     assert len(recommended) == 1
 
