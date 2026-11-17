@@ -204,14 +204,14 @@ def test_transfer_optimization_recommends_two_transfers_with_full_scenario_persi
         .scalars()
         .all()
     )
-    assert len(scenario_rows) == 3
-    assert [s.transfers_count for s in scenario_rows] == [0, 1, 2]
+    assert len(scenario_rows) == 4  # 0/1/2 free + 1 hit lookahead
+    assert [s.transfers_count for s in scenario_rows] == [0, 1, 2, 3]
 
     recommended_rows = [s for s in scenario_rows if s.is_recommended]
     assert len(recommended_rows) == 1
     assert recommended_rows[0].transfers_count == 2
 
-    scenario0, scenario1, scenario2 = scenario_rows
+    scenario0, scenario1, scenario2, _hit_lookahead_scenario = scenario_rows
 
     assert float(scenario0.raw_horizon_points_gain) == pytest.approx(0.0)
     assert scenario0.hit_cost == 0
@@ -338,7 +338,7 @@ def test_transfer_optimization_degrades_gracefully_with_unresolved_squad_player(
         .scalars()
         .all()
     )
-    assert len(scenario_rows) == 3
+    assert len(scenario_rows) == 4  # 0/1/2 free + 1 hit lookahead
 
     resolved_player_ids = {uuid.UUID(pid) for pid in snapshot.squad_player_ids}
     for scenario in scenario_rows:
